@@ -5,7 +5,7 @@ import type { JsonObject } from "../../protocol/json.js";
 import type { Tool } from "../tool.js";
 import { decodeCursor, encodeCursor, paginateLines } from "./cursor.js";
 import { WorkspacePathGuard } from "./path-guard.js";
-import { applyWorkspacePatch } from "./patch.js";
+import { applyWorkspacePatch, PATCH_FORMAT_GUIDE } from "./patch.js";
 import { WorkspaceFilePolicy, type WorkspaceFilePolicyOptions } from "./policy.js";
 import { clipLine, decodeUtf8, sha256, splitLines } from "./text.js";
 
@@ -260,10 +260,20 @@ function createApplyPatchTool(guard: WorkspacePathGuard, maxFileBytes = DEFAULT_
   return {
     definition: {
       name: "apply_patch",
-      description: "Add, update, or delete one workspace file with a checked patch. Update/delete require read_file's SHA-256.",
+      description: [
+        "Add, update, or delete exactly one workspace file with a checked patch.",
+        "For update/delete, copy baseHash exactly from read_file's sha256 result; use null only for Add File.",
+        PATCH_FORMAT_GUIDE,
+      ].join("\n"),
       inputSchema: objectSchema({
-        patch: { type: "string", minLength: 1, maxLength: 1_048_576 },
+        patch: {
+          type: "string",
+          minLength: 1,
+          maxLength: 1_048_576,
+          description: PATCH_FORMAT_GUIDE,
+        },
         baseHash: {
+          description: "For Update/Delete, the exact sha256 returned by read_file. For Add File, null.",
           oneOf: [
             { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
             { type: "null" },

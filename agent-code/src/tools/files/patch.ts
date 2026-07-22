@@ -7,6 +7,20 @@ import { decodeUtf8, encodeUtf8, joinLines, sha256, splitLines } from "./text.js
 
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
+export const PATCH_FORMAT_GUIDE = [
+  "The patch string must use this exact format (no Markdown fence):",
+  "*** Begin Patch",
+  "*** Update File: path/to/file",
+  "@@ -1,1 +1,1 @@",
+  "-old line",
+  "+new line",
+  "*** End Patch",
+  "For an update, every hunk needs an @@ -oldStart,oldCount +newStart,newCount @@ header.",
+  "Every hunk body line must begin with one space for context, '-' for removal, or '+' for addition.",
+  "Use '*** Add File: path' with every content line prefixed by '+' to add a file.",
+  "Use '*** Delete File: path' with no hunk body to delete a file.",
+].join("\n");
+
 type ParsedPatch =
   | { readonly operation: "add"; readonly path: string; readonly lines: readonly string[] }
   | { readonly operation: "update"; readonly path: string; readonly hunks: readonly Hunk[] }
@@ -28,7 +42,15 @@ export async function applyWorkspacePatch(
   signal: AbortSignal,
 ): Promise<{ readonly content: string; readonly data: Record<string, string | null> }> {
   signal.throwIfAborted();
-  const patch = parsePatch(patchText);
+  let patch: ParsedPatch;
+  try {
+    patch = parsePatch(patchText);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid patch format: ${message}\n\n${PATCH_FORMAT_GUIDE}`, {
+      cause: error,
+    });
+  }
   const target = await guard.resolveForWrite(patch.path);
 
   if (patch.operation === "add") {

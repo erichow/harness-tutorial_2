@@ -79,7 +79,19 @@ describe.skipIf(selected === undefined)("real-provider MVP smoke test", () => {
           !Array.isArray(event.result.data) &&
           event.result.data.exitCode === 0,
       );
-      expect(result.reason).toBe("completed");
+      if (result.reason !== "completed") {
+        const attempts = runtime.eventLog.entries
+          .filter((event) => event.type === "tool_call_finished")
+          .map((event) => ({
+            toolCallId: event.result.toolCallId,
+            status: event.result.status,
+            errorCode: event.result.error?.code,
+            message: event.result.status === "error" ? event.result.content.slice(0, 800) : undefined,
+          }));
+        throw new Error(
+          `Live MVP ended with ${result.reason} after ${result.steps} steps:\n${JSON.stringify(attempts, null, 2)}`,
+        );
+      }
       expect(await readFile(join(root, "src/config.js"), "utf8"))
         .toContain("timeout: 10000");
       expect(runtime.eventLog.fileChanges).toHaveLength(1);

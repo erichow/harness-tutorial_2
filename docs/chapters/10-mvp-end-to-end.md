@@ -274,6 +274,23 @@ MVP_LIVE_PROVIDER=deepseek npm run test:mvp:live
 
 真实 smoke test 与 Mock 使用相同临时项目和 `CodingAgentRuntime`，并明确要求模型依次调用 `search_text`、`read_file`、`apply_patch`、`run_shell`。它验证最终文件、真实 Shell 成功结果和事件日志中的文件变化。
 
+第一次实际运行 DeepSeek smoke test 时，Provider 连接、搜索和读取都成功，但模型连续生成了 8 个不符合自定义语法的 Patch，最终触发 `max_steps`。这暴露了一个 Mock 无法发现的问题：工具 schema 只说明参数是字符串，并不等于模型知道字符串内部的微型语言。
+
+因此 `apply_patch` 现在同时在工具描述、`patch` 字段描述和格式错误结果中提供同一份完整契约：
+
+```text
+*** Begin Patch
+*** Update File: path/to/file
+@@ -1,1 +1,1 @@
+-old line
++new line
+*** End Patch
+```
+
+说明还明确要求不使用 Markdown fence，解释 hunk header、上下文/增删行前缀，以及 Add/Delete 的不同形式。格式解析失败时，模型会收到原始错误和这份可直接照用的示例，而不是只看到“header 不正确”。加入该契约后，相同 DeepSeek 端到端场景完成了 Patch、真实测试命令和最终总结。
+
+这说明真实 Provider 测试的价值不只是检查 HTTP 适配器：它还能验证工具是否真正“对模型可用”。工具契约中的枚举、正则和类型约束服务于机器校验；描述、示例和可操作错误则服务于模型纠错，两者缺一不可。
+
 这仍然是 smoke test，不应成为每次提交的硬门槛：模型服务可能限流、网络可能波动、模型输出也存在概率性。确定性回归应由 Mock 承担，真实测试用于发布前或 Provider 适配器变更后的兼容性检查。
 
 ## 10. 本章验收清单
@@ -287,6 +304,7 @@ MVP_LIVE_PROVIDER=deepseek npm run test:mvp:live
 - [x] patch 失败不改变原文件、不遗留临时文件。
 - [x] 应用释放时终止仍存活的进程树。
 - [x] OpenAI/DeepSeek 都有显式启用的完整 smoke test。
+- [x] `apply_patch` 契约经过真实 DeepSeek 测试并可完成完整流程。
 - [x] CLI 和验收测试共用 `CodingAgentRuntime` 组装路径。
 
 ## 11. 下一章留下的问题

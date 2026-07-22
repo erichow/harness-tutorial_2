@@ -201,6 +201,31 @@ describe("workspace file tools", () => {
     await expect(readFile(join(workspace, "greeting.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("gives models the complete patch grammar in definitions and format errors", async () => {
+    const executor = await tools();
+    const definition = executor.definitions.find((candidate) => candidate.name === "apply_patch");
+    expect(definition?.description).toContain("*** Update File: path/to/file");
+    expect(definition?.description).toContain("@@ -1,1 +1,1 @@");
+
+    const malformed = await executor.execute({
+      type: "tool_call",
+      id: "malformed-patch",
+      name: "apply_patch",
+      input: {
+        baseHash: `sha256:${"0".repeat(64)}`,
+        patch: "Update src/config.js from 5000 to 10000",
+      },
+    }, { signal });
+
+    expect(malformed).toMatchObject({
+      status: "error",
+      error: { code: "execution_failed" },
+    });
+    expect(malformed.content).toContain("Invalid patch format");
+    expect(malformed.content).toContain("*** Begin Patch");
+    expect(malformed.content).toContain("*** Update File: path/to/file");
+  });
+
   it("rejects stale hashes and context mismatches without changing the file", async () => {
     const path = join(workspace, "shared.txt");
     await writeFile(path, "first\n");
