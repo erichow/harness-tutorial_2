@@ -177,6 +177,7 @@ function snapshotData(
     sandbox: {
       enforced: manager.sandboxStatus.enforced,
       network: manager.sandboxStatus.network,
+      filesystem: manager.sandboxStatus.filesystem,
     },
     cleanedUp,
   };

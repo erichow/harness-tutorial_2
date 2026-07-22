@@ -8,6 +8,7 @@ export const MAX_TOOL_CURSOR_BYTES = 512;
 export type ToolErrorCode =
   | "unknown_tool"
   | "invalid_arguments"
+  | "permission_denied"
   | "execution_failed"
   | "repeated_call";
 

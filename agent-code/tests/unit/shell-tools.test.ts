@@ -164,7 +164,7 @@ describe("shell tools", () => {
 
     expect(result.status).toBe("success");
     expect(result.content).toContain("firstsecond");
-    expect(result.content).toContain("network access is not isolated");
+    expect(result.content).toContain("filesystem and network access are unrestricted");
   });
 
   it("paginates retained output with a job-bound cursor", async () => {

@@ -6,6 +6,7 @@ import {
 
 import type { ToolCallBlock, ToolResultBlock } from "../messages/blocks.js";
 import type { JsonObject, JsonValue } from "../protocol/json.js";
+import type { PermissionEngine } from "../security/permissions.js";
 import type { ToolExecutionContext, ToolExecutor } from "./executor.js";
 import {
   createToolErrorResult,
@@ -20,6 +21,7 @@ export interface ToolRegistryOptions {
   readonly maxOutputBytes?: number | undefined;
   /** Maximum executions of the same tool + canonical input in one executor. */
   readonly maxIdenticalCalls?: number | undefined;
+  readonly permissions?: PermissionEngine | undefined;
 }
 
 interface RegisteredTool {
@@ -32,6 +34,7 @@ export class ToolRegistry {
   readonly #tools: ReadonlyMap<string, RegisteredTool>;
   readonly #maxOutputBytes: number;
   readonly #maxIdenticalCalls: number;
+  readonly #permissions: PermissionEngine | undefined;
 
   constructor(tools: readonly Tool[], options: ToolRegistryOptions = {}) {
     this.#maxOutputBytes = positiveInteger(
@@ -42,6 +45,7 @@ export class ToolRegistry {
       options.maxIdenticalCalls ?? 3,
       "maxIdenticalCalls",
     );
+    this.#permissions = options.permissions;
 
     const ajv = new Ajv2020({ allErrors: true, strict: true });
     const registered = new Map<string, RegisteredTool>();
@@ -112,6 +116,22 @@ export class ToolRegistry {
         `Invalid arguments for ${call.name}: ${formatValidationErrors(registered.validate.errors)}`,
         { maxOutputBytes: this.#maxOutputBytes },
       );
+    }
+
+    if (this.#permissions !== undefined) {
+      const decision = await this.#permissions.authorize({
+        toolName: call.name,
+        input: call.input,
+        sideEffects: registered.tool.sideEffects,
+      }, context.signal);
+      if (decision.kind !== "allow") {
+        return createToolErrorResult(
+          call.id,
+          "permission_denied",
+          `Permission denied for ${call.name}: ${decision.reason}`,
+          { maxOutputBytes: this.#maxOutputBytes },
+        );
+      }
     }
 
     const signature = `${call.name}:${canonicalJson(call.input)}`;
