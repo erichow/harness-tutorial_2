@@ -23,5 +23,6 @@ chapter-01 ... chapter-23
 - [x] 第 6 章：项目发现、读取、搜索和 Patch 编辑
 - [x] 第 7 章：可取消的 Shell 执行器
 - [x] 第 8 章：Workspace Trust、权限与沙箱
+- [x] 第 9 章：CLI 交互、事件渲染和取消
 
 其余章节见 [实战教程设计稿](./PRACTICAL_TUTORIAL.md)。

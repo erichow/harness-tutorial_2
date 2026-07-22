@@ -2,7 +2,7 @@
 
 `agent-code` 是《从零构建 Coding Agent CLI》实战教程的伴随项目。
 
-当前章节：第 8 章。
+当前章节：第 9 章。
 
 ```bash
 npm install
@@ -14,3 +14,11 @@ node dist/cli/bin.js --help
 ```
 
 普通测试不访问模型 API，也不需要 API key。
+
+交互模式（不会自动读取 `.env.local`）：
+
+```bash
+OPENAI_API_KEY=... node dist/cli/bin.js chat --provider openai --model gpt-5
+# 或
+DEEPSEEK_API_KEY=... node dist/cli/bin.js chat --provider deepseek --model deepseek-chat
+```

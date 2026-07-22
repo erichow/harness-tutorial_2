@@ -13,10 +13,14 @@ const HELP = `agent-code ${VERSION}
 
 Usage:
   agent-code [options]
+  agent-code chat --provider <openai|deepseek> --model <model> [--workspace <path>]
 
 Options:
   -h, --help       Show this help message
   -V, --version    Show the version
+
+Interactive commands:
+  /help  /status  /permissions  /clear  /exit
 `;
 
 export function checkNodeVersion(version: string): string | undefined {

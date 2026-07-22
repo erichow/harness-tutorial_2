@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { checkNodeVersion, main, type CliIO } from "../../src/cli/main.js";
+import { parseChatArgs } from "../../src/cli/chat.js";
 
 function memoryIO(): { io: CliIO; stdout: string[]; stderr: string[] } {
   const stdout: string[] = [];
@@ -52,5 +53,30 @@ describe("CLI argument contract", () => {
 
     expect(exitCode).toBe(1);
     expect(output.stderr.join("")).toContain("Node.js 22");
+  });
+});
+
+describe("chat arguments", () => {
+  it("selects OpenAI or DeepSeek without reading a dotenv file", () => {
+    expect(parseChatArgs(
+      ["--provider", "openai", "--workspace", "project"],
+      { OPENAI_MODEL: "gpt-test" },
+      "/tmp",
+    )).toEqual({
+      provider: "openai",
+      model: "gpt-test",
+      workspace: "/tmp/project",
+    });
+    expect(parseChatArgs(
+      ["--provider", "deepseek", "--model", "deepseek-test"],
+      {},
+      "/workspace",
+    )).toMatchObject({ provider: "deepseek", model: "deepseek-test" });
+  });
+
+  it("rejects incomplete provider configuration", () => {
+    expect(() => parseChatArgs([], {}, "/workspace")).toThrow("requires --provider");
+    expect(() => parseChatArgs(["--provider", "openai"], {}, "/workspace"))
+      .toThrow("requires --model");
   });
 });
