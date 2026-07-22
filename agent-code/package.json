@@ -17,6 +17,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "test:smoke": "vitest run --config vitest.config.ts tests/integration/provider-smoke.test.ts",
+    "test:smoke:local": "node scripts/run-smoke-local.mjs",
     "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts"
   },
   "license": "MIT",
@@ -26,6 +27,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "undici": "^7.28.0",
     "zod": "^4.4.3"
   }
 }

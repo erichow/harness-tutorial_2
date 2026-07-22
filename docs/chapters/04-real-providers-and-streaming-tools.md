@@ -24,6 +24,7 @@ DeepSeek Chat SSE ─────► DeepSeekChatProvider ─────┘
 - [OpenAI Function Calling](https://developers.openai.com/api/docs/guides/function-calling)
 - [DeepSeek Chat Completion API](https://api-docs.deepseek.com/api/create-chat-completion)
 - [DeepSeek Tool Calls](https://api-docs.deepseek.com/guides/tool_calls)
+- [Undici EnvHttpProxyAgent](https://github.com/nodejs/undici/blob/main/docs/docs/api/EnvHttpProxyAgent.md)
 
 ## 2. 行为规格
 
@@ -54,15 +55,17 @@ DeepSeek Chat SSE ─────► DeepSeekChatProvider ─────┘
 
 适配器不能因为字段名字相似就共用一套未经验证的 parser。真正共用的是输出契约和 SSE/HTTP 基础设施。
 
-## 4. 不使用厂商 SDK 的原因
+## 4. 不使用厂商 SDK，但补齐 Node 代理能力
 
-本章使用 Node.js 22 自带的 `fetch` 和 Web Streams，不增加 npm 依赖。这样做不是否定官方 SDK，而是让教程直接展示协议边界：
+本章不使用厂商 SDK，让教程直接展示协议边界。无代理时使用 Node.js 22 自带的 `fetch` 和 Web Streams；检测到 `HTTP_PROXY` 或 `HTTPS_PROXY` 时，改用 `undici` 的 `EnvHttpProxyAgent`。这是本章唯一新增的运行时依赖。
 
 - `http.ts` 只负责认证头、POST、HTTP 状态和有限长度的错误文本。
 - `sse.ts` 只负责按 Server-Sent Events 规则读取 `data:`，并忽略 keep-alive comment。
 - 两个 Provider 各自验证和解释 JSON event。
 
-网络层支持注入 `FetchLike`。测试可以返回标准 `Response`，生产代码则使用 `globalThis.fetch`。
+网络层支持注入 `FetchLike`。测试可以返回标准 `Response`；生产代码按环境选择原生 fetch 或带代理 dispatcher 的 Undici fetch。代理实现同时遵守大小写形式的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`，不会把代理地址或凭据写入日志。
+
+这里不能假设“Node 内置 fetch 会自动读取 shell 代理变量”。如果开发机访问厂商 API 必须经过代理，忽略这一层会表现为连接超时，即使同一把 key 用 `curl` 能正常访问。
 
 查看 [`http.ts`](../../agent-code/src/providers/http.ts) 和 [`sse.ts`](../../agent-code/src/providers/sse.ts)。
 
@@ -220,7 +223,23 @@ text_delta
 
 ## 10. 配置和真实 smoke test
 
-不要把 key 写入源码、fixture、Git 配置或教程命令历史。当前 `.gitignore` 已排除 `.env` 和 `.env.*`（但允许无密钥的 `.env.example`）；本章示例使用临时环境变量：
+不要把 key 写入源码、fixture、Git 配置或教程命令历史。当前 `.gitignore` 已排除 `.env` 和 `.env.*`（但允许无密钥的 `.env.example`）。先创建只属于本机的配置：
+
+```bash
+cd agent-code
+cp .env.example .env.local
+chmod 600 .env.local
+```
+
+填入自己账户可用的 key 和 model 后，运行：
+
+```bash
+npm run test:smoke:local
+```
+
+该命令包含两类真实测试：一条直接文本流，以及一条 `live_smoke` 工具调用闭环。闭环会验证模型确实生成了工具参数、本地 handler 确实执行一次、工具结果确实回传给模型，并检查两次 provider response 的 request ID、finish reason 和 usage。
+
+也可以继续使用临时环境变量。只测试 GPT：
 
 只测试 GPT：
 
@@ -244,7 +263,11 @@ npm run test:smoke
 unset DEEPSEEK_API_KEY DEEPSEEK_MODEL
 ```
 
-两组测试分别判断自己的 key 和 model。没有配置的一组显示 skipped，不会阻止另一组运行。普通 `npm test` 也会跳过全部真实 API 测试。
+两组测试分别判断自己的 key 和 model。没有配置的一组显示 skipped，不会阻止另一组运行。未向测试进程导出凭据时，普通 `npm test` 会跳过全部真实 API 测试。
+
+`test:smoke:local` 只把 `.env.local` 中的四个 Provider 变量覆盖到子进程，不打印它们；这样 shell 中遗留的旧 key 或 model 不会优先于本地文件。代理变量仍从当前 shell 继承。
+
+如果 `OPENAI_API_KEY` 能访问 `/v1/models`，但 Responses 测试返回 `exceeded current quota`，这是账户用量或计费状态问题，不是 Provider 的认证、SSE 或代理实现问题。充值或换成有可用额度的 key 后再运行即可。
 
 模型 ID 不设默认值，是为了避免教程把已经迁移或即将弃用的名字长期固化在源码里。运行 smoke test 前请在对应厂商控制台或官方模型页面确认你账户可用的 ID。
 
@@ -256,7 +279,7 @@ unset DEEPSEEK_API_KEY DEEPSEEK_MODEL
 git diff chapter-03..chapter-04
 ```
 
-本章没有新增 npm 包。主要新增文件：
+本章新增 `undici`，用于 Node 进程的环境变量代理支持。主要新增文件：
 
 ```text
 src/providers/
@@ -290,6 +313,14 @@ npm run test:e2e
 ```
 
 可选联网验收使用上一节的 `npm run test:smoke`。没有 key 时不应把 smoke test 当作失败。
+
+本机使用 `.env.local` 时改为：
+
+```bash
+npm run test:smoke:local
+```
+
+四条 live case（两家 Provider 各自的文本流和工具闭环）都通过，才算完整的联网验收；账户额度不足属于外部前置条件未满足，应把具体厂商和错误保留在验收记录中。
 
 ## 13. 动手实验
 

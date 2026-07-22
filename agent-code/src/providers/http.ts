@@ -1,3 +1,5 @@
+import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici";
+
 import type { JsonObject } from "../protocol/json.js";
 import { ProviderError } from "./provider.js";
 
@@ -14,10 +16,60 @@ export interface StreamingHttpRequest {
   readonly provider: string;
 }
 
+let cachedDefaultFetch: FetchLike | undefined;
+
+/**
+ * Node's built-in fetch does not automatically honor the conventional proxy
+ * environment variables. Use Undici's environment-aware dispatcher when a
+ * proxy is configured, while keeping the zero-configuration path on native
+ * fetch.
+ */
+export function createDefaultFetch(
+  env: NodeJS.ProcessEnv = process.env,
+): FetchLike {
+  if (!hasProxyConfiguration(env)) return globalThis.fetch.bind(globalThis);
+
+  const httpProxy = proxyValue(env, "http_proxy", "HTTP_PROXY");
+  const httpsProxy = proxyValue(env, "https_proxy", "HTTPS_PROXY");
+  const noProxy = proxyValue(env, "no_proxy", "NO_PROXY");
+  const dispatcher = new EnvHttpProxyAgent({
+    ...(httpProxy === undefined ? {} : { httpProxy }),
+    ...(httpsProxy === undefined ? {} : { httpsProxy }),
+    ...(noProxy === undefined ? {} : { noProxy }),
+  });
+
+  return async (input, init) =>
+    (await undiciFetch(input, {
+      ...init,
+      dispatcher,
+    } as Parameters<typeof undiciFetch>[1])) as unknown as Response;
+}
+
+export function hasProxyConfiguration(env: NodeJS.ProcessEnv): boolean {
+  return (
+    proxyValue(env, "http_proxy", "HTTP_PROXY") !== undefined ||
+    proxyValue(env, "https_proxy", "HTTPS_PROXY") !== undefined
+  );
+}
+
+function getDefaultFetch(): FetchLike {
+  cachedDefaultFetch ??= createDefaultFetch();
+  return cachedDefaultFetch;
+}
+
+function proxyValue(
+  env: NodeJS.ProcessEnv,
+  lowercaseName: string,
+  uppercaseName: string,
+): string | undefined {
+  const value = env[lowercaseName] ?? env[uppercaseName];
+  return value === undefined || value.length === 0 ? undefined : value;
+}
+
 export async function postJsonStream(
   request: StreamingHttpRequest,
 ): Promise<Response> {
-  const fetcher = request.fetch ?? globalThis.fetch;
+  const fetcher = request.fetch ?? getDefaultFetch();
   let response: Response;
 
   try {
