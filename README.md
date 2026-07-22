@@ -20,5 +20,6 @@ chapter-01 ... chapter-23
 - [x] 第 3 章：Mock Provider 和最小 Agent Loop
 - [x] 第 4 章：GPT / DeepSeek Provider 和流式工具调用
 - [x] 第 5 章：Tool Registry、Schema 和结果信封
+- [x] 第 6 章：项目发现、读取、搜索和 Patch 编辑
 
 其余章节见 [实战教程设计稿](./PRACTICAL_TUTORIAL.md)。
