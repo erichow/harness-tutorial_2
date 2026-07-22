@@ -16,7 +16,7 @@ chapter-01 ... chapter-23
 ## 当前进度
 
 - [x] 第 1 章：项目骨架和章节契约
-- [ ] 第 2 章：类型化消息和事件协议
+- [x] 第 2 章：类型化消息和事件协议
 - [ ] 第 3 章：Mock Provider 和最小 Agent Loop
 - [ ] 第 4 章：GPT / DeepSeek Provider 和流式工具调用
 
