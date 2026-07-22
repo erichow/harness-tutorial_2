@@ -104,6 +104,17 @@ const events: RuntimeEvent[] = [
   {
     ...baseEvent,
     sequence: 6,
+    type: "permission_decided",
+    requestId: "permission-1",
+    toolCallId: "call-2",
+    toolName: "shell",
+    decision: "allow",
+    scope: "once",
+    reason: "User approved",
+  },
+  {
+    ...baseEvent,
+    sequence: 7,
     type: "usage",
     inputTokens: 10,
     outputTokens: 4,
@@ -111,7 +122,7 @@ const events: RuntimeEvent[] = [
   },
   {
     ...baseEvent,
-    sequence: 7,
+    sequence: 8,
     type: "provider_response",
     provider: "openai",
     requestId: "resp_123",
@@ -119,13 +130,13 @@ const events: RuntimeEvent[] = [
   },
   {
     ...baseEvent,
-    sequence: 8,
+    sequence: 9,
     type: "error",
     category: "provider",
     message: "rate limited",
     retryable: true,
   },
-  { ...baseEvent, sequence: 9, type: "turn_finished", reason: "completed" },
+  { ...baseEvent, sequence: 10, type: "turn_finished", reason: "completed" },
 ];
 
 describe("transcript serialization", () => {

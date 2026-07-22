@@ -52,6 +52,24 @@ export type InteractivePermissionHandler = (
   signal: AbortSignal,
 ) => Promise<"allow_once" | "allow_session" | "deny">;
 
+export type PermissionAuthorizationEvent =
+  | {
+      readonly type: "permission_requested";
+      readonly request: NormalizedPermissionRequest;
+      readonly reason: string;
+    }
+  | {
+      readonly type: "permission_decided";
+      readonly request: NormalizedPermissionRequest;
+      readonly decision: "allow" | "deny";
+      readonly scope?: "once" | "session" | undefined;
+      readonly reason: string;
+    };
+
+export type PermissionAuthorizationObserver = (
+  event: PermissionAuthorizationEvent,
+) => void | Promise<void>;
+
 export interface PermissionEngineOptions {
   readonly trust: WorkspaceTrust;
   readonly managedRules?: readonly PermissionRule[] | undefined;
@@ -122,19 +140,25 @@ export class PermissionEngine {
     this.#sessionGrants.clear();
   }
 
-  async authorize(request: PermissionRequest, signal: AbortSignal): Promise<PermissionDecision> {
+  async authorize(
+    request: PermissionRequest,
+    signal: AbortSignal,
+    observe?: PermissionAuthorizationObserver,
+  ): Promise<PermissionDecision> {
     signal.throwIfAborted();
     const normalized = normalizePermissionRequest(request);
     const hardDeny = this.#findHardDeny(normalized);
     if (hardDeny !== undefined) {
       const reason = ruleReason(hardDeny);
       this.#record(normalized, "deny", reason);
+      await observe?.({ type: "permission_decided", request: normalized, decision: "deny", reason });
       return { kind: "deny", reason };
     }
 
     if (this.#sessionGrants.has(normalized.fingerprint)) {
       const reason = "Allowed by an exact normalized session grant.";
       this.#record(normalized, "allow", reason, "session");
+      await observe?.({ type: "permission_decided", request: normalized, decision: "allow", scope: "session", reason });
       return { kind: "allow", scope: "session" };
     }
 
@@ -148,29 +172,36 @@ export class PermissionEngine {
 
     if (initial.kind === "deny") {
       this.#record(normalized, "deny", initial.reason);
+      await observe?.({ type: "permission_decided", request: normalized, decision: "deny", reason: initial.reason });
       return initial;
     }
     if (initial.kind === "allow") {
-      this.#record(normalized, "allow", explicitAllow === undefined ? "Allowed by default policy." : ruleReason(explicitAllow), initial.scope);
+      const reason = explicitAllow === undefined ? "Allowed by default policy." : ruleReason(explicitAllow);
+      this.#record(normalized, "allow", reason, initial.scope);
+      await observe?.({ type: "permission_decided", request: normalized, decision: "allow", scope: initial.scope, reason });
       return initial;
     }
 
     if (this.#decide === undefined) {
       const reason = `${initial.reason} No interactive permission handler is available; denied safely.`;
       this.#record(normalized, "deny", reason);
+      await observe?.({ type: "permission_decided", request: normalized, decision: "deny", reason });
       return { kind: "deny", reason };
     }
 
+    await observe?.({ type: "permission_requested", request: normalized, reason: initial.reason });
     const answer = await this.#decide(normalized, initial.reason, signal);
     signal.throwIfAborted();
     if (answer === "deny") {
       const reason = `User denied the request: ${initial.reason}`;
       this.#record(normalized, "deny", reason);
+      await observe?.({ type: "permission_decided", request: normalized, decision: "deny", reason });
       return { kind: "deny", reason };
     }
     const scope = answer === "allow_session" ? "session" : "once";
     if (scope === "session") this.#sessionGrants.add(normalized.fingerprint);
     this.#record(normalized, "allow", initial.reason, scope);
+    await observe?.({ type: "permission_decided", request: normalized, decision: "allow", scope, reason: initial.reason });
     return { kind: "allow", scope };
   }
 

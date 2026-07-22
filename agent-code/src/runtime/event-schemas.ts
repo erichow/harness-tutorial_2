@@ -55,6 +55,18 @@ export const runtimeEventSchema = z.discriminatedUnion("type", [
   z
     .object({
       ...eventBase,
+      type: z.literal("permission_decided"),
+      requestId: z.string().min(1),
+      toolCallId: z.string().min(1),
+      toolName: z.string().min(1),
+      decision: z.enum(["allow", "deny"]),
+      scope: z.enum(["once", "session"]).optional(),
+      reason: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBase,
       type: z.literal("usage"),
       inputTokens: z.number().int().nonnegative(),
       outputTokens: z.number().int().nonnegative(),

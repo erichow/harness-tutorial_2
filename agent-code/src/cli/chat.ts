@@ -1,13 +1,10 @@
 import { resolve } from "node:path";
 
-import { createWorkspaceFileTools } from "../tools/files/index.js";
 import { createPlatformSandboxRunner } from "../tools/shell/sandbox-runner.js";
-import { createShellTools } from "../tools/shell/index.js";
-import { ToolRegistry } from "../tools/registry.js";
 import { OpenAIResponsesProvider } from "../providers/openai-responses.js";
 import { DeepSeekChatProvider } from "../providers/deepseek-chat.js";
 import type { Provider } from "../providers/provider.js";
-import { runTurn } from "../runtime/agent.js";
+import { CodingAgentRuntime } from "../runtime/coding-agent.js";
 import { PermissionEngine } from "../security/permissions.js";
 import { WorkspaceTrust } from "../security/trust.js";
 import { NodeInputController } from "./input.js";
@@ -77,17 +74,19 @@ export async function runChatCli(
     trust,
     decide: createTerminalPermissionHandler(input, renderer),
   });
-  const fileTools = await createWorkspaceFileTools({ workspaceRoot: trust.workspaceRoot });
-  const shell = await createShellTools({
+  const runtime = await CodingAgentRuntime.create({
+    provider,
     workspaceRoot: trust.workspaceRoot,
-    runner: createPlatformSandboxRunner({
-      workspaceRoot: trust.workspaceRoot,
-      allowNetwork: false,
-      fallback: "closed",
-    }),
+    permissions,
+    shell: {
+      runner: createPlatformSandboxRunner({
+        workspaceRoot: trust.workspaceRoot,
+        allowNetwork: false,
+        fallback: "closed",
+      }),
+    },
   });
-  const tools = new ToolRegistry([...fileTools, ...shell.tools], { permissions }).createExecutor();
-  const sandbox = shell.processManager.sandboxStatus;
+  const sandbox = runtime.sandboxStatus;
   const session = new CliSession({
     input,
     renderer,
@@ -99,9 +98,7 @@ export async function runChatCli(
       trusted: trust.trusted,
       sandbox: `${sandbox.filesystem}, network ${sandbox.network}`,
     },
-    runTurn: async (request) => await runTurn({
-      provider,
-      tools,
+    runTurn: async (request) => await runtime.runTurn({
       transcript: request.transcript,
       signal: request.signal,
       emit: request.emit,
@@ -112,7 +109,7 @@ export async function runChatCli(
     await session.run();
     return 0;
   } finally {
-    await shell.processManager.dispose();
+    await runtime.dispose();
     input.close();
   }
 }

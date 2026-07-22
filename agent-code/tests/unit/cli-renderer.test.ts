@@ -147,4 +147,27 @@ describe("TerminalRenderer", () => {
     expect(input.prompts).toHaveLength(2);
     expect(sink.text()).toContain("Please enter y, a, or n.");
   });
+
+  it("does not print a second permission heading after the runtime event", () => {
+    const sink = output();
+    const renderer = new TerminalRenderer({ output: sink.target });
+    const request = normalizePermissionRequest({
+      toolName: "apply_patch",
+      input: { path: "src/a.ts" },
+      sideEffects: ["write_workspace"],
+    });
+    renderer.render({
+      ...base,
+      sequence: 0,
+      type: "permission_requested",
+      requestId: request.fingerprint,
+      toolCallId: "patch-1",
+      toolName: "apply_patch",
+      reason: "edit",
+    });
+
+    renderer.beginPermission(request, "edit");
+
+    expect(sink.text().match(/Permission requested by apply_patch/gu)).toHaveLength(1);
+  });
 });

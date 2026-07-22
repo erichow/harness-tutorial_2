@@ -16,6 +16,9 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
+    "test:mvp": "vitest run --config vitest.config.ts tests/integration/mvp-flow.test.ts",
+    "test:mvp:live": "vitest run --config vitest.config.ts tests/integration/mvp-live-smoke.test.ts",
+    "test:mvp:live:local": "node scripts/run-mvp-live-local.mjs",
     "test:smoke": "vitest run --config vitest.config.ts tests/integration/provider-smoke.test.ts",
     "test:smoke:local": "node scripts/run-smoke-local.mjs",
     "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts"

@@ -41,6 +41,16 @@ export interface PermissionRequestedEvent extends EventBase {
   readonly reason: string;
 }
 
+export interface PermissionDecidedEvent extends EventBase {
+  readonly type: "permission_decided";
+  readonly requestId: string;
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly decision: "allow" | "deny";
+  readonly scope?: "once" | "session" | undefined;
+  readonly reason: string;
+}
+
 export interface UsageEvent extends EventBase {
   readonly type: "usage";
   readonly inputTokens: number;
@@ -83,6 +93,7 @@ export type RuntimeEvent =
   | ToolCallStartedEvent
   | ToolCallFinishedEvent
   | PermissionRequestedEvent
+  | PermissionDecidedEvent
   | UsageEvent
   | ProviderResponseEvent
   | ErrorEvent

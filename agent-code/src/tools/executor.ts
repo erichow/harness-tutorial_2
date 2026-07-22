@@ -8,8 +8,27 @@ import type { ToolDefinition, ToolHandlerOutput } from "./tool.js";
 
 export type { ToolDefinition } from "./tool.js";
 
+export type ToolPermissionEvent =
+  | {
+      readonly type: "permission_requested";
+      readonly requestId: string;
+      readonly toolCallId: string;
+      readonly toolName: string;
+      readonly reason: string;
+    }
+  | {
+      readonly type: "permission_decided";
+      readonly requestId: string;
+      readonly toolCallId: string;
+      readonly toolName: string;
+      readonly decision: "allow" | "deny";
+      readonly scope?: "once" | "session" | undefined;
+      readonly reason: string;
+    };
+
 export interface ToolExecutionContext {
   readonly signal: AbortSignal;
+  readonly emitPermission?: ((event: ToolPermissionEvent) => void | Promise<void>) | undefined;
 }
 
 export interface ToolImplementation {

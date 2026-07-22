@@ -24,22 +24,27 @@ export interface MockProviderResponse {
   readonly events: readonly MockProviderEvent[];
 }
 
+export type MockProviderStep =
+  | MockProviderResponse
+  | ((request: ProviderRequest) => MockProviderResponse | Promise<MockProviderResponse>);
+
 /** A deterministic provider for tests, examples, and offline development. */
 export class MockProvider implements Provider {
   readonly name = "mock";
   readonly requests: ProviderRequest[] = [];
   #nextResponse = 0;
 
-  constructor(private readonly responses: readonly MockProviderResponse[]) {}
+  constructor(private readonly responses: readonly MockProviderStep[]) {}
 
   async *stream(request: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
     this.requests.push(request);
-    const response = this.responses[this.#nextResponse];
+    const step = this.responses[this.#nextResponse];
     this.#nextResponse += 1;
 
-    if (response === undefined) {
+    if (step === undefined) {
       throw new Error(`MockProvider has no scripted response at index ${this.#nextResponse - 1}`);
     }
+    const response = typeof step === "function" ? await step(request) : step;
 
     for (const event of response.events) {
       if (event.type === "wait_for_abort") {

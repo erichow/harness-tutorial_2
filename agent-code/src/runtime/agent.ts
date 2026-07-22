@@ -7,7 +7,7 @@ import {
   type Provider,
   type ProviderStreamEvent,
 } from "../providers/provider.js";
-import type { ToolExecutor } from "../tools/executor.js";
+import type { ToolExecutor, ToolPermissionEvent } from "../tools/executor.js";
 import { createToolErrorResult } from "../tools/result.js";
 import { isCancellation, throwIfCancelled } from "./cancellation.js";
 import {
@@ -149,7 +149,10 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
         throwIfCancelled(signal);
         let result: ToolResultBlock;
         try {
-          result = await options.tools.execute(call, { signal });
+          result = await options.tools.execute(call, {
+            signal,
+            emitPermission: async (event) => await emitPermissionEvent(emit, event),
+          });
         } catch (error) {
           if (isCancellation(error, signal)) throw error;
           const message = error instanceof Error ? error.message : String(error);
@@ -198,6 +201,17 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
     await emitError(emit, category, message, retryable);
     return await finish("error");
   }
+}
+
+async function emitPermissionEvent(
+  emit: (event: RuntimeEventPayload) => Promise<void>,
+  event: ToolPermissionEvent,
+): Promise<void> {
+  if (event.type === "permission_requested") {
+    await emit(event);
+    return;
+  }
+  await emit(event);
 }
 
 interface ConsumedProviderResponse {

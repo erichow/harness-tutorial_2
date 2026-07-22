@@ -26,6 +26,7 @@ export class TerminalRenderer {
   readonly #deferred: DeferredOutput[] = [];
   #streamKind: StreamKind | undefined;
   #permissionActive = false;
+  #announcedPermissionRequest: string | undefined;
 
   constructor(options: TerminalRendererOptions) {
     this.#output = options.output;
@@ -62,7 +63,10 @@ export class TerminalRenderer {
     if (this.#permissionActive) throw new Error("A permission prompt is already active");
     this.#endStream();
     this.#permissionActive = true;
-    this.#writeStatus("?", "yellow", `Permission requested by ${request.toolName}`);
+    if (this.#announcedPermissionRequest !== request.fingerprint) {
+      this.#writeStatus("?", "yellow", `Permission requested by ${request.toolName}`);
+    }
+    this.#announcedPermissionRequest = undefined;
     this.#writeLine(`  Resources: ${request.resources.join(", ") || "none"}`);
     this.#writeLine(`  Reason: ${reason}`);
     const detail = permissionDetail(request);
@@ -121,7 +125,10 @@ export class TerminalRenderer {
       }
       case "permission_requested":
         this.#endStream();
+        this.#announcedPermissionRequest = event.requestId;
         this.#writeStatus("?", "yellow", `Permission requested by ${event.toolName}: ${event.reason}`);
+        return;
+      case "permission_decided":
         return;
       case "error":
         this.#endStream();

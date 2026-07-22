@@ -123,7 +123,24 @@ export class ToolRegistry {
         toolName: call.name,
         input: call.input,
         sideEffects: registered.tool.sideEffects,
-      }, context.signal);
+      }, context.signal, async (event) => {
+        const common = {
+          requestId: event.request.fingerprint,
+          toolCallId: call.id,
+          toolName: call.name,
+          reason: event.reason,
+        };
+        if (event.type === "permission_requested") {
+          await context.emitPermission?.({ type: event.type, ...common });
+        } else {
+          await context.emitPermission?.({
+            type: event.type,
+            ...common,
+            decision: event.decision,
+            ...(event.scope === undefined ? {} : { scope: event.scope }),
+          });
+        }
+      });
       if (decision.kind !== "allow") {
         return createToolErrorResult(
           call.id,
