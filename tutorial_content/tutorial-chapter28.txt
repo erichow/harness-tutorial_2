@@ -1,0 +1,600 @@
+/* tutorial-chapter28.jsx — Chapter 28 full content */
+
+function Chapter28() {
+  return (
+    <section className="chapter" id="ch28">
+      <h2 className="chapter-title">
+        <span className="ch-num">28</span>
+        代码分析与项目理解
+      </h2>
+      <p className="chapter-meta">Code Analysis & Project Understanding　·　从"按需读取"到"主动理解"——项目结构、依赖图、语义摘要</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        到目前为止，agent 对项目代码的理解是被动的——用户让读什么，它就读什么。但一个高效的 coding agent 需要<strong>主动理解</strong>项目结构：知道哪些文件是入口、哪些是配置、哪些是业务逻辑、它们之间如何依赖。
+        <br /><br />
+        这一章要构建 <code>CodeContextManager</code>——一个在上下文窗口之外维护"项目画像"的层。它不直接给模型喂项目结构文本，而是在模型需要时提供精准的、预处理的代码快照。
+      </div>
+
+      <Outcomes items={[
+        "构建 CodeContextManager —— 项目结构树 + 文件角色分类 + 语义摘要",
+        "实现依赖图构建（从 import 语句到文件间关系）",
+        "设计上下文预算分配——哪些文件值得全文，哪些只保留摘要",
+        "实现 extract_code_context 工具——给定符号名，提取定义 + 附近引用",
+        "理解语义 vs 文本搜索的适用边界",
+      ]} />
+
+      <Section id="ch28-1" num="28.1" title="被动读取 vs 主动理解">
+        <p>两种代码消费模式有本质区别：</p>
+
+        <CmpTable
+          headers={["维度", "被动读取", "主动理解"]}
+          rows={[
+            ["触发器", "用户/模型指定文件名", "agent 自己决定哪些文件重要"],
+            ["信息粒度", "全文或 viewport 片段", "摘要 + 结构 + 依赖关系"],
+            ["时机", "运行时按需", "项目加载时建索引，运行时增量更新"],
+            ["上下文消耗", "每次读消耗 window 空间", "只消耗经过筛选的最小单位"],
+            ["可回答的问题", "这个文件里有什么", "这个项目是怎么组织的、关键路径在哪"],
+          ]}
+        />
+
+        <p><code>CodeContextManager</code> 站在中间：它离线构建索引，在线提供查询。模型不需要"记住"项目结构——只需在需要时调用工具查询。</p>
+
+        <Callout kind="key">
+          <p>一个 300 文件的项目，模型不可能（也不应该）在上下文窗口里记住全部结构。<strong>CodeContextManager 不是在窗口中存储结构，而是让模型能用一次工具调用就回答"这个项目的关键文件是哪些"。</strong></p>
+        </Callout>
+      </Section>
+
+      <Section id="ch28-2" num="28.2" title="项目结构树">
+        <p>最简单的主动理解工具：定期扫描项目目录，构建一棵树状索引。类似于第 24 章的 <code>list_directory</code>，但递归、缓存、带有文件大小统计。</p>
+
+        <CodeBlock filename="src/harness/context/code-context.ts" lang="typescript">{`import { readdir, stat } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
+
+interface TreeNode {
+  name: string;
+  type: "file" | "dir";
+  size?: number;
+  children?: TreeNode[];
+}
+
+export class CodeContextManager {
+  private projectRoot: string;
+  private tree: TreeNode | null = null;
+  private lastBuilt: number = 0;
+  private readonly cacheTTLMs: number;
+
+  constructor(root?: string, cacheTTLMs: number = 30_000) {
+    this.projectRoot = resolve(root || process.cwd());
+    this.cacheTTLMs = cacheTTLMs;
+  }
+
+  async getProjectTree(maxDepth: number = 3): Promise<TreeNode> {
+    if (this.tree && Date.now() - this.lastBuilt < this.cacheTTLMs) {
+      return this.tree;
+    }
+
+    const skipDirs = new Set([
+      "node_modules", ".git", "dist", "build", ".next",
+      "__pycache__", ".venv", "venv", ".turbo", ".cache",
+    ]);
+
+    const skipFiles = new Set([
+      ".DS_Store", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    ]);
+
+    const buildTree = async (dir: string, depth: number): Promise<TreeNode> => {
+      const name = relative(this.projectRoot, dir) || ".";
+      const entries = await readdir(dir, { withFileTypes: true });
+
+      const children: TreeNode[] = [];
+      for (const entry of entries) {
+        if (skipDirs.has(entry.name) || skipFiles.has(entry.name)) continue;
+
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (depth > 0) {
+            children.push(await buildTree(fullPath, depth - 1));
+          } else {
+            // 超过深度时只标记目录名，不展开
+            children.push({ name: entry.name + "/", type: "dir" });
+          }
+        } else {
+          const info = await stat(fullPath);
+          children.push({
+            name: entry.name,
+            type: "file",
+            size: info.size,
+          });
+        }
+      }
+
+      children.sort((a, b) => {
+        if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      return { name, type: "dir", children };
+    };
+
+    this.tree = await buildTree(this.projectRoot, maxDepth);
+    this.lastBuilt = Date.now();
+    return this.tree;
+  }
+
+  /** 生成适合模型理解的文本化结构 */
+  async formatProjectTree(maxDepth: number = 3): Promise<string> {
+    const tree = await this.getProjectTree(maxDepth);
+    return this.formatNode(tree, "");
+  }
+
+  private formatNode(node: TreeNode, indent: string): string {
+    if (node.type === "file") {
+      const sizeStr = node.size ? \` (\${formatSize(node.size)})\` : "";
+      return indent + node.name + sizeStr;
+    }
+
+    const lines: string[] = [indent + (node.name === "." ? "" : node.name + "/")];
+    if (node.children) {
+      for (const child of node.children) {
+        lines.push(this.formatNode(child, indent + "  "));
+      }
+    }
+    return lines.join("\n");
+  }
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return \`\${bytes}B\`;
+  if (bytes < 1024 * 1024) return \`\${(bytes / 1024).toFixed(0)}KB\`;
+  return \`\${(bytes / (1024 * 1024)).toFixed(1)}MB\`;
+}`}</CodeBlock>
+
+        <Callout kind="tip" title="缓存 TTL 为什么是 30 秒？">
+          <p>很短。因为 agent 可能在编辑文件后立即查询项目结构。如果缓存太久（5 分钟），新创建的文件不会出现在结构树里。30 秒保证 agent 在"创建文件 → 查询结构"的流程中看到新文件，又不会对每次读文件都重建树。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch28-3" num="28.3" title="文件角色分类">
+        <p>不是所有文件对 coding agent 同等重要。给文件打角色标签可以帮助 budget 分配。</p>
+
+        <CodeBlock filename="src/harness/context/code-context.ts" lang="typescript">{`type FileRole =
+  | "entrypoint"    // index.ts, main.ts, app.tsx
+  | "config"        // config files, .env, tsconfig.json
+  | "schema"        // types, interfaces, data models
+  | "business-logic" // core logic
+  | "test"          // *.test.*, *.spec.*, __tests__
+  | "utility"       // shared utilities, helpers
+  | "ui-component"  // React/Vue components
+  | "style"         // CSS, SCSS, styled-components
+  | "documentation" // .md, .mdx
+  | "unknown";
+
+const ROLE_PATTERNS: Array<{ role: FileRole; patterns: RegExp[] }> = [
+  {
+    role: "entrypoint",
+    patterns: [/^index\.[jt]sx?$/, /^main\.[jt]sx?$/, /^app\.[jt]sx?$/],
+  },
+  {
+    role: "config",
+    patterns: [/\.config\.[jt]s$/, /^tsconfig\./, /^\.env/, /^eslint/, /^prettier/],
+  },
+  {
+    role: "test",
+    patterns: [/\.test\.[jt]sx?$/, /\.spec\.[jt]sx?$/, /__tests__\//, /\.test\.py$/],
+  },
+  {
+    role: "schema",
+    patterns: [/\.d\.ts$/, /^types\//, /^interfaces\//, /models?\//, /^schema\//],
+  },
+  {
+    role: "ui-component",
+    patterns: [/\.tsx$/, /\.jsx$/, /components?\//],
+  },
+  {
+    role: "style",
+    patterns: [/\.css$/, /\.scss$/, /\.less$/, /\.module\./],
+  },
+  {
+    role: "documentation",
+    patterns: [/\.md$/, /\.mdx$/, /^docs\//],
+  },
+  {
+    role: "utility",
+    patterns: [/utils?\//, /helpers?\//, /lib\//],
+  },
+];
+
+function classifyFile(filePath: string): FileRole {
+  const basename = filePath.split("/").pop() || filePath;
+  for (const { role, patterns } of ROLE_PATTERNS) {
+    if (patterns.some(p => p.test(basename) || p.test(filePath))) {
+      return role;
+    }
+  }
+
+  // Default: files in src/ that don't match any pattern = business logic
+  if (filePath.startsWith("src/") && /\.(ts|js|py)$/.test(filePath)) {
+    return "business-logic";
+  }
+
+  return "unknown";
+}`}</CodeBlock>
+
+        <Callout kind="note" title="为什么需要角色分类？">
+          <p>上下文预算分配可以根据角色差异化：<code>entrypoint</code> 和 <code>config</code> 文件小但重要——给全文预算；<code>test</code> 文件大但不紧急——只给摘要；<code>node_modules</code> 完全跳过。这种策略让 agent 能用有限窗口理解整个项目骨架。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch28-4" num="28.4" title="依赖图构建">
+        <p>从 import/require 语句中提取文件间的依赖关系，构建一个有向图。这是 agent 理解"修改这个文件会影响哪些文件"的关键工具。</p>
+
+        <CodeBlock filename="src/harness/context/code-context.ts" lang="typescript">{`interface DepGraph {
+  [file: string]: {
+    imports: string[];    // 这个文件导入的文件
+    importedBy: string[];  // 导入这个文件的文件
+  };
+}
+
+export class CodeContextManager {
+  // ... 前面的代码
+
+  private depGraph: DepGraph | null = null;
+
+  /** 扫描所有源文件，构建依赖图 */
+  async buildDependencyGraph(): Promise<DepGraph> {
+    if (this.depGraph) return this.depGraph;
+
+    const graph: DepGraph = {};
+    const srcFiles = await this.findSourceFiles();
+
+    for (const file of srcFiles) {
+      const fullPath = join(this.projectRoot, file);
+      try {
+        const content = await readFile(fullPath, "utf-8");
+        const imports = this.extractImports(content, file);
+        graph[file] = { imports, importedBy: [] };
+      } catch {
+        graph[file] = { imports: [], importedBy: [] };
+      }
+    }
+
+    // 构建反向引用
+    for (const [file, deps] of Object.entries(graph)) {
+      for (const imp of deps.imports) {
+        if (graph[imp]) {
+          graph[imp].importedBy.push(file);
+        }
+      }
+    }
+
+    this.depGraph = graph;
+    return graph;
+  }
+
+  /** 简单 import 提取——支持 ES module 和 CommonJS */
+  private extractImports(content: string, filePath: string): string[] {
+    const imports: string[] = [];
+    const lines = content.split("\n");
+
+    for (const line of lines) {
+      // import ... from "X"
+      const esMatch = line.match(/import\s+.*\s+from\s+["']([^"']+)["']/);
+      if (esMatch) {
+        const resolved = this.resolveModulePath(esMatch[1], filePath);
+        if (resolved) imports.push(resolved);
+      }
+
+      // require("X")
+      const cjsMatch = line.match(/require\s*\(\s*["']([^"']+)["']\s*\)/);
+      if (cjsMatch) {
+        const resolved = this.resolveModulePath(cjsMatch[1], filePath);
+        if (resolved) imports.push(resolved);
+      }
+    }
+
+    return imports;
+  }
+
+  /** 简易的模块解析——仅处理相对路径 */
+  private resolveModulePath(specifier: string, fromFile: string): string | null {
+    if (!specifier.startsWith(".") && !specifier.startsWith("/")) {
+      return null; // 外部 package——跳过
+    }
+
+    // 简化：假设 specifier 是要找的 .ts/.tsx 文件
+    const dir = dirname(join(this.projectRoot, fromFile));
+    const resolved = resolve(dir, specifier);
+    const extensions = [".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx"];
+
+    for (const ext of extensions) {
+      const attempt = resolved + ext;
+      if (existsSync(attempt)) {
+        return relative(this.projectRoot, attempt);
+      }
+    }
+
+    return null;
+  }
+
+  /** 回答：修改这个文件会影响哪些其他文件？ */
+  async getAffectedFiles(filePath: string): Promise<string[]> {
+    const graph = await this.buildDependencyGraph();
+    const file = relative(this.projectRoot, resolve(this.projectRoot, filePath));
+
+    // BFS 查找所有受影响的文件（直接和传递依赖）
+    const affected: Set<string> = new Set();
+    const queue = [file];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const deps = graph[current];
+      if (!deps) continue;
+
+      for (const importer of deps.importedBy) {
+        if (!affected.has(importer)) {
+          affected.add(importer);
+          queue.push(importer);
+        }
+      }
+    }
+
+    return Array.from(affected);
+  }
+}`}</CodeBlock>
+
+        <Callout kind="warn" title="这里的解析是高度简化的">
+          <p>真正的模块解析需要处理：TypeScript 的 paths/aliases、barrel exports、package.json exports、node_modules 的逐层查找、条件导出。生产级实现应该用 TypeScript Compiler API（<code>ts.resolveModuleName</code>）而不是手写解析。<br />
+          但教学上这段代码展示了核心思想——在简单项目中已经能工作。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch28-5" num="28.5" title="extract_code_context 工具">
+        <p>最实用的代码分析工具：给定一个符号名，提取它的定义位置和附近的关键引用。</p>
+
+        <CodeBlock filename="src/harness/tools/code-analysis.ts" lang="typescript">{`import { type Tool } from "../tools/types.js";
+import { CodeContextManager } from "../context/code-context.js";
+
+// 跨工具共享同一个 CodeContextManager 实例
+let contextManager: CodeContextManager;
+
+export function setCodeContextManager(mgr: CodeContextManager): void {
+  contextManager = mgr;
+}
+
+export const extractCodeContextTool: Tool = {
+  name: "extract_code_context",
+  description: "在代码库中搜索一个符号（函数、类、变量）的定义和引用。返回定义文件和关键引用位置。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      symbol: { type: "string", description: "要搜索的符号名称" },
+      maxResults: { type: "number", description: "最大结果数（默认 10）" },
+    },
+    required: ["symbol"],
+  },
+  async handler(args: { symbol: string; maxResults?: number }): Promise<string> {
+    // 使用 grep 风格搜索来定位符号
+    const maxResults = Math.min(args.maxResults ?? 10, 50);
+    const root = process.cwd();
+    const results: Array<{ file: string; line: number; text: string }> = [];
+    const seenFiles = new Set<string>();
+
+    // 递归搜索 src/ 目录
+    const searchDir = async (dir: string) => {
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name === "node_modules" || entry.name === ".git" || entry.name.startsWith(".")) continue;
+        const fullPath = join(dir, entry.name);
+
+        if (entry.isDirectory()) {
+          await searchDir(fullPath);
+        } else if (/\.(ts|tsx|js|jsx|py|rs|go)$/.test(entry.name)) {
+          const content = await readFile(fullPath, "utf-8");
+          const lines = content.split("\n");
+          for (let i = 0; i < lines.length; i++) {
+            // 用正则查找符号定义（export/function/class/const + symbol）
+            if (lines[i].includes(args.symbol)) {
+              results.push({
+                file: relative(root, fullPath),
+                line: i + 1,
+                text: lines[i].trim(),
+              });
+              if (results.length >= maxResults * 2) break;
+            }
+          }
+        }
+        if (results.length >= maxResults * 2) break;
+      }
+    };
+
+    await searchDir(root);
+
+    // 优先显示定义（export function/class/interface），再显示引用
+    const definitions = results.filter(r =>
+      /(export|function|class|interface|type|const|let|var|def|fn)/.test(r.text) &&
+      r.text.includes(args.symbol)
+    );
+    const references = results.filter(r => !definitions.includes(r));
+
+    const lines: string[] = [];
+
+    if (definitions.length > 0) {
+      lines.push(\`定义 (\${definitions.length} 处):\`);
+      definitions.slice(0, maxResults).forEach(r =>
+        lines.push(\`  \${r.file}:\${r.line}: \${r.text}\`)
+      );
+    }
+
+    if (references.length > 0) {
+      lines.push(\`\n引用 (\${references.length} 处):\`);
+      references.slice(0, maxResults).forEach(r =>
+        lines.push(\`  \${r.file}:\${r.line}: \${r.text}\`)
+      );
+    }
+
+    if (lines.length === 0) {
+      return \`未找到符号 '\${args.symbol}'。\`;
+    }
+
+    return lines.join("\n");
+  },
+};`}</CodeBlock>
+
+        <Callout kind="key" title="extract_code_context 与第 27 章 LSP 对比">
+          <p>这个工具和 LSP 的 <code>lsp_definition</code>/<code>lsp_references</code> 做什么区别？</p>
+          <p><strong>LSP 版本</strong>（ch27）更精确——它使用语言的编译器/语言服务器，理解类型别名、重导出、泛型实例化。但这个版本（ch28）更轻量——不需要启动 LSP server、不需要等待索引。适用于快速探索和没有 LSP 支持的语言。<br />
+          产品策略：<strong>先尝试 LSP（如果可用），回退到文本搜索。</strong></p>
+        </Callout>
+      </Section>
+
+      <Section id="ch28-6" num="28.6" title="上下文预算分配">
+        <p>把 Project Tree、角色分类、依赖图组合起来，实现智能的上下文预算分配。</p>
+
+        <CodeBlock filename="src/harness/context/code-context.ts" lang="typescript">{`interface BudgetAllocation {
+  fullContent: string[];    // 需要全文的文件
+  summaries: string[];       // 只需要摘要的文件
+  skipped: string[];         // 跳过
+}
+
+export class CodeContextManager {
+  /** 为给定任务分配上下文预算 */
+  async allocateBudget(
+    taskDescription: string,
+    budgetTokens: number = 20_000,
+  ): Promise<BudgetAllocation> {
+    const tree = await this.getProjectTree();
+    const graph = await this.buildDependencyGraph();
+    const files = await this.collectAllFiles();
+
+    // 角色优先级
+    const rolePriority: Record<FileRole, number> = {
+      entrypoint: 5,
+      config: 4,
+      "business-logic": 3,
+      schema: 3,
+      utility: 2,
+      "ui-component": 2,
+      test: 1,
+      style: 1,
+      documentation: 1,
+      unknown: 1,
+    };
+
+    // 按角色 + 文件大小排序
+    const scored = files.map(f => ({
+      path: f,
+      role: classifyFile(f),
+      score: rolePriority[classifyFile(f)] ?? 1,
+      // 被很多文件依赖的得分更高
+      deps: (graph[f]?.importedBy?.length ?? 0),
+    }));
+
+    // 进入 top-K 的给全文，其他的给摘要
+    scored.sort((a, b) => (b.score + b.deps) - (a.score + a.deps));
+
+    const fullContent: string[] = [];
+    const summaries: string[] = [];
+    const skipped: string[] = [];
+    let usedBudget = 0;
+
+    for (const file of scored) {
+      if (usedBudget >= budgetTokens) {
+        skipped.push(file.path);
+        continue;
+      }
+
+      const estimatedTokens = await this.estimateTokens(file.path);
+      if (usedBudget + estimatedTokens <= budgetTokens) {
+        fullContent.push(file.path);
+        usedBudget += estimatedTokens;
+      } else if (usedBudget + Math.ceil(estimatedTokens * 0.2) <= budgetTokens) {
+        summaries.push(file.path);
+        usedBudget += Math.ceil(estimatedTokens * 0.2);
+      } else {
+        skipped.push(file.path);
+      }
+    }
+
+    return { fullContent, summaries, skipped };
+  }
+
+  private async estimateTokens(filePath: string): Promise<number> {
+    try {
+      const content = await readFile(join(this.projectRoot, filePath), "utf-8");
+      // 粗略估算：1 token ≈ 4 字符
+      return Math.ceil(content.length / 4);
+    } catch {
+      return 0;
+    }
+  }
+}`}</CodeBlock>
+
+        <Callout kind="note" title="预算分配的哲学">
+          <p>这里隐含一个重要决策：<strong>是由 agent 自己决定读哪些文件（通过多次 read_file），还是由 CodeContextManager 预先分配？</strong> 前者更灵活但浪费回合数，后者更高效但可能选错文件。本章的设计是混合策略：CodeContextManager 提供建议的优先级列表，agent 最终决定读哪些。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch28-7" num="28.7" title="注册工具">
+        <CodeBlock filename="src/harness/tools/register.ts" lang="typescript">{`export function registerCodeAnalysisTools(registry: ToolRegistry): void {
+  registry.register(extractCodeContextTool);
+}
+
+// 在 main.ts 中建立 CodeContextManager
+import { CodeContextManager } from "../harness/context/code-context.js";
+import { setCodeContextManager } from "../harness/tools/code-analysis.js";
+
+const codeContext = new CodeContextManager();
+setCodeContextManager(codeContext);`}</CodeBlock>
+      </Section>
+
+      <Section id="ch28-8" num="28.8" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 探索你自己的项目">在 agent-harness 项目上运行 CodeContextManager.formatProjectTree() 和 buildDependencyGraph()。哪些文件被识别为 entrypoint？哪些是 business-logic？</Card>
+          <Card title="② 测试 extract_code_context">让 agent 搜索一个常见符号（如 "ToolRegistry" 或 "arun"），确认定义和引用都被正确识别。</Card>
+          <Card title="③ 分析分配结果">调用 allocateBudget() 看看哪个文件被分配了全文预算——你觉得合理吗？尝试调整 rolePriority 观察变化。</Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch28" questions={[
+        {
+          q: "CodeContextManager 和传统 IDE 的\u201C项目索引\u201D有什么核心区别？",
+          options: [
+            "没有区别，只是叫法不同",
+            "IDE 给人类看（UI 树），CodeContextManager 给模型看（文本化 + 按角色分类的摘要）",
+            "IDE 更准确",
+            "CodeContextManager 只能在 Node.js 跑",
+          ],
+          right: 1,
+          explain: "输出格式不同，服务对象也不同。CodeContextManager 的输出直接进模型上下文，所以格式必须是模型容易消费的。",
+        },
+        {
+          q: "依赖图对 Coding Agent 最重要的用途是什么？",
+          options: [
+            "展示项目有多复杂",
+            "回答'修改这个文件会影响哪些其他文件'——让 agent 在执行变更前理解影响范围",
+            "生成 UML 图",
+            "计算代码行数",
+          ],
+          right: 1,
+          explain: "这是 agent 安全操作的核心能力：在改一个文件前，知道哪些文件需要同步更新。",
+        },
+        {
+          q: "为什么 extract_code_context 比 LSP definition 更轻量？",
+          options: [
+            "因为它不启动语言服务器，不建索引——只是文本搜索 + 正则",
+            "因为它只在 Python 上工作",
+            "因为它使用 AI 来理解代码",
+            "因为它是 C 语言实现的",
+          ],
+          right: 0,
+          explain: "LSP 需要启动一个语言服务器进程，构建项目索引。extract_code_context 只是文本搜索——优点是启动快、语言无关，缺点是精度低。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter28 = Chapter28;

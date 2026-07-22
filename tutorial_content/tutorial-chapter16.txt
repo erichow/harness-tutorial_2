@@ -1,0 +1,579 @@
+/* tutorial-chapter16.jsx — Chapter 16 full content: Structured Plans & Verified Completion */
+
+const { useState: useS16 } = React;
+
+/* ─── Plan state machine diagram ─── */
+function PlanStateMachineDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 320" preserveAspectRatio="xMidYMid meet">
+        {/* Step states */}
+        {[
+          { x: 90,  y: 100, label: "pending",     color: "var(--ink-soft)",  mark: "[ ]" },
+          { x: 310, y: 100, label: "in_progress", color: "var(--accent-3)",  mark: "[.]" },
+          { x: 530, y: 100, label: "done",        color: "var(--green)",     mark: "[x]" },
+          { x: 310, y: 230, label: "blocked",     color: "var(--red)",       mark: "[!]" },
+        ].map((s, i) => (
+          <g key={i}>
+            <ellipse cx={s.x} cy={s.y} rx={80} ry={42}
+                     fill={`color-mix(in oklch, ${s.color} 12%, var(--paper-2))`}
+                     stroke={s.color} strokeWidth="3"
+                     style={{ filter: "url(#sketchy-edge-soft)" }} />
+            <text x={s.x} y={s.y - 4} fontFamily="var(--font-mono)" fontSize="20"
+                  fill={s.color} textAnchor="middle" fontWeight="700">{s.mark}</text>
+            <text x={s.x} y={s.y + 18} fontFamily="var(--font-h)" fontSize="18"
+                  fill={s.color} textAnchor="middle">{s.label}</text>
+          </g>
+        ))}
+        <SkArrow x1={170} y1={100} x2={230} y2={100} />
+        <SkArrow x1={390} y1={100} x2={450} y2={100} label="+ evidence" />
+        <SkArrow x1={310} y1={142} x2={310} y2={188} color="var(--red)" label="阻塞" />
+
+        {/* Finalization gate */}
+        <rect x={620} y={70} width={240} height={195} rx={14}
+              fill="rgba(214,90,49,0.12)" stroke="var(--accent)" strokeWidth="3"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={740} y={104} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--accent)" textAnchor="middle" fontWeight="700">🚪 FINAL GATE</text>
+        <text x={740} y={140} fontFamily="var(--font-hand)" fontSize="14"
+              fill="var(--ink)" textAnchor="middle">all steps terminal?</text>
+        <text x={740} y={162} fontFamily="var(--font-hand)" fontSize="14"
+              fill="var(--ink)" textAnchor="middle">all postconditions ✓?</text>
+        <line x1={650} y1={180} x2={830} y2={180} stroke="var(--rule)" />
+        <text x={740} y={208} fontFamily="var(--font-h)" fontSize="16"
+              fill="var(--accent)" textAnchor="middle" fontWeight="700">
+            harness 检查
+        </text>
+        <text x={740} y={232} fontFamily="var(--font-hand)" fontSize="13"
+              fill="var(--ink-soft)" textAnchor="middle" fontStyle="italic">
+            model 不能自证完成
+        </text>
+        <text x={740} y={253} fontFamily="var(--font-hand)" fontSize="13"
+              fill="var(--ink-soft)" textAnchor="middle" fontStyle="italic">
+            未通过 → 注入提示让 agent 继续
+        </text>
+
+        <SkArrow x1={610} y1={142} x2={620} y2={142} color="var(--accent)" />
+        <text x={520} y={50} fontFamily="var(--font-hand)" fontSize="14"
+              fill="var(--ink)" textAnchor="middle" fontStyle="italic">
+            所有 step terminal 时 →
+        </text>
+
+        {/* Bottom message */}
+        <text x={450} y={300} fontFamily="var(--font-hand)" fontSize="17"
+              fill="var(--accent-4)" textAnchor="middle" fontWeight="600">
+            ⚠ 跟早期章节不同——这里 harness 主动 reject model 的 "final answer"
+        </text>
+      </svg>
+      <div className="caption">Plan 状态机。Harness 检查 gate，模型不能 self-certify 完成——这就是 Kambhampati 2024 的"LLM-Modulo"框架在具体代码里的样子。</div>
+    </div>
+  );
+}
+
+/* ─── Interactive plan demo ─── */
+function PlanInteractiveDemo() {
+  const [steps, setSteps] = useS16([
+    { desc: "Check file /etc/hostname exists",                status: "pending", evidence: "" },
+    { desc: "Check file /etc/os-release exists",              status: "pending", evidence: "" },
+    { desc: "Check file /etc/machine-id exists",              status: "pending", evidence: "" },
+  ]);
+  const [posts, setPosts] = useS16([
+    { desc: "All three file paths + sizes reported",          satisfied: false, evidence: "" },
+    { desc: "Winner (largest file) identified by name",       satisfied: false, evidence: "" },
+  ]);
+  const [tryFinal, setTryFinal] = useS16(false);
+
+  const allStepsTerminal = steps.every(s => s.status === "done" || s.status === "blocked");
+  const allPostsSatisfied = posts.every(p => p.satisfied);
+  const readyToFinalize = allStepsTerminal && allPostsSatisfied;
+
+  const toggleStep = (i) => {
+    setSteps(prev => prev.map((s, idx) => {
+      if (idx !== i) return s;
+      const cycle = { pending: "in_progress", in_progress: "done", done: "blocked", blocked: "pending" };
+      const next = cycle[s.status];
+      const ev = next === "done" ? "(verified via bash test -f)" : "";
+      return { ...s, status: next, evidence: ev };
+    }));
+  };
+  const togglePost = (i) => {
+    setPosts(prev => prev.map((p, idx) => idx === i
+      ? { ...p, satisfied: !p.satisfied, evidence: !p.satisfied ? "(matches step evidence)" : "" }
+      : p));
+  };
+
+  const statusBadge = (s) => {
+    const cfg = {
+      pending:     ["[ ]", "var(--ink-soft)"],
+      in_progress: ["[.]", "var(--accent-3)"],
+      done:        ["[x]", "var(--green)"],
+      blocked:     ["[!]", "var(--red)"],
+    }[s];
+    return <span style={{ fontFamily: "var(--font-mono)", color: cfg[1], fontWeight: 700 }}>{cfg[0]}</span>;
+  };
+
+  return (
+    <div className="loop-demo">
+      <div style={{ fontFamily: "var(--font-h)", fontSize: 24, marginBottom: 6 }}>
+        🎛 自己试试：点状态切换它的进度
+      </div>
+      <div style={{ fontFamily: "var(--font-hand)", fontSize: 15, color: "var(--ink-soft)", marginBottom: 14 }}>
+        Plan 是一个 <em>harness 强制</em>的结构化对象。点 step / postcondition 状态切换，看 final gate 是否开门。
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontFamily: "var(--font-h)", fontSize: 20, color: "var(--ink)", marginBottom: 8 }}>
+          # Plan: 验证三个文件并报告最大者
+        </div>
+
+        <div style={{ fontFamily: "var(--font-h)", fontSize: 17, color: "var(--accent-4)", marginTop: 8 }}>
+          Steps
+        </div>
+        {steps.map((s, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10,
+                                padding: "6px 0", fontFamily: "var(--font-hand)", fontSize: 15 }}>
+            <button onClick={() => toggleStep(i)}
+                    style={{ background: "var(--paper)", border: "1.5px solid var(--rule)",
+                             padding: "3px 8px", borderRadius: 4, cursor: "pointer",
+                             fontFamily: "var(--font-mono)", fontSize: 14, minWidth: 40 }}>
+              {statusBadge(s.status)}
+            </button>
+            <span style={{ flex: 1 }}>{i + 1}. {s.desc}</span>
+            {s.evidence && (
+              <span style={{ fontSize: 13, color: "var(--green)", fontStyle: "italic" }}>
+                evidence: {s.evidence}
+              </span>
+            )}
+          </div>
+        ))}
+
+        <div style={{ fontFamily: "var(--font-h)", fontSize: 17, color: "var(--accent-4)", marginTop: 14 }}>
+          Postconditions
+        </div>
+        {posts.map((p, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10,
+                                padding: "6px 0", fontFamily: "var(--font-hand)", fontSize: 15 }}>
+            <button onClick={() => togglePost(i)}
+                    style={{ background: "var(--paper)", border: "1.5px solid var(--rule)",
+                             padding: "3px 8px", borderRadius: 4, cursor: "pointer",
+                             fontFamily: "var(--font-mono)", fontSize: 14, minWidth: 40 }}>
+              {p.satisfied
+                ? <span style={{ color: "var(--green)", fontWeight: 700 }}>[x]</span>
+                : <span style={{ color: "var(--ink-soft)" }}>[ ]</span>}
+            </button>
+            <span style={{ flex: 1 }}>{i + 1}. {p.desc}</span>
+            {p.evidence && (
+              <span style={{ fontSize: 13, color: "var(--green)", fontStyle: "italic" }}>
+                evidence: {p.evidence}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Try-finalize button */}
+      <div style={{ display: "flex", gap: 14, alignItems: "center", marginTop: 12,
+                    padding: 14, borderTop: "1.5px dashed var(--rule)" }}>
+        <button onClick={() => setTryFinal(true)}
+                style={{ background: "var(--accent)", color: "var(--paper)",
+                         border: "2px solid var(--ink)", padding: "8px 18px",
+                         borderRadius: 999, fontFamily: "var(--font-h)", fontSize: 18,
+                         cursor: "pointer", fontWeight: 700 }}>
+          模型: "我做完了！"
+        </button>
+        {tryFinal && (
+          readyToFinalize
+            ? <span style={{ color: "var(--green)", fontFamily: "var(--font-h)", fontSize: 20, fontWeight: 700 }}>
+                ✓ Gate 通过 — final answer 被接受
+              </span>
+            : <div style={{ flex: 1, color: "var(--red)", fontFamily: "var(--font-hand)", fontSize: 14 }}>
+                <strong>✗ Harness 拒绝 finalization：</strong>
+                <br />Plan is not complete. Before declaring the task done, either mark remaining steps
+                as done with evidence, verify outstanding postconditions, or mark them blocked with a reason.
+              </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Chapter 16 ─── */
+function Chapter16() {
+  return (
+    <section className="chapter" id="ch16">
+      <h2 className="chapter-title">
+        <span className="ch-num">16</span>
+        结构化计划与完成验证
+      </h2>
+      <p className="chapter-meta">Structured Plans & Verified Completion　·　Plan 由 harness 强制，不是 model 自证</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：sub-agent 带有边界派生。协调者能把工作拆给 sub-agent 再综合。<strong>它<em>还不能</em>做的——单 agent 也不能——是验证"它声称做完的，是真的做完了"</strong>。
+      </div>
+
+      <h4 className="sub-title">两种动机本章的具体失败模式</h4>
+      <div className="cards cols-2">
+        <Card title="① 过早 finalize（Premature finalization）" kind="bad">
+          Agent 处理了一半项目就说"任务完成"。Galileo 生产分析把它列为 agent 头号失败模式——agent 被要求处理列表 6 项，<strong>做了 4 项就声称完成</strong>。
+          <br /><br />模型训练奖励<em>听起来连贯的完成</em>；agent <strong>区分不出"说 X"和"做 X"</strong>。
+        </Card>
+        <Card title="② 计划-执行不匹配" kind="bad">
+          MAST 论文（Cemri et al. 2025）在 1642 个多 agent trace 上识别<em>reasoning-action mismatch</em> 为独立失败模式。Agent 的 plan 说"读 A、改 B"，行动<strong>读 A、改了 C</strong>。
+          <br /><br />Plan 和 action 在<em>不同的 forward pass</em> 中生成，没有任何东西把它们连起来。
+        </Card>
+      </div>
+
+      <Callout kind="key" title="Kambhampati 2024 的 LLM-Modulo 框架">
+        <p>"LLMs Can't Plan, But Can Help Planning in LLM-Modulo Frameworks" (ICML 2024) 是本章的理论基础。<strong>核心论点：语言模型产生看似合理的 plan，但不能可靠地自验证完成</strong>。正确架构是把模型和<em>外部 verifier</em> 配对，由 verifier 决定模型的工作什么时候真的做完。</p>
+        <p>本章 harness 就是那个外部 verifier。<strong>Plan 是一个 harness 强制的结构化对象</strong>，不是模型自己产生再"可能跟随"的非结构化字符串：</p>
+        <ul style={{ marginTop: 8, marginBottom: 0 }}>
+          <li>Step 必须带 <strong>evidence</strong> 才能 mark done</li>
+          <li>Plan 必须所有 postcondition 都 satisfied 才能 declare final</li>
+          <li><strong>Harness 在 final 之前检查，model 不能自证</strong></li>
+        </ul>
+      </Callout>
+
+      <Outcomes items={[
+        "Plan + Step + Postcondition 数据类（步骤 + evidence + 状态机）",
+        "4 个 plan 工具：plan_create / plan_show / step_update / postcondition_verify",
+        "Harness 在 final answer 上拦截：未完成 → 注入提示让 agent 继续",
+        "为什么 evidence 是字符串而不是 boolean——它是 habit trainer 不是密码学证明",
+      ]} />
+
+      <PlanStateMachineDiagram />
+
+      <Section id="ch16-1" num="16.1" title="Plan 的形状">
+        <CodeBlock filename="src/harness/plans/model.py" lang="python">{`class StepStatus(str, Enum):
+    pending = "pending"
+    in_progress = "in_progress"
+    done = "done"
+    blocked = "blocked"
+
+
+@dataclass
+class Step:
+    id: str
+    description: str
+    status: StepStatus = StepStatus.pending
+    evidence: str | None = None   # 什么证明了 step 完成
+    notes: str = ""
+
+    def is_terminal(self) -> bool:
+        return self.status in (StepStatus.done, StepStatus.blocked)
+
+
+@dataclass
+class Postcondition:
+    description: str
+    satisfied: bool = False
+    evidence: str | None = None
+
+
+@dataclass
+class Plan:
+    objective: str
+    steps: list[Step] = field(default_factory=list)
+    postconditions: list[Postcondition] = field(default_factory=list)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    id: str = field(default_factory=lambda: str(uuid4()))
+
+    def all_steps_terminal(self) -> bool:
+        return all(s.is_terminal() for s in self.steps)
+
+    def all_postconditions_satisfied(self) -> bool:
+        return all(pc.satisfied for pc in self.postconditions)
+
+    def is_ready_to_finalize(self) -> bool:
+        return self.all_steps_terminal() and self.all_postconditions_satisfied()
+
+    def to_render(self) -> str:
+        """Render the plan as a string the model can read."""
+        lines = [f"# Plan: {self.objective}\\n"]
+        lines.append("## Steps")
+        for i, s in enumerate(self.steps, start=1):
+            mark = {"pending": "[ ]", "in_progress": "[.]",
+                    "done": "[x]", "blocked": "[!]"}[s.status.value]
+            lines.append(f"{i}. {mark} {s.description}")
+            if s.evidence: lines.append(f"   evidence: {s.evidence}")
+            if s.notes:    lines.append(f"   notes: {s.notes}")
+        lines.append("\\n## Postconditions")
+        for i, pc in enumerate(self.postconditions, start=1):
+            mark = "[x]" if pc.satisfied else "[ ]"
+            lines.append(f"{i}. {mark} {pc.description}")
+            if pc.evidence: lines.append(f"   evidence: {pc.evidence}")
+        return "\\n".join(lines)`}</CodeBlock>
+
+        <Callout kind="key" title="两个值得说的区分">
+          <p><strong>Steps vs. postconditions</strong>。Step 是"你做什么"。Postcondition 是"最后必须为真的是什么"。<em>它们重叠但不全等</em>——一个 plan 可能有 5 个 step 和 2 个 postcondition，两边都重要。
+          Step 让 agent 跟踪过程进度；postcondition 让 harness 检查最终落地。</p>
+          <p><strong>Evidence 是字符串，不是 boolean</strong>。Model 把 step 标 done 时<em>必须</em>提供 evidence——"ran tests; all passed, see scratchpad/test-results"、"wrote file; confirmed with read_file_viewport at line 47-52"。
+          <em>Harness 不解析 evidence，只要求它非空</em>。Model 知道把有用的东西放进去，因为 plan 的 render 会展示 evidence 字段。这是 <strong>habit trainer，不是密码学证明</strong>。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch16-2" num="16.2" title="Plan 工具（agent 通过它操作 plan）">
+        <CodeBlock filename="src/harness/plans/tools.py（节选）" lang="python">{`@dataclass
+class PlanHolder:
+    """Wraps a mutable Plan so tools can mutate it through a shared reference."""
+    plan: Plan | None = None
+
+    def require(self) -> Plan:
+        if self.plan is None:
+            raise RuntimeError("no active plan")
+        return self.plan
+
+
+def plan_tools(holder: PlanHolder) -> list[Tool]:
+
+    @tool(side_effects={"write"})
+    def plan_create(objective: str, steps: list[str], postconditions: list[str]) -> str:
+        """Create or replace the plan for this session.
+
+        objective: 一句话描述你要完成什么。
+        steps: 有序的 step 描述列表。每条是具体可行动的，不是模糊意图。
+        postconditions: 任务声称完成时必须为真的条件。
+                        例："文件 X 存在且含 Y"；"模块 Z 的测试通过"。
+
+        Call this once at the start of any non-trivial task, before beginning work.
+        If the plan is wrong mid-task, call this again to replace it — the harness
+        records the rewrite.
+        """
+        holder.plan = Plan(
+            objective=objective,
+            steps=[Step(id=f"s{i}", description=d) for i, d in enumerate(steps)],
+            postconditions=[Postcondition(description=d) for d in postconditions],
+        )
+        return f"plan created with {len(steps)} steps and {len(postconditions)} postconditions"
+
+    @tool(side_effects={"read"})
+    def plan_show() -> str:
+        """Display the current plan with status."""
+        return holder.require().to_render()
+
+    @tool(side_effects={"write"})
+    def step_update(step_number: int, status: str,
+                    evidence: str = "", notes: str = "") -> str:
+        """Update a step's status.
+
+        evidence: required for 'done'. 一句话证明完成。
+        """
+        plan = holder.require()
+        if step_number < 1 or step_number > len(plan.steps):
+            return f"step_number {step_number} out of range (1..{len(plan.steps)})"
+        try:
+            new_status = StepStatus(status)
+        except ValueError:
+            return f"invalid status {status!r}; use pending/in_progress/done/blocked"
+
+        if new_status == StepStatus.done and not evidence:
+            return ("error: marking a step 'done' requires evidence. Describe "
+                    "what proved the step complete (e.g., 'wrote file and "
+                    "read it back; content matches').")
+
+        s = plan.steps[step_number - 1]
+        plan.steps[step_number - 1] = Step(
+            id=s.id, description=s.description,
+            status=new_status, evidence=evidence or None, notes=notes,
+        )
+        return f"step {step_number} → {status}"
+
+    @tool(side_effects={"write"})
+    def postcondition_verify(postcondition_number: int, evidence: str) -> str:
+        """Mark a postcondition as verified.
+
+        evidence: required. Concrete proof the postcondition holds.
+        This is what the harness checks before letting you declare the task complete.
+        """
+        plan = holder.require()
+        if postcondition_number < 1 or postcondition_number > len(plan.postconditions):
+            return f"postcondition_number out of range"
+        if not evidence:
+            return "error: evidence is required to verify a postcondition"
+        pc = plan.postconditions[postcondition_number - 1]
+        plan.postconditions[postcondition_number - 1] = Postcondition(
+            description=pc.description, satisfied=True, evidence=evidence,
+        )
+        return f"postcondition {postcondition_number} verified"
+
+    return [plan_create, plan_show, step_update, postcondition_verify]`}</CodeBlock>
+
+        <h4 className="sub-title">3 条工具层 enforce 的纪律</h4>
+        <div className="cards cols-3">
+          <Card title="① done / verified 必须有 evidence" kind="">
+            模型不带 evidence 调 <code>step_update(step=3, status="done")</code> → 工具返回错误说原因，模型必须<strong>带非空 evidence 字符串回来</strong>。<em>这不是安全，是 habit trainer——会产 evidence 的模型在所有地方都产更好的 evidence</em>。
+          </Card>
+          <Card title="② Plan 重写是允许的，但不隐藏" kind="">
+            中途 plan rewrite 是合法的（情况会变）。我们<em>不想</em>的是模型默默偏离旧 plan。
+            <br /><br />再调 <code>plan_create</code> 替换 plan——<strong>第 18 章的 observability 会记下这次 rewrite</strong>，让你能看出重写是不是太频繁（初始规划弱的信号）。
+          </Card>
+          <Card title="③ plan_show 只读且便宜" kind="">
+            <strong>它是 agent 在压缩后或长工具序列后应该先调的工具</strong>，作为 re-orientation。System prompt 该显式教这点。
+          </Card>
+        </div>
+      </Section>
+
+      <Section id="ch16-3" num="16.3" title="Harness 强制 finalization">
+        <PlanInteractiveDemo />
+
+        <CodeBlock filename="src/harness/agent.py（plan-aware 版本）" lang="python">{`async def arun(
+    provider, catalog, user_message,
+    system=None,
+    plan_holder: "PlanHolder | None" = None,
+    # ...
+) -> str:
+    # ... existing setup
+    for _ in range(MAX_ITERATIONS):
+        # ... existing tool selection, compaction, turn execution
+        if response.is_final:
+            final_text = response.text or ""
+
+            if plan_holder and plan_holder.plan:
+                plan = plan_holder.plan
+                if not plan.is_ready_to_finalize():
+                    # 拒绝 finalization，把"还差什么"注入 transcript
+                    synthetic = (
+                        "The plan is not complete. Before declaring the "
+                        "task done, either mark remaining steps as done "
+                        "with evidence, verify outstanding postconditions, "
+                        "or mark them blocked with a reason. Current plan:\\n\\n"
+                        + plan.to_render()
+                    )
+                    transcript.append(Message.from_assistant_response(response))
+                    transcript.append(Message.user_text(synthetic))
+                    continue   # 回到 for 循环顶部
+
+            transcript.append(Message.from_assistant_response(response))
+            return final_text
+        # ... existing tool dispatch`}</CodeBlock>
+
+        <Callout kind="key" title="为什么 enforcement 在 finalization、不在 step_update？">
+          <p>因为 "done" 是关于<em>一个</em> step 的，不是关于<em>整个 plan</em>。一个 step 可以合法地 done 而 plan 整体未完成。<strong>完成检查必须发生在 finalization，不是每个 step update</strong>。</p>
+          <p>这就是把"premature finalization"<em>具体</em>掐死的干预——模型说"all done"，harness 说"不，step 3 没标 done、postcondition 2 没验证，<em>当前状态在这</em>"，模型要么正经做完，要么显式把缺的 mark blocked + 给原因。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch16-4" num="16.4" title="一个抓 premature finalization 的场景">
+        <CodeBlock filename="examples/ch16_plan.py" lang="python">{`SYSTEM = """\\
+You are an agent that works from structured plans. For any non-trivial task,
+your first action is to call plan_create with an explicit objective, steps,
+and postconditions. After each major action, call step_update to record
+progress with evidence. Before declaring the task complete, verify every
+postcondition with postcondition_verify.
+
+The harness will reject your final answer if the plan is not complete.
+Do not claim completion prematurely. If a step cannot be completed, mark it
+'blocked' with a reason rather than skipping it.
+"""
+
+
+async def main() -> None:
+    provider = AnthropicProvider()
+    holder = PlanHolder()
+    catalog = ToolCatalog(tools=STANDARD_TOOLS + plan_tools(holder))
+
+    answer = await arun(
+        provider=provider, catalog=catalog, system=SYSTEM,
+        plan_holder=holder,
+        user_message=(
+            "For each of these three files, verify they exist, measure "
+            "their size in bytes, and report the largest one: "
+            "/etc/hostname, /etc/os-release, /etc/machine-id. "
+            "Produce a summary with file paths, sizes, and the winner."
+        ),
+    )
+    print("---")
+    print(answer)
+    print("---")
+    print(holder.plan.to_render() if holder.plan else "(no plan)")`}</CodeBlock>
+
+        <Callout kind="key" title="两个值得观察的行为">
+          <p><strong>开头</strong>，agent 调 <code>plan_create</code>，3 个 step（每文件一个）+ 3 个 postcondition。<em>没有 plan_holder 机制，粗心的 agent 可能检查两个文件就说完成</em>。有了它，如果 agent 跳过 step 3 想 finalize，<strong>harness 拒绝 final answer，agent 回去检查第 3 个文件</strong>。</p>
+          <p><strong>结尾</strong>，plan 渲染出来：每个 step 都 done 带 evidence、每个 postcondition 都 verified。<em>agent 的 summary 和 plan 声称做的事现在按构造一致</em>。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch16-5" num="16.5" title="Plan 不做什么">
+        <div className="cards cols-3">
+          <Card title="① 不验证 evidence" kind="bad">
+            Agent 可以写 <code>evidence="I did the thing"</code>，harness 也接受。<strong>Evidence 是让 agent 思考用的，不是密码学证明</strong>。要可验证的 evidence？写一个定制 postcondition-verifier 工具，<em>真的去跑测试</em>。第 19 章 eval harness 是怎么把这做成回归测试的。
+          </Card>
+          <Card title="② 不阻止 drift" kind="bad">
+            Agent 可以重写 plan 来去掉不方便的 step。我们 log rewrite（第 18 章）但<strong>不阻止</strong>。
+            <br /><br />阻止会让 agent 变脆——plan 当初错了时合理需要修改。<em>正确的 audit 是观测，不是 enforcement</em>。
+          </Card>
+          <Card title="③ Plan 不跨 sub-agent 组合" kind="bad">
+            Parent 有 plan、spawn sub-agent——sub-agent 要么有自己的 plan（通常正确），要么没 plan（窄目标常常 OK）。
+            <br /><br /><strong>没有"共享 plan 层级"的概念</strong>——sub-agent 报结果、parent 综合、parent 的 plan 把综合 mark 成一个完成的 step。
+          </Card>
+        </div>
+      </Section>
+
+      <Section id="ch16-6" num="16.6" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 故意触发 premature finalization">
+            构造一个 model 会想早停的任务——一个最后一项很 tedious 的 checklist。先关 plan 跑、再开 plan 跑。<strong>enforcement 真的抓到捷径了吗？</strong>
+          </Card>
+          <Card title="② 写一个 postcondition-verifier 工具">
+            对一个写文件的任务，加一个 <code>verify_file_exists(path, expected_content_contains)</code> 返回 true/false。让 agent 在 postcondition_verify 时调它。<strong>evidence 现在承载真实工具调用结果</strong>。
+          </Card>
+          <Card title="③ 测量开销">
+            同一个任务有/无 plan 工具——对比总回合数和总成本。<strong>结构化方法每个 run 更贵吗？</strong>质量提升值这个钱吗？哪些任务才值？
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch16" questions={[
+        {
+          q: "本章解决的核心失败模式之一是什么？",
+          options: [
+            "网络超时",
+            "Premature finalization——agent 处理 6 项中的 4 项就说'完成'。模型训练奖励'听起来连贯的完成'，agent 区分不出'说 X'和'做 X'",
+            "GPU 内存",
+            "Provider 限流",
+          ],
+          right: 1,
+          explain: "Galileo 生产分析把它列为 agent 头号失败模式。MAST 2025 把 plan-execution 不匹配作为独立类别识别。",
+        },
+        {
+          q: "Plan 与不结构化的'让模型自己跟踪'的本质区别是？",
+          options: [
+            "格式更整齐",
+            "Harness 在 finalization 时强制检查 plan 状态——模型不能 self-certify '我做完了'，harness 是外部 verifier（Kambhampati LLM-Modulo 框架的具体实现）",
+            "用了 dataclass",
+            "字符串处理更快",
+          ],
+          right: 1,
+          explain: "LLM-Modulo 的核心：把模型和外部 verifier 配对，由 verifier 决定完成。Harness 就是那个 verifier。",
+        },
+        {
+          q: "为什么 evidence 是字符串而不是 boolean？",
+          options: [
+            "字符串性能更好",
+            "Evidence 是 habit trainer——会产 evidence 的模型在所有地方产更好的 evidence；harness 不解析它，只要求非空",
+            "JSON 兼容",
+            "Python 偏好",
+          ],
+          right: 1,
+          explain: "如果你想要密码学级别的 evidence，写一个 postcondition-verifier 工具真的去跑测试。Plan 的 evidence 是给模型用的元数据。",
+        },
+        {
+          q: "为什么 enforcement 在 finalization、不在 step_update？",
+          options: [
+            "性能原因",
+            "因为 'done' 是关于一个 step 的、不是整个 plan——完成检查必须发生在 finalization，那是模型声称'all done'时",
+            "Python 限制",
+            "异步约束",
+          ],
+          right: 1,
+          explain: "一个 step 可以合法地 done 而 plan 整体未完成。Enforcement 抓的是模型说'all done'时—— harness 反对：'不，X 没做，看 plan'。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter16 = Chapter16;

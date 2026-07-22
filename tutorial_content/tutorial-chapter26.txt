@@ -1,0 +1,435 @@
+/* tutorial-chapter26.jsx — Chapter 26 full content */
+
+function Chapter26() {
+  return (
+    <section className="chapter" id="ch26">
+      <h2 className="chapter-title">
+        <span className="ch-num">26</span>
+        Git 工具集
+      </h2>
+      <p className="chapter-meta">Git Tool Integration　·　把 Git 操作封装成 agent 可用的工具——读自动放行、写交互确认</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        一个能编辑文件的 coding agent 如果不会 Git，就像一个人能写字但不会保存草稿。每一次实验性的文件修改都应该被版本跟踪——这样 agent 可以自信地尝试修改，然后回滚那些不成功的变化。
+        <br /><br />
+        但这引出了两个核心问题：<strong>为什么要封装为工具而不是让 agent 通过终端运行 git？</strong> 和 <strong>读操作和写操作如何区分权限？</strong>
+      </div>
+
+      <Outcomes items={[
+        "理解 Git 工具的设计动机——为什么封装为专用工具优于通过 shell 调 git",
+        "实现 6 个 Git 工具：status、diff、log、commit、stash、branch",
+        "设计读/写分离的 permission 策略——status/diff/log 自动放行，commit/stash/branch 需确认",
+        "实现提交消息的生成与审核流程——模型写消息、用户审核消息",
+      ]} />
+
+      <Section id="ch26-1" num="26.1" title="为什么是工具，而不是 shell？">
+        <p>既然第 25 章已经有了 run_command，为什么不直接让 agent 执行 <code>git status</code>？</p>
+
+        <p>答案有三层：</p>
+
+        <div className="cards cols-3">
+          <Card title="1. 结构化输出" kind="">
+            终端返回的是非结构化文本——模型需要自己 parse "On branch main\nYour branch is up to date..." 提取关键信息。Git 工具返回的是 JSON 或清晰的结构化字符串，模型直接使用。
+          </Card>
+          <Card title="2. 安全门控" kind="">
+            通过 shell 跑 <code>git commit -m "x"</code> 和 <code>git push origin main</code> 无法差异化授权。专用工具可以让读操作自动放行、写操作需显式确认。
+          </Card>
+          <Card title="3. 工具发现" kind="">
+            Agent 看到工具列表里有 <code>git_status</code>、<code>git_diff</code>、<code>git_commit</code> 就知道它能做什么。看到 <code>run_command: git ...</code> 需要先知道 git 存在、再记得语法、再构造命令。
+          </Card>
+        </div>
+
+        <Callout kind="key">
+          <p>这不是说"永远不用 run_command 调 git"。有些复杂 Git 操作不值得封装（cherry-pick、rebase、bisect）。<strong>策略：</strong>常见操作（status/diff/log/commit/stash/branch）封装为工具；罕见操作留给 run_command + 高权限确认。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch26-2" num="26.2" title="使用 simple-git 库">
+        <p>Node.js 生态有成熟的 Git 封装库：<code>simple-git</code>。它把 git CLI 的 stdout/stderr 解析为结构化数据，比手动执行 <code>exec("git status")</code> 更可靠。</p>
+
+        <CodeBlock filename="shell" lang="shell">{`npm install simple-git`}</CodeBlock>
+
+        <CodeBlock filename="src/harness/tools/git.ts" lang="typescript">{`import { simpleGit, type SimpleGit, type StatusResult } from "simple-git";
+import { type Tool } from "./types.js";
+import { resolve } from "node:path";
+
+// 每个工具都从同一个 git 实例获取
+let gitInstance: SimpleGit | null = null;
+
+function getGit(cwd?: string): SimpleGit {
+  if (!gitInstance) {
+    gitInstance = simpleGit({ baseDir: cwd ?? process.cwd() });
+  }
+  return gitInstance;
+}
+
+/* ──────────── 读操作：自动放行 ──────────── */
+
+export const gitStatusTool: Tool = {
+  name: "git_status",
+  description: "显示当前 Git 仓库的状态：分支、未提交的变更、未跟踪的文件。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Git 仓库路径（默认当前目录）" },
+    },
+  },
+  async handler(args: { path?: string }): Promise<string> {
+    const git = getGit(args.path);
+    const status: StatusResult = await git.status();
+
+    const lines: string[] = [
+      \`分支: \${status.current}\`,
+      \`未暂存的更改: \${status.modified.length} 个文件\`,
+      \`已暂存的更改: \${status.staged.length} 个文件\`,
+      \`未跟踪的文件: \${status.not_added.length} 个文件\`,
+    ];
+
+    if (status.modified.length > 0) {
+      lines.push("\\n已修改（未暂存）:");
+      status.modified.forEach(f => lines.push(\`  ✏️ \${f}\`));
+    }
+    if (status.staged.length > 0) {
+      lines.push("\\n已暂存（待提交）:");
+      status.staged.forEach(f => lines.push(\`  ✅ \${f}\`));
+    }
+    if (status.not_added.length > 0) {
+      lines.push("\\n未跟踪:");
+      status.not_added.forEach(f => lines.push(\`  ❓ \${f}\`));
+    }
+
+    return lines.join("\n");
+  },
+};
+
+export const gitDiffTool: Tool = {
+  name: "git_diff",
+  description: "显示文件差异。默认显示所有未暂存的修改，或指定文件的差异。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "可选，只显示特定文件的差异" },
+      staged: { type: "boolean", description: "是否显示已暂存（staged）的差异" },
+    },
+  },
+  async handler(args: { path?: string; staged?: boolean }): Promise<string> {
+    const git = getGit();
+
+    const options: string[] = [];
+    if (args.staged) options.push("--staged");
+    if (args.path) options.push("--", args.path);
+
+    const diff = await git.diff(options);
+
+    if (!diff.trim()) {
+      return "没有差异。";
+    }
+
+    // Diff 可能很大——截断到合理长度
+    const MAX_DIFF = 50_000;
+    if (diff.length > MAX_DIFF) {
+      return diff.slice(0, MAX_DIFF) + \`\\n…(差异截断，共 \${diff.length} 字符)\`;
+    }
+
+    return diff;
+  },
+};
+
+export const gitLogTool: Tool = {
+  name: "git_log",
+  description: "显示 Git 提交历史。可限制条数和文件范围。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      maxCount: { type: "number", description: "最大提交数（默认 10）" },
+      path: { type: "string", description: "可选，只显示特定文件的提交历史" },
+    },
+  },
+  async handler(args: { maxCount?: number; path?: string }): Promise<string> {
+    const git = getGit();
+    const log = await git.log({
+      maxCount: Math.min(args.maxCount ?? 10, 50),
+      ...(args.path ? { file: args.path } : {}),
+    });
+
+    if (log.total === 0) {
+      return "没有提交历史。";
+    }
+
+    return log.all.map(commit =>
+      \`\${commit.hash.slice(0, 8)} \${commit.date.slice(0, 10)} \${commit.message}\`
+    ).join("\n");
+  },
+};
+
+/* ──────────── 写操作：需确认 ──────────── */
+
+export const gitCommitTool: Tool = {
+  name: "git_commit",
+  description: "暂存并提交所有更改。提供清晰的提交信息。需要用户确认。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      message: {
+        type: "string",
+        description: "提交信息。注意：会暂存所有已跟踪文件的修改（相当于 git add -A 然后 git commit）",
+      },
+    },
+    required: ["message"],
+  },
+  async handler(args: { message: string }): Promise<string> {
+    const git = getGit();
+
+    // 先把当前状态发给用户审核用
+    const status = await git.status();
+    const stagedSummary = [
+      \`修改: \${status.modified.length} 个文件\`,
+      \`删除: \${status.deleted.length} 个文件\`,
+      \`新增: \${status.not_added.length} 个文件\`,
+    ].join("，");
+
+    // 用户已经通过 permission 层确认过，这里直接执行
+    await git.add(".");
+    await git.commit(args.message);
+
+    return \`提交成功: \${args.message}
+  影响: \${stagedSummary}\`;
+  },
+};
+
+export const gitStashTool: Tool = {
+  name: "git_stash",
+  description: "暂存当前更改（git stash），恢复工作区到干净状态。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      message: { type: "string", description: "可选的暂存说明" },
+      action: {
+        type: "string",
+        enum: ["push", "pop", "list"],
+        description: "push=暂存更改, pop=恢复最近暂存, list=查看所有暂存",
+      },
+    },
+    required: ["action"],
+  },
+  async handler(args: { message?: string; action: string }): Promise<string> {
+    const git = getGit();
+
+    switch (args.action) {
+      case "push":
+        await git.stash([...(args.message ? ["-m", args.message] : [])]);
+        return "更改已暂存 (stash)。可用 git_stash action=pop 恢复。";
+      case "pop":
+        await git.stash(["pop"]);
+        return "最近一次暂存已恢复。";
+      case "list":
+        const list = await git.stashList();
+        if (list.all.length === 0) return "没有暂存的更改。";
+        return list.all.map(s =>
+          \`\${s.hash.slice(0, 8)}: \${s.message}\`
+        ).join("\n");
+      default:
+        return \`未知操作: \${args.action}\`;
+    }
+  },
+};
+
+export const gitBranchTool: Tool = {
+  name: "git_branch",
+  description: "创建、切换、删除分支。列出所有分支时不需要确认。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: ["list", "create", "switch", "delete"],
+        description: "list=列出、create=创建、switch=切换、delete=删除",
+      },
+      name: {
+        type: "string",
+        description: "分支名（create/switch/delete 时需要）",
+      },
+    },
+    required: ["action"],
+  },
+  async handler(args: { action: string; name?: string }): Promise<string> {
+    const git = getGit();
+
+    switch (args.action) {
+      case "list":
+        const branches = await git.branch();
+        return branches.all.map(b => {
+          const current = b === branches.current ? "* " : "  ";
+          return current + b;
+        }).join("\n");
+
+      case "create":
+        if (!args.name) return "错误：create 操作需要 name 参数";
+        await git.checkoutLocalBranch(args.name);
+        return \`已创建并切换到分支: \${args.name}\`;
+
+      case "switch":
+        if (!args.name) return "错误：switch 操作需要 name 参数";
+        await git.checkout(args.name);
+        return \`已切换到分支: \${args.name}\`;
+
+      case "delete":
+        if (!args.name) return "错误：delete 操作需要 name 参数";
+        await git.deleteLocalBranch(args.name);
+        return \`已删除分支: \${args.name}\`;
+
+      default:
+        return \`未知操作: \${args.action}\`;
+    }
+  },
+};`}</CodeBlock>
+      </Section>
+
+      <Section id="ch26-3" num="26.3" title="Permission 策略：读 vs 写">
+        <p>Git 操作区分读和写的规则非常明确：</p>
+
+        <CmpTable
+          headers={["风险", "操作", "策略"]}
+          rows={[
+            ["读", "git_status, git_diff, git_log, git_branch action=list, git_stash action=list", "自动放行——这些只是查看信息"],
+            ["写", "git_commit, git_stash action=push/pop, git_branch action=create/switch/delete", "需用户确认——改变仓库状态"],
+            ["高风险", "git push, git pull", "第 26 章未实现，但需要额外确认——涉及远程操作"],
+          ]}
+        />
+
+        <CodeBlock filename="src/cli/permissions.ts" lang="typescript">{`const GIT_READ_ACTIONS = new Set([
+  "git_status", "git_diff", "git_log",
+]);
+
+export async function cliPermissionHandler(req: PermissionRequest): Promise<PermissionDecision> {
+  // Git 读操作自动放行
+  if (GIT_READ_ACTIONS.has(req.action)) {
+    return { allowed: true, reason: "git read-only" };
+  }
+
+  // Git 写操作需特殊确认——显示变更预览
+  if (req.action === "git_commit" && req.details) {
+    console.log(\`\n📦 准备提交:\`);
+    console.log(\`   消息: \${req.details}\`);
+    console.log("\n  执行前请确认文件状态已检查完毕。");
+    return await interactiveConfirm(req, "medium");
+  }
+
+  // Git branch/stash 操作——同样需要确认
+  if (req.action.startsWith("git_")) {
+    return await interactiveConfirm(req, "medium");
+  }
+
+  // ... 其他工具
+}`}</CodeBlock>
+      </Section>
+
+      <Section id="ch26-4" num="26.4" title="提交消息的生成与审核流程">
+        <p>Git commit 是 agent 写操作中最频繁且最重要的。设计清晰的审核流程：</p>
+
+        <div className="cards cols-3">
+          <Card title="1. Agent 分析变更" kind="">
+            Agent 先调 <code>git_status</code> + <code>git_diff</code> 理解改了什么。
+          </Card>
+          <Card title="2. Agent 生成消息" kind="">
+            Agent 根据差异生成提议的 commit message。使用常规约定（type(scope): description）。
+          </Card>
+          <Card title="3. 用户审核确认" kind="">
+            PermissionManager 显示消息和变更摘要，用户确认。用户可修改消息或拒绝。
+          </Card>
+        </div>
+
+        <Callout kind="tip">
+          <p>提交消息的质量是用户对 agent 信任的晴雨表。好的 commit message 让用户感到"agent 真的理解我改了什么"。差的 message（如 "update"、"fix"）会降低信任。如果模型给你的 message 质量差，考虑在 system prompt 里加一条约束："Generated commit messages must include the why, not just the what."</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch26-5" num="26.5" title="缺少的工具和为什么">
+        <p>本章没有实现以下 Git 操作：</p>
+
+        <CmpTable
+          headers={["操作", "没实现的原因"]}
+          rows={[
+            ["git push / git pull", "涉及远程服务器认证。credentials 处理超出本章范围。可以让模型通过 run_command 执行——但需要在 permission 层特别标注。"],
+            ["git merge / git rebase", "冲突解决依赖用户参与。模型处理合并冲突目前还是研究课题。"],
+            ["git cherry-pick / git reset", "罕见操作，不值得增加工具数量。留给 run_command。"],
+            ["git clone", "特殊场景。agent 应该能 clone 仓库，但需要用户提供 URL + 权限。"],
+          ]}
+        />
+
+        <Callout kind="note">
+          <p>如果你在产品中需要这些，有两种方式：① 扩展工具集（新增 <code>git_push</code> 工具）；② 让模型通过 <code>run_command</code> 调本地 git。两者无绝对优劣——取决于你的安全策略。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch26-6" num="26.6" title="注册与测试">
+        <CodeBlock filename="src/harness/tools/register.ts" lang="typescript">{`export function registerGitTools(registry: ToolRegistry): void {
+  registry.register(gitStatusTool);
+  registry.register(gitDiffTool);
+  registry.register(gitLogTool);
+  registry.register(gitCommitTool);
+  registry.register(gitStashTool);
+  registry.register(gitBranchTool);
+}`}</CodeBlock>
+
+        <p>建议的测试流程：</p>
+        <ol>
+          <li>在一个临时 Git 仓库里测试——<code>git init test-repo && cd test-repo && echo "hello" {" > "}test.txt</code></li>
+          <li>让 agent 执行 git_status——确认返回分支和未跟踪文件</li>
+          <li>让 agent 执行 git_commit——确认显示预览和确认对话框</li>
+          <li>让 agent 执行 git_log——确认显示刚刚的提交</li>
+        </ol>
+      </Section>
+
+      <Section id="ch26-7" num="26.7" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 在 test repo 里跑全套">初始化一个新 Git 仓库，让 agent 依次执行 status → diff → commit → log → branch。确认每一步的输出正确。</Card>
+          <Card title="② 测试非 Git 目录">在非 Git 目录下调用 git_status——工具应该返回友好错误而不是崩溃。</Card>
+          <Card title="③ 设计审核回退">如果用户拒绝了 git_commit，但 agent 已经把文件 add 到了暂存区——怎么办？设计一个 "git_commit 取消后自动 git reset" 的流程。</Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch26" questions={[
+        {
+          q: "为什么选择把 Git 操作封装为工具而不是通过 run_command 调 git？",
+          options: [
+            "因为工具可以返回结构化数据而不是要求模型 parse 文本输出",
+            "因为专用工具可以差异化 permission（读自动放行、写需确认）",
+            "因为工具发现让模型直接知道它能做什么 Git 操作",
+            "以上全部",
+          ],
+          right: 3,
+          explain: "三个理由都是有效的。封装为工具在数据格式、安全门控、可发现性三个维度都优于原始的 shell 调用。",
+        },
+        {
+          q: "git_commit 自动执行了 git add .，这是有意还是偷懒？",
+          options: [
+            "偷懒——应该让用户先选择哪些文件要提交",
+            "有意——因为 agent 在 permission 层已经展示过变更预览，用户确认意味着同意提交所有变更",
+            "两者都是——但在 agent 场景下是有意: agent 的最佳流程是 '先确认变更内容，再一次性提交所有'",
+            "取决于配置",
+          ],
+          right: 2,
+          explain: "审核发生在执行前，用户看到变更预览并确认。如果确认意味着'提交所有已跟踪变更'，自动 add 是正确的。如果需要选择性提交，设计就复杂多了。",
+        },
+        {
+          q: "为什么 git merge/rebase 不在本章实现？",
+          options: [
+            "实现起来太复杂",
+            "冲突解决需要人工参与——模型目前无法可靠地处理合并冲突",
+            "没有合适的 Node.js 库",
+            "git merge 是高级操作，初级用户用不到",
+          ],
+          right: 1,
+          explain: "合并冲突需要理解双方的修改意图并做出判断——这本质上是一个需要人类判断力的任务。模型参与冲突解决是活跃的研究方向，但还不是产品级 feature。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter26 = Chapter26;

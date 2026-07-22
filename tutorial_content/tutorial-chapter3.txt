@@ -1,0 +1,522 @@
+/* tutorial-chapter3.jsx — Chapter 3 full content */
+
+function Chapter3() {
+  return (
+    <section className="chapter" id="ch3">
+      <h2 className="chapter-title">
+        <span className="ch-num">3</span>
+        消息、回合与转录
+      </h2>
+      <p className="chapter-meta">Messages, Turns, and the Transcript　·　把 dict 变成类型，让 harness 跨厂商可移植</p>
+
+      <Prereqs />
+
+      <Callout kind="warn" title="📦 这一章会改 Ch 2 的代码——按这里迁移">
+        <p>Ch 2 的 <code>ProviderResponse(kind="text" | "tool_call")</code> 在本章<strong>整个被替换</strong>成 <code>ProviderResponse(text, tool_call_id, tool_name, tool_args, ...)</code>。Ch 2 的 mock 和 calculator 示例继续跑下去会以 <code>AttributeError: 'ProviderResponse' object has no attribute 'kind'</code> 报错。</p>
+        <p>跑通本章前的迁移清单（按章节末的 git checkout 跑会更省事）：</p>
+        <ol style={{ margin: "6px 0" }}>
+          <li><strong>删掉</strong> <code>ProviderResponse</code> 上的 <code>kind</code> 字段——本章 §3.3 给出新形状</li>
+          <li><strong>更新</strong> Ch 2 的 <code>MockProvider</code>：旧的 <code>ProviderResponse(kind="text", text="...")</code> → 新的 <code>ProviderResponse(text="...")</code></li>
+          <li><strong>更新</strong> Ch 2 的 <code>run()</code>：用 <code>response.is_final</code> / <code>response.is_tool_call</code> 代替 <code>response.kind</code></li>
+        </ol>
+        <p style={{ margin: 0 }}>本章末的 <code>chXX-...</code> tag 是迁移完之后的快照。卡住 → <code>git checkout ch03-transcript</code>。</p>
+      </Callout>
+
+      <div className="lead">
+        前情：第 2 章造了 40 行 loop，看着它以 5 种方式碎掉。<strong>Break 5</strong>——工具输出淹没 transcript——已经在暗示 transcript 这个"一堆 dict"在做太多事。该给它结构了，同时把真实 provider 接进来。
+        <br /><br />
+        <strong>消息不是 dict。</strong> 消息是一条有类型的记录：role + 有序的内容块 + 来源 + token 成本 + 创建时间。dict 能装下这些，但也能一个不装——而一个把 <code>&#123;"role":"user","content":"..."&#125;</code> 和 <code>&#123;"role":"user","content":[&#123;"type":"text","text":"..."&#125;]&#125;</code> 当成可互换的 loop，迟早会以最糟糕的方式发现它们不可互换：解析器静默接受畸形输入、模型因为 tool 结果空了而产生幻觉、本地测试过、上线就崩。
+      </div>
+
+      <Outcomes items={[
+        "Transcript 变成一个类型化的数据结构，不再是 list of dicts",
+        "在 Anthropic / OpenAI / 通用 OSS 之间双向干净翻译",
+        "第 2 章的 loop 逻辑不变，但现在走 adapter 层",
+        "为推理类模型（Anthropic Extended Thinking、OpenAI o-series）一等公民地建模 ReasoningBlock",
+      ]} />
+
+      <Section id="ch3-1" num="3.1" title="dict 的三种失败模式">
+        <TranscriptShapeDiagram />
+
+        <div className="cards cols-3">
+          <Card title="① 形状漂移 (Shape drift)" kind="bad">
+            Anthropic 用 content blocks，OpenAI 对 user 用纯字符串、对 assistant tool call 用结构化对象。
+            <strong>基于 dict 的 transcript 必须每次去猜哪个形状是当下有效的。</strong>
+            猜错时你以最糟糕的方式发现——解析器静默接受、模型胡说、测试本地过、生产挂。
+          </Card>
+          <Card title="② 角色混乱 (Role confusion)" kind="bad">
+            tool result 是 user 消息（Anthropic）还是 tool 消息（OpenAI）？
+            <br />硬编码任意一个 → 锁定厂商。<br />猜错 → 给自己加难度。
+          </Card>
+          <Card title="③ 记账不可能" kind="bad">
+            想追踪上下文消耗了多少？dict 列表每次都得重解析。
+            <strong>类型化列表前置暴露结构</strong>——记账器只需在 block 类型上模式匹配。
+          </Card>
+        </div>
+
+        <p>我们要在同一个文件里修好三件事，代价是约 80 行 dataclass 加一个薄的 Transcript wrapper。</p>
+      </Section>
+
+      <Section id="ch3-2" num="3.2" title="规范形状（全书的词汇基线）">
+        <p>这些是从此往后每一章都会用到的类型——值得记住，因为之后会一直说"blocks"、"role"、"ToolCall 块"、"ReasoningBlock 的 metadata"，不会再重新解释。</p>
+
+        <CodeBlock filename="src/harness/messages.py" lang="python">{`from __future__ import annotations
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Literal
+from uuid import uuid4
+
+Role = Literal["user", "assistant", "system"]
+
+
+@dataclass(frozen=True)
+class TextBlock:
+    text: str
+    kind: Literal["text"] = "text"
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    args: dict
+    kind: Literal["tool_call"] = "tool_call"
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    call_id: str
+    content: str
+    is_error: bool = False
+    kind: Literal["tool_result"] = "tool_result"
+
+
+@dataclass(frozen=True)
+class ReasoningBlock:
+    """Model-internal reasoning ("thinking" on Anthropic,
+    "reasoning" on OpenAI).
+
+    metadata holds vendor-specific fields (notably Anthropic's
+    opaque signature) that the adapter needs to round-trip.
+    """
+    text: str
+    metadata: dict = field(default_factory=dict)
+    kind: Literal["reasoning"] = "reasoning"
+
+
+Block = TextBlock | ToolCall | ToolResult | ReasoningBlock
+
+
+@dataclass
+class Message:
+    role: Role
+    blocks: list[Block]
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    id: str = field(default_factory=lambda: str(uuid4()))
+
+    @classmethod
+    def user_text(cls, text: str) -> "Message":
+        return cls(role="user", blocks=[TextBlock(text)])
+
+    @classmethod
+    def assistant_text(cls, text: str, *, reasoning=None) -> "Message":
+        blocks = []
+        if reasoning is not None:
+            blocks.append(reasoning)
+        blocks.append(TextBlock(text))
+        return cls(role="assistant", blocks=blocks)
+
+    @classmethod
+    def assistant_tool_call(cls, call: ToolCall, *, reasoning=None) -> "Message":
+        blocks = []
+        if reasoning is not None:
+            blocks.append(reasoning)
+        blocks.append(call)
+        return cls(role="assistant", blocks=blocks)
+
+    @classmethod
+    def tool_result(cls, result: ToolResult) -> "Message":
+        # Anthropic 约定：tool result 挂在 user 角色下；
+        # adapter 会在 OpenAI 路径上把它 remap 成 "tool" 角色。
+        return cls(role="user", blocks=[result])`}</CodeBlock>
+
+        <Callout kind="key" title="5 个值得注意的细节">
+          <ol style={{ margin: 0, paddingLeft: 22 }}>
+            <li><strong>Block 是 4 种的 union</strong>。消息能装的一切（文本、工具调用、工具结果、推理痕迹）都在其中。Loop 永远不必问"这是什么形状"——它在 kind 判别字段上模式匹配。</li>
+            <li><strong>4 种 block 都 frozen</strong>。消息一旦创建就不可变。想改？换一个。<em>避免一类 bug</em>：下游代码改了消息，下一回合发出去的内容和渲染过的不一致。</li>
+            <li><strong>Tool result 挂在 user 角色</strong>。符合 Anthropic 惯例，OpenAI 那边由 adapter 改写。角色是传输细节；block 类型是语义。</li>
+            <li><strong>ReasoningBlock 与 text/tool_call 并列出现在 assistant 一个回合里</strong>。reasoning trace 在前，主块（text 或 tool_call）在后。</li>
+            <li><strong>每条 message 有 UUID 和 timestamp</strong>。创建时零成本，调试时省你几个小时。压缩策略丢了一条消息？UUID 告诉你是哪条。</li>
+          </ol>
+        </Callout>
+
+        <h4 className="sub-title">关于 ReasoningBlock，3 件值得知道的事</h4>
+
+        <div className="cards cols-3">
+          <Card title="它按 output tokens 计费" kind="">
+            原来 200 个 output token 的任务，现在可能 2000——大部分是推理。第 7 章的记账器把它计入"history"，第 20 章的预算把它视为 output 花费。
+          </Card>
+          <Card title="它通常不喂回模型" kind="">
+            Reasoning 是模型的私人草稿。OpenAI Responses API 把它存在服务端、通过 <code>previous_response_id</code> 回放；我们是无状态架构，所以默认每回合新开始。<strong>但</strong> Anthropic 接受把 reasoning 跟着回传，只要带上 opaque <code>signature</code>。
+          </Card>
+          <Card title="Anthropic 在 thinking + tools 同开时强制回传" kind="warn">
+            如果你开了 extended thinking 且模型调了工具，<strong>下一次请求必须包含那个 thinking block（含 signature）和 tool_use block</strong>。丢了 thinking，API 拒绝请求。
+          </Card>
+        </div>
+
+        <p>对应的 ProviderResponse 多加几个字段——adapter 各自填充：</p>
+        <CodeBlock filename="src/harness/providers/base.py（预览）" lang="python">{`@dataclass(frozen=True)
+class ProviderResponse:
+    text: str | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_args: dict | None = None
+
+    reasoning_text: str | None = None
+    reasoning_metadata: dict = field(default_factory=dict)
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0  # output_tokens 的子集，单独拆出来`}</CodeBlock>
+
+        <p>Transcript 是个薄 wrapper：</p>
+
+        <CodeBlock filename="src/harness/messages.py（续）" lang="python">{`@dataclass
+class Transcript:
+    messages: list[Message] = field(default_factory=list)
+    system: str | None = None
+
+    def append(self, message: Message) -> None:
+        self.messages.append(message)
+
+    def extend(self, messages: list[Message]) -> None:
+        self.messages.extend(messages)
+
+    def last(self) -> Message | None:
+        return self.messages[-1] if self.messages else None
+
+    def __len__(self) -> int:
+        return len(self.messages)`}</CodeBlock>
+
+        <Callout kind="tip" title="为什么 system 跟 messages 分开？">
+          每家 provider 都不一样：Anthropic 当顶层参数，OpenAI 当第一条消息，部分 OSS 模型 bake 进模板。分开放，让 adapter 各自决定怎么注入。
+        </Callout>
+      </Section>
+
+      <Section id="ch3-3" num="3.3" title="升级后的 Provider 协议">
+        <CodeBlock filename="src/harness/providers/base.py" lang="python">{`from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Protocol
+from ..messages import Transcript
+
+
+@dataclass(frozen=True)
+class ProviderResponse:
+    """exactly one of (text, tool_call) is set.
+    reasoning_* is orthogonal — may accompany either."""
+    text: str | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_args: dict | None = None
+    reasoning_text: str | None = None
+    reasoning_metadata: dict = field(default_factory=dict)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+
+    @property
+    def is_tool_call(self) -> bool:
+        return self.tool_name is not None
+
+    @property
+    def is_final(self) -> bool:
+        return self.text is not None and self.tool_name is None
+
+
+class Provider(Protocol):
+    name: str
+
+    def complete(self, transcript: Transcript, tools: list[dict]) -> ProviderResponse:
+        ...`}</CodeBlock>
+
+        <p>相比第 2 章新增了 3 样：<strong>token 计数</strong>（provider 知道，第 7 章记账器就不用估了）；<strong>reasoning_*</strong>（见 §3.2）；<strong>name 字段</strong>（让 logs 和 traces 能识别哪家 provider 服务了哪个响应）。</p>
+      </Section>
+
+      <Section id="ch3-4" num="3.4" title="三个 Adapter（保持小）">
+        <p>Adapter 的工作是<strong>翻译</strong>，不是<strong>决策</strong>。</p>
+
+        <h4 className="sub-title">Anthropic Adapter</h4>
+        <CodeBlock filename="src/harness/providers/anthropic.py" lang="python">{`from __future__ import annotations
+import os
+from typing import Any
+
+from ..messages import (
+    Block, Message, ReasoningBlock, TextBlock,
+    ToolCall, ToolResult, Transcript,
+)
+from .base import Provider, ProviderResponse
+
+
+class AnthropicProvider(Provider):
+    name = "anthropic"
+
+    def __init__(self, model: str = "claude-sonnet-4-6",
+                 client: Any | None = None,
+                 enable_thinking: bool = False,
+                 thinking_budget_tokens: int = 2000,
+                 max_tokens: int = 4096) -> None:
+        self.model = model
+        self.enable_thinking = enable_thinking
+        self.thinking_budget_tokens = thinking_budget_tokens
+        self.max_tokens = max_tokens
+        if client is None:
+            from anthropic import Anthropic
+            client = Anthropic()
+        self._client = client
+
+    def complete(self, transcript: Transcript, tools: list[dict]) -> ProviderResponse:
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": [_to_anthropic(m, self.enable_thinking)
+                         for m in transcript.messages],
+            "tools": tools,
+        }
+        if transcript.system:
+            kwargs["system"] = transcript.system
+        if self.enable_thinking:
+            kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": self.thinking_budget_tokens,
+            }
+        raw = self._client.messages.create(**kwargs)
+        return _from_anthropic(raw)
+
+
+def _block_to_anthropic(block: Block) -> dict:
+    match block:
+        case TextBlock(text=t):
+            return {"type": "text", "text": t}
+        case ToolCall(id=i, name=n, args=a):
+            return {"type": "tool_use", "id": i, "name": n, "input": a}
+        case ToolResult(call_id=i, content=c, is_error=err):
+            return {"type": "tool_result", "tool_use_id": i,
+                    "content": c, "is_error": err}
+        case ReasoningBlock(text=t, metadata=meta):
+            out: dict[str, Any] = {"type": "thinking", "thinking": t}
+            if (sig := meta.get("signature")) is not None:
+                out["signature"] = sig   # round-trip 时必须
+            return out`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>这个 <code>match</code> 语句是后面到处会用的模式——<strong>穷举式</strong>：新增一种 block 但忘了 case，会变成 MatchError 而不是静默丢数据。</p>
+          <p>Anthropic 特定的小坑——thinking block 回传时<strong>必须</strong>带 opaque <code>signature</code>。第一次抓住它时存到了 <code>ReasoningBlock.metadata</code>。少传 signature → API 拒绝请求。</p>
+        </Callout>
+
+        <h4 className="sub-title">OpenAI Adapter（用 Responses API，不用 Chat Completions）</h4>
+
+        <Callout kind="tip" title="为什么选 Responses 而不是 Chat Completions？">
+          <ul style={{ margin: 0 }}>
+            <li><strong>厂商方向</strong>：OpenAI 现在主推 Responses 作为 agent 表面；新能力先上 Responses。</li>
+            <li><strong>OSS 覆盖快速跟上</strong>：vLLM、Ollama 现在都支持 Responses。本书的 <code>LocalProvider</code> 用同一个 adapter 就跑通。</li>
+            <li><strong>类型更紧</strong>：输入项被 <em>typed</em>（<code>function_call</code> / <code>function_call_output</code> / <code>message</code>），不再是 role-tag 的字符串——和我们的 Transcript 做的是同一种哲学动作。</li>
+          </ul>
+        </Callout>
+
+        <CodeBlock filename="src/harness/providers/openai.py（节选）" lang="python">{`class OpenAIProvider(Provider):
+    name = "openai"
+
+    def __init__(self, model: str = "gpt-5", client: Any | None = None,
+                 reasoning_effort: ReasoningEffort | None = None) -> None:
+        self.model = model
+        self.reasoning_effort = reasoning_effort
+        if client is None:
+            from openai import OpenAI
+            client = OpenAI()
+        self._client = client
+
+    def complete(self, transcript: Transcript, tools: list[dict]) -> ProviderResponse:
+        input_items: list[dict] = []
+        for m in transcript.messages:
+            input_items.extend(_to_responses_input(m))
+
+        kwargs: dict[str, Any] = {
+            "model": self.model, "input": input_items,
+        }
+        if transcript.system:
+            kwargs["instructions"] = transcript.system   # 顶层 system
+        if tools:
+            kwargs["tools"] = [_tool_to_responses(t) for t in tools]
+        if self.reasoning_effort is not None:
+            kwargs["reasoning"] = {"effort": self.reasoning_effort}
+            # 让 Responses 把加密 reasoning 也回传，下回合可以无状态地 replay
+            kwargs["include"] = ["reasoning.encrypted_content"]
+            kwargs["store"] = False   # 不走服务端会话存储
+
+        raw = self._client.responses.create(**kwargs)
+        return _from_responses(raw)`}</CodeBlock>
+
+        <Callout kind="note" title="adapter 翻译几乎是机械的">
+          Transcript 已经分清楚 <code>ToolCall</code> 和 <code>ToolResult</code>，Responses 已经分清楚 <code>function_call</code> 和 <code>function_call_output</code>——两边都同意"工具调用"和"工具结果"是不同形状的东西。Adapter 做的只是改字段名。
+        </Callout>
+
+        <h4 className="sub-title">OSS Adapter（一行代码搞定）</h4>
+        <CodeBlock filename="src/harness/providers/local.py" lang="python">{`from .openai import OpenAIProvider
+
+
+class LocalProvider(OpenAIProvider):
+    name = "local"
+
+    def __init__(self, model: str = "llama-3.1-8b-instruct",
+                 base_url: str = "http://localhost:8000/v1") -> None:
+        from openai import OpenAI
+        client = OpenAI(base_url=base_url, api_key="not-needed")
+        super().__init__(model=model, client=client)`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>任何说 OpenAI chat-completions 协议的本地服务器（llama.cpp、vLLM、Ollama、LM Studio）都跑通——这是 OSS 事实标准。<strong>Adapter 缝在这里再次回本。</strong></p>
+        </Callout>
+      </Section>
+
+      <Section id="ch3-5" num="3.5" title="更新 loop（逻辑不变，类型收紧）">
+        <CodeBlock filename="src/harness/agent.py" lang="python">{`from __future__ import annotations
+from typing import Callable
+from .messages import Message, TextBlock, ToolCall, ToolResult, Transcript
+from .providers.base import Provider
+
+MAX_ITERATIONS = 20
+
+
+def run(
+    provider: Provider,
+    tools: dict[str, Callable[..., str]],
+    tool_schemas: list[dict],
+    user_message: str,
+    system: str | None = None,
+) -> str:
+    transcript = Transcript(system=system)
+    transcript.append(Message.user_text(user_message))
+
+    for _ in range(MAX_ITERATIONS):
+        response = provider.complete(transcript, tool_schemas)
+
+        if response.is_final:
+            # 同时保留 reasoning（如果有）和 final text
+            transcript.append(Message.from_assistant_response(response))
+            return response.text or ""
+
+        # tool call 分支
+        transcript.append(Message.from_assistant_response(response))
+        for ref in response.tool_calls:
+            try:
+                result_text = tools[ref.name](**ref.args)
+                result = ToolResult(call_id=ref.id, content=result_text)
+            except KeyError:
+                result = ToolResult(call_id=ref.id,
+                                    content=f"unknown tool: {ref.name}",
+                                    is_error=True)
+            except Exception as e:
+                result = ToolResult(call_id=ref.id, content=str(e), is_error=True)
+            transcript.append(Message.tool_result(result))
+
+    raise RuntimeError(f"agent did not finish in {MAX_ITERATIONS} iterations")`}</CodeBlock>
+
+        <Callout kind="key" title="重构带来的三件事">
+          <ol style={{ margin: 0 }}>
+            <li><strong>Transcript 现在有 system 字段</strong>——Anthropic 顶层传，OpenAI 当第一条传，OSS 想怎么传都行。Loop 不操心。</li>
+            <li><code>Message.from_assistant_response</code> 是一行解决"同时持久化主输出 + ReasoningBlock"的工厂。</li>
+            <li>tool dispatch 周围的 try/except 用最小方式解决了第 2 章的 Break 1 和 Break 3——loop 不再因为"未知工具"或异常崩溃，而是把结构化错误返回给模型让它恢复。<em>第 6 章会用 schema 校验和 dedup 做得更彻底</em>。</li>
+          </ol>
+        </Callout>
+      </Section>
+
+      <Section id="ch3-6" num="3.6" title="换 Provider 的回报">
+        <CodeBlock filename="examples/ch03_real_provider.py" lang="python">{`# Choose the provider once. The rest of the script doesn't care.
+provider_name = os.environ.get("PROVIDER", "anthropic")
+
+provider = {
+    "anthropic": AnthropicProvider,
+    "openai":    OpenAIProvider,
+    "local":     LocalProvider,
+}[provider_name]()
+
+answer = run(
+    provider=provider,
+    tools={"calc": calc},
+    tool_schemas=tool_schemas,
+    user_message="What is 17 * 23, minus 100?",
+)
+print(answer)`}</CodeBlock>
+
+        <CodeBlock filename="shell" lang="shell">{`export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
+
+PROVIDER=anthropic uv run examples/ch03_real_provider.py
+PROVIDER=openai    uv run examples/ch03_real_provider.py
+PROVIDER=local     uv run examples/ch03_real_provider.py`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>三个模型、一份 loop、一份工具、一份 transcript 类型——<strong>零代码变更</strong>。这就是缝（seam）在替自己付账。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch3-7" num="3.7" title="为什么 tool_schemas 仍是 dict？">
+        <Callout kind="note">
+          <p>有意为之、暂时如此。第 4 章引入 <code>Tool</code> 类，它自己持有 schema、callable、副作用声明、validator。届时 adapter 不再吃 dict，而是吃类型化对象。</p>
+          <p><strong>为什么不现在就做？</strong>因为 JSON schema 的形状还没复杂到值得它自己的抽象——<em>而每一个在它的疼痛被感受到之前就引入的抽象，都是债</em>。第 4 章的 <code>Tool</code> 由"第 2 章那两个未彻底关闭的 break"驱动；那时我们有了正确的形状来挂修复。</p>
+        </Callout>
+      </Section>
+
+      <Quiz chapter="ch3" questions={[
+        {
+          q: "为什么 transcript 不能就是 list of dicts？",
+          options: [
+            "性能太慢",
+            "因为厂商之间形状漂移 + 角色混乱 + 记账难——dict 没法在编译期帮你",
+            "Python 不支持嵌套 dict",
+            "JSON 不能序列化",
+          ],
+          right: 1,
+          explain: "三种失败模式（shape drift / role confusion / accounting impossible）每一种都被类型化的块结构直接消除。",
+        },
+        {
+          q: "ReasoningBlock 的 metadata 主要用来装什么？",
+          options: [
+            "聊天历史",
+            "tokens 计数",
+            "厂商专属的、必须 round-trip 的不透明字段——Anthropic 的 signature、OpenAI 的 encrypted_content",
+            "用户偏好",
+          ],
+          right: 2,
+          explain: "这两个字段是把 reasoning 喂回模型的凭证。少了它们，下一回合 API 会拒绝。",
+        },
+        {
+          q: "Tool result 在内部 transcript 里挂在哪个 role 下？",
+          options: [
+            "tool",
+            "system",
+            "user（Anthropic 约定；OpenAI adapter 会改写为 function_call_output）",
+            "assistant",
+          ],
+          right: 2,
+          explain: "角色是传输细节，block 类型是语义。adapter 在出门时做映射。",
+        },
+        {
+          q: "为什么本书 OpenAI adapter 选 Responses API 而不是 Chat Completions？",
+          options: [
+            "Chat Completions 已被弃用",
+            "Responses 是 OpenAI 主推的 agent 表面 + OSS 覆盖跟上 + 输入项被显式 typed",
+            "Responses 更便宜",
+            "Chat Completions 不支持工具",
+          ],
+          right: 1,
+          explain: "Chat Completions 仍能用，但新能力先上 Responses；OSS 端（vLLM/Ollama）也都对齐到了 Responses。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter3 = Chapter3;

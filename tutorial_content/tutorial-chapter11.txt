@@ -1,0 +1,569 @@
+/* tutorial-chapter11.jsx — Chapter 11 full content: Designing Tools Models Can Actually Use */
+
+const { useState: useS11 } = React;
+
+/* ─── Viewport vs Dump diagram ─── */
+function ViewportDumpDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 320" preserveAspectRatio="xMidYMid meet">
+        {/* Left: dump */}
+        <text x={220} y={32} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--red)" textAnchor="middle" fontWeight="700">
+          ❌ read_file(path) — 整文件 dump
+        </text>
+        {[
+          { y: 60, label: "lines 1–100" },
+          { y: 92, label: "lines 101–200" },
+          { y: 124, label: "lines 201–300" },
+        ].map((b, i) => (
+          <g key={i}>
+            <rect x={50} y={b.y} width={340} height={26} rx={5}
+                  fill="var(--paper-2)" stroke="var(--red)" strokeWidth="1.5" />
+            <text x={220} y={b.y + 17} fontFamily="var(--font-mono)" fontSize="14"
+                  fill="var(--ink)" textAnchor="middle">{b.label}</text>
+          </g>
+        ))}
+        <rect x={50} y={156} width={340} height={26} rx={5}
+              fill="rgba(185,50,47,0.18)" stroke="var(--red)" strokeWidth="2"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={220} y={173} fontFamily="var(--font-mono)" fontSize="14"
+              fill="var(--red)" textAnchor="middle" fontWeight="700">lines 301–400 ← 溢出预算</text>
+
+        <text x={220} y={222} fontFamily="var(--font-hand)" fontSize="16"
+              fill="var(--red)" textAnchor="middle" fontWeight="600">
+          400 行一次性 dump · 无导航 · 无 scroll
+        </text>
+        <text x={220} y={246} fontFamily="var(--font-hand)" fontSize="14"
+              fill="var(--ink-soft)" textAnchor="middle">
+          50K-token 日志文件直接吃掉大半窗口
+        </text>
+
+        {/* Right: viewport */}
+        <text x={680} y={32} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--green)" textAnchor="middle" fontWeight="700">
+          ✓ read_file_viewport(path, offset)
+        </text>
+        <rect x={510} y={60} width={340} height={130} rx={8}
+              fill="rgba(74,124,58,0.10)" stroke="var(--green)" strokeWidth="2.5"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={680} y={84} fontFamily="var(--font-mono)" fontSize="14"
+              fill="var(--ink)" textAnchor="middle">100  function calc(...)</text>
+        <text x={680} y={102} fontFamily="var(--font-mono)" fontSize="14"
+              fill="var(--ink)" textAnchor="middle">101    if expression == ...</text>
+        <text x={680} y={120} fontFamily="var(--font-hand)" fontSize="13"
+              fill="var(--ink-faint)" textAnchor="middle">⋯ 100-line window ⋯</text>
+        <text x={680} y={142} fontFamily="var(--font-mono)" fontSize="14"
+              fill="var(--ink)" textAnchor="middle">199    return str(eval(...))</text>
+        <text x={680} y={170} fontFamily="var(--font-mono)" fontSize="12"
+              fill="var(--green)" textAnchor="middle">[lines 100-199 of 423; MORE — offset=200]</text>
+
+        <text x={680} y={222} fontFamily="var(--font-hand)" fontSize="16"
+              fill="var(--green)" textAnchor="middle" fontWeight="600">
+          100-line 窗口 · agent 自己 scroll · 预算可控
+        </text>
+        <text x={680} y={246} fontFamily="var(--font-hand)" fontSize="14"
+              fill="var(--ink-soft)" textAnchor="middle">
+          envelope 告诉模型怎么取下一段
+        </text>
+
+        {/* Bottom row: principle */}
+        <line x1={50} y1={272} x2={850} y2={272} stroke="var(--rule)" strokeDasharray="4 3" />
+        <text x={450} y={300} fontFamily="var(--font-h)" fontSize="20"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          ACI 原则：约束 token 流，并让 envelope 告诉模型下一步
+        </text>
+      </svg>
+      <div className="caption">SWE-agent 2024 在 SWE-bench 上仅靠 ACI 变化把同一模型从 ~0 提升到 12.5% pass@1。</div>
+    </div>
+  );
+}
+
+/* ─── Four ACI principles cards ─── */
+function FourACIPrinciples() {
+  return (
+    <div className="cards cols-2">
+      <Card title="① Viewport, not dump" kind="">
+        模型读 2000 行文件用一个工具调用时，<strong>它对那 2000 行没有任何结构性能力</strong>——不能 scroll、不能视觉搜索、不能持有"我在哪"的心智地图。
+        <br /><br />更好：一个返回<strong>窗口（50-100 行）</strong>的工具，带显式位置指示器和"滚动"命令。
+      </Card>
+      <Card title="② Targeted edit, not rewrite" kind="">
+        想改 2000 行文件的第 47 行，<strong>不该返回整 2000 行</strong>。该返回"变化"。
+        <br /><br />Targeted edit 还让<em>意图可审计</em>——diff 最小、review 容易、revert 简单。
+      </Card>
+      <Card title="③ Explicit envelopes" kind="">
+        每个工具返回都需要一个机器可读的<strong>外壳</strong>：返回了什么、被截断了什么、下一步该怎么做。
+        <br /><br /><code style={{ fontSize: 12 }}>[file: /etc/passwd; lines 1-100 of 423; call again with offset=100 for more]</code> — 写起来便宜，<em>省去模型"猜"</em>。
+      </Card>
+      <Card title="④ Errors as instructions" kind="">
+        <em>"File not found"</em> 是信息。
+        <br /><strong>"File not found: /etc/passwd. Did you mean /etc/passwd.bak (fuzzy match)? Or use list_files('/etc')"</strong> 是指令。
+        <br /><br />模型对<strong>指令</strong>反应更好。
+      </Card>
+    </div>
+  );
+}
+
+/* ─── Interactive viewport demo ─── */
+function ViewportInteractiveDemo() {
+  const [offset, setOffset] = useS11(0);
+  const total = 423;
+  const limit = 100;
+  const end = Math.min(total, offset + limit);
+  // synthetic content
+  const lines = Array.from({ length: limit }, (_, i) => {
+    const n = offset + i + 1;
+    if (n > total) return null;
+    const stub = [
+      "import asyncio", "from dataclasses import dataclass",
+      "from typing import Callable", "", "@dataclass",
+      "class Tool:", "    name: str", "    description: str",
+      "", "    def run(self, **kwargs) -> str:",
+      "        return self._fn(**kwargs)",
+    ];
+    return `${n.toString().padStart(3, " ")}  ${stub[i % stub.length]}`;
+  }).filter(Boolean);
+
+  const footerParts = [`[file demo.py; lines ${offset + 1}-${end} of ${total}`];
+  if (end < total) footerParts.push(`MORE below — call with offset=${end}`);
+  if (offset > 0) footerParts.push(`MORE above — call with offset=0`);
+  const footer = footerParts.join("; ") + "]";
+
+  return (
+    <div className="loop-demo">
+      <div style={{ fontFamily: "var(--font-h)", fontSize: 24, marginBottom: 10 }}>
+        🎛 滑滑看：viewport 怎么 scroll
+      </div>
+
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12,
+                    fontFamily: "var(--font-hand)", fontSize: 16 }}>
+        <span>offset:</span>
+        <input type="range" min={0} max={total - 1} step={10}
+               value={offset} onChange={e => setOffset(parseInt(e.target.value))}
+               style={{ flex: 1 }} />
+        <span style={{ fontFamily: "var(--font-mono)", minWidth: 60 }}>{offset}</span>
+        <button onClick={() => setOffset(Math.max(0, offset - 100))}
+                style={{ background: "var(--paper)", border: "2px solid var(--ink)",
+                         padding: "4px 10px", borderRadius: 999, fontFamily: "var(--font-h)",
+                         fontSize: 16, cursor: "pointer" }}>↑ 上一页</button>
+        <button onClick={() => setOffset(Math.min(total - 1, offset + 100))}
+                style={{ background: "var(--paper)", border: "2px solid var(--ink)",
+                         padding: "4px 10px", borderRadius: 999, fontFamily: "var(--font-h)",
+                         fontSize: 16, cursor: "pointer" }}>↓ 下一页</button>
+      </div>
+
+      <div style={{ background: "var(--code-bg)", color: "var(--code-fg)",
+                    fontFamily: "var(--font-mono)", fontSize: 13, lineHeight: 1.5,
+                    padding: 12, borderRadius: 10, border: "2px solid var(--ink)",
+                    maxHeight: 280, overflow: "auto" }}>
+        {lines.map((l, i) => <div key={i}>{l}</div>)}
+        <div style={{ marginTop: 8, color: "var(--accent-3)" }}>{footer}</div>
+      </div>
+
+      <div style={{ marginTop: 10, fontFamily: "var(--font-hand)", fontSize: 15,
+                    color: "var(--ink-soft)" }}>
+        💡 注意最后一行——它<strong>告诉模型怎么取下一段</strong>。这就是 envelope 的力量：模型不必猜还有没有更多、也不必猜怎么取。
+      </div>
+    </div>
+  );
+}
+
+/* ─── Chapter 11 ─── */
+function Chapter11() {
+  return (
+    <section className="chapter" id="ch11">
+      <h2 className="chapter-title">
+        <span className="ch-num">11</span>
+        为模型设计的工具
+      </h2>
+      <p className="chapter-meta">Designing Tools Models Can Actually Use　·　ACI：Agent-Computer Interface</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：上下文工程的支柱都齐了——记账、压缩、scratchpad、检索。还剩的是<strong>我们一直在管理的上下文压力源头</strong>：为人类设计、不是为模型设计的工具，所以返回得太多。
+        <br /><br />
+        Yang et al. 2024 的 <em>SWE-agent</em> 论文（第 4 章用过"工具设计 = 接口设计"框架）给出了一个更尖锐的中心主张：
+        <strong>LLM 和计算机之间的接口</strong>——论文把它命名为 ACI (Agent-Computer Interface)——<strong>和 LLM 本身一样重要</strong>。
+        他们头条经验结论：同一个模型在 SWE-bench 上，<em>只改 ACI，pass@1 从近 0 提升到 12.5%</em>。多数提升来自<strong>约束模型能看到/做到什么，使之匹配它的真实认知能力</strong>的工具设计：
+        <ul style={{ marginTop: 8 }}>
+          <li>给文件一个小 viewport，而不是整个文件</li>
+          <li>行范围编辑，而不是整文件 rewrite</li>
+          <li>错误消息<em>建议下一步</em>，而不只是说"哪错了"</li>
+        </ul>
+      </div>
+
+      <Outcomes items={[
+        "理解 ACI 的 4 条原则：viewport / targeted edit / explicit envelope / errors-as-instructions",
+        "新工具：read_file_viewport（100 行窗口，agent scroll）",
+        "新工具：edit_lines（行范围替换、插入、append、删除）",
+        "把 envelope 模式扩展到 bash 等其它工具——consistency 本身就是 feature",
+        "tool description 卫生标准：6 项 checklist",
+      ]} />
+
+      <ViewportDumpDiagram />
+
+      <Section id="ch11-1" num="11.1" title="ACI 设计 4 原则">
+        <FourACIPrinciples />
+        <Callout kind="key" title="为什么这一节比工具本身更重要">
+          <p>这 4 个原则是<strong>可以应用到任何工具的</strong>设计 lens。本章用文件工具做示范，但 envelope 和 errors-as-instructions 适用于：HTTP fetch、数据库查询、shell 输出、scratchpad list、MCP 工具——所有<em>可能返回大输出</em>的东西。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch11-2" num="11.2" title="Viewport 文件读取">
+        <CodeBlock filename="src/harness/tools/files.py" lang="python">{`from __future__ import annotations
+from pathlib import Path
+
+from .base import Tool
+from .decorator import tool
+
+
+VIEWPORT_DEFAULT = 100
+VIEWPORT_MAX = 500
+
+
+@tool(side_effects={"read"})
+def read_file_viewport(
+    path: str, offset: int = 0, limit: int = VIEWPORT_DEFAULT
+) -> str:
+    """Read a slice of a text file, like \`less\` or \`head -n ... | tail -n ...\`.
+
+    path: filesystem path.
+    offset: zero-based line number to start reading from. Default 0.
+    limit: max lines to return. Default 100, max 500.
+
+    Returns a rendered viewport with line numbers. The last line of the
+    output describes what's visible and what's NOT, so you can call this
+    tool again with a different offset to keep reading.
+
+    Side effects: reads the filesystem.
+
+    Use this in preference to reading whole files. For files <50 lines,
+    the whole file fits in one call.
+    """
+    limit = min(max(1, limit), VIEWPORT_MAX)
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"file does not exist: {path}")
+    if not p.is_file():
+        raise IsADirectoryError(f"not a regular file: {path}")
+
+    lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    total = len(lines)
+    start = max(0, offset)
+    end = min(total, start + limit)
+    visible = lines[start:end]
+
+    width = len(str(total))
+    numbered = [
+        f"{i + 1:>{width}}  {line}"
+        for i, line in enumerate(visible, start=start)
+    ]
+    body = "\\n".join(numbered)
+    footer = (
+        f"\\n[file {path}; lines {start + 1}-{end} of {total}"
+        + (f"; MORE below — call with offset={end}" if end < total else "; end of file")
+        + (f"; MORE above — call with offset=0" if start > 0 else "")
+        + "]"
+    )
+    return body + footer`}</CodeBlock>
+
+        <Callout kind="key" title="设计赚到的 4 件事">
+          <ul style={{ margin: 0 }}>
+            <li><strong>行号同行渲染</strong>——模型读到行号，可以在后续编辑里直接引用</li>
+            <li><strong>Footer 告诉模型缺什么</strong>——<code>lines 1-100 of 423; MORE below — call with offset=100</code>。模型不必<em>推断</em>有更多，<strong>它被明确告知</strong>，并给出确切的下一调用</li>
+            <li><strong>Offset 是 0-based，展示是 1-based</strong>——展示对人和模型都自然（编辑器都是 1-based）；offset 是<em>程序化切片</em>所以 0-based。这点 docstring 解释清楚</li>
+            <li><strong>错误消息具体</strong>——<code>file does not exist:</code>、<code>not a regular file:</code> 给模型够多信号去修</li>
+          </ul>
+        </Callout>
+
+        <ViewportInteractiveDemo />
+      </Section>
+
+      <Section id="ch11-3" num="11.3" title="行范围编辑器">
+        <CodeBlock filename="src/harness/tools/files.py（续）" lang="python">{`@tool(side_effects={"write"})
+def edit_lines(
+    path: str,
+    start_line: int,
+    end_line: int,
+    replacement: str,
+) -> str:
+    """Replace a line range in a file with new content.
+
+    path: filesystem path (file must exist).
+    start_line: one-based starting line (inclusive).
+    end_line: one-based ending line (inclusive).
+    replacement: text to insert in place of the removed lines. Empty
+                 string deletes the range without replacement. Include
+                 trailing newlines if you want blank lines.
+
+    Returns a confirmation with the diff summary and the lines around
+    the edit (for verification).
+
+    Side effects: writes the file. Preserves content outside the range.
+
+    To INSERT new lines at position N without removing: use
+    start_line=N, end_line=N-1 and replacement=your_new_content.
+    To APPEND: use start_line=last+1, end_line=last.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"file does not exist: {path}")
+
+    original = p.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+    total = len(lines)
+
+    if start_line < 1 or start_line > total + 1:
+        raise ValueError(
+            f"start_line {start_line} out of range (1..{total + 1})"
+        )
+    if end_line < start_line - 1 or end_line > total:
+        raise ValueError(
+            f"end_line {end_line} out of range ({start_line - 1}..{total})"
+        )
+
+    # Normalize: start is zero-based slice, end is zero-based exclusive
+    s = start_line - 1
+    e = end_line   # slice end is exclusive of end_line; works for deletes too
+
+    replacement_lines = replacement.splitlines(keepends=True)
+    if replacement and not replacement.endswith("\\n"):
+        # Don't glue onto the next line without a newline
+        if e < total:
+            replacement_lines[-1] = replacement_lines[-1] + "\\n"
+
+    new_lines = lines[:s] + replacement_lines + lines[e:]
+    p.write_text("".join(new_lines), encoding="utf-8")
+
+    removed = end_line - start_line + 1 if end_line >= start_line else 0
+    added = len(replacement_lines)
+
+    # Render context around the edit
+    context_start = max(0, s - 2)
+    context_end = min(len(new_lines), s + len(replacement_lines) + 2)
+    preview = "".join(
+        f"{i + 1:>5}  {new_lines[i]}"
+        for i in range(context_start, context_end)
+    )
+    return (
+        f"edited {path}: removed {removed} lines, "
+        f"added {added} lines at {start_line}..{end_line}\\n"
+        f"context:\\n{preview}"
+    )`}</CodeBlock>
+
+        <h4 className="sub-title">edit_lines 涵盖的 4 类操作</h4>
+        <CmpTable
+          headers={["操作", "参数", "效果"]}
+          rows={[
+            ["纯替换",   "start=5, end=10, replacement='new'",          "5-10 行被 'new' 取代"],
+            ["纯删除",   "start=5, end=10, replacement=''",             "5-10 行消失"],
+            ["插入（不覆盖）", "start=5, end=4, replacement='new'",     "新内容插在第 5 行之前，无内容被删"],
+            ["追加",     "start=last+1, end=last, replacement='new'",   "添加到文件末尾"],
+          ]}
+        />
+
+        <Callout kind="key" title="两个值得高亮的点">
+          <p><strong>① 行尾保护</strong>——我们用 <code>splitlines(keepends=True)</code> 并在 replacement 不以 <code>\n</code> 结尾时按需添加。<em>防止编辑悄悄破坏 newline——这是朴素 diff-apply 代码的常见 bug</em>。</p>
+          <p><strong>② 边界检查带显式区间</strong>——<code>start_line 500 out of range (1..423)</code>——告诉模型有效区间。一个数错了行数的模型（它们会的）<em>得到足够信号</em>下一回合纠正。</p>
+          <p><strong>③ 返回值带 context</strong>——SWE-agent 的"让 tool 输出自验证"小技巧：agent 不需要再读文件确认，<em>edit 工具直接展示结果</em>。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch11-4" num="11.4" title="替换旧工具">
+        <p>Chapter 4 的 <code>read_file</code> 和 <code>write_file</code> 进入 deprecated 路径。<strong>不删</strong>——<code>write_file</code> 在创建新文件时仍有用，整文件 rewrite 也偶尔是对的选择。但 harness 默认工具切换到 viewport-and-edit：</p>
+
+        <CodeBlock filename="src/harness/tools/std.py（更新）" lang="python">{`from .files import read_file_viewport, edit_lines
+
+# calc 和 bash 不变
+# read_file 仍在，但不再属于 "standard" 集
+# write_file 仍在，但不再属于 "standard" 集
+
+STANDARD_TOOLS = [calc, bash, read_file_viewport, edit_lines]`}</CodeBlock>
+
+        <CodeBlock filename="examples/ch11_viewport.py" lang="python">{`from harness.agent import arun
+from harness.providers.anthropic import AnthropicProvider
+from harness.tools.registry import ToolRegistry
+from harness.tools.std import STANDARD_TOOLS
+
+
+async def main() -> None:
+    provider = AnthropicProvider()
+    registry = ToolRegistry(tools=STANDARD_TOOLS)
+
+    await arun(
+        provider=provider, registry=registry,
+        user_message=(
+            "Read /etc/passwd. There's probably a user called 'nobody' — "
+            "find its entry and tell me the shell and home directory."
+        ),
+    )`}</CodeBlock>
+
+        <Callout kind="key">
+          跑起来。模型调 <code>read_file_viewport("/etc/passwd", offset=0, limit=100)</code>，看到整个文件（通常 100 行内），找到 "nobody" 行，回报。
+          <strong>对比旧 read_file：结果一样，但对一个 5000 行的日志文件，viewport 把工具结果保持在 500 行内；完整读会一调用就吃掉大半窗口</strong>。
+        </Callout>
+      </Section>
+
+      <Section id="ch11-5" num="11.5" title="把 Envelope 模式扩展到 bash">
+        <p>Viewport 模式专属于文件，但<strong>显式 envelope 原则可推广</strong>。每个可能大的工具输出都该有同样的形状：</p>
+
+        <CodeBlock filename="envelope shape" lang="text">{`<content>
+[tool_result: <N> items/lines/bytes returned; <M> more omitted.
+ Call <suggestion> to see more.]`}</CodeBlock>
+
+        <CodeBlock filename="src/harness/tools/std.py（bash 更新）" lang="python">{`BASH_OUTPUT_LIMIT = 4000   # characters
+
+
+@tool(side_effects={"read", "network"})
+def bash(command: str, timeout_seconds: int = 30) -> str:
+    """Run a shell command in the current working directory.
+    [... description ...]
+    """
+    import subprocess
+    timeout = min(int(timeout_seconds), 300)
+    result = subprocess.run(
+        command, shell=True, capture_output=True, text=True, timeout=timeout,
+    )
+    out = result.stdout
+    err = result.stderr
+
+    out_truncated = len(out) > BASH_OUTPUT_LIMIT
+    err_truncated = len(err) > BASH_OUTPUT_LIMIT // 2
+
+    if out_truncated:
+        out = out[:BASH_OUTPUT_LIMIT] + f"\\n...[truncated at {BASH_OUTPUT_LIMIT} chars]"
+    if err_truncated:
+        err = err[:BASH_OUTPUT_LIMIT // 2] + f"\\n...[truncated]"
+
+    note = ""
+    if out_truncated or err_truncated:
+        note = (
+            "\\n[note: output was truncated. For large output, pipe through "
+            "\`head\`, \`tail\`, \`grep\`, or save to a file and use read_file_viewport.]"
+        )
+
+    return (
+        f"exit={result.returncode}\\n"
+        f"---stdout---\\n{out}\\n"
+        f"---stderr---\\n{result.stderr}"
+        + note
+    )`}</CodeBlock>
+
+        <Callout kind="key">
+          bash 现在 cap 输出、显式标注截断、<strong>告诉模型怎么处理</strong>。建议（"pipe through head/tail/grep"）是 LLM-aware 的小设计——这是<em>缩减输出的惯用 shell 方式，模型已经认识这些工具</em>。
+        </Callout>
+
+        <p>把同样思路应用到任何会返回多的工具：第 10 章的 <code>search_docs</code>、<code>scratchpad_read</code> 在 entry 巨大时、你加的任何 HTTP GET 工具。<strong>跨工具的 envelope 一致性本身就是 feature</strong>——模型学一次形状，到处适用。</p>
+      </Section>
+
+      <Section id="ch11-6" num="11.6" title="描述卫生（Description hygiene）">
+        <p>本章工具描述比 Chapter 4 版本长。<strong>刻意的</strong>。一个有三段描述（做什么 / 何时用 / 怎么调 / output envelope 意味什么）的工具比一行描述<em>难得多被误用</em>。AWS Heroes 2024 那篇 <em>MCP Tool Design: Why Your AI Agent Is Failing</em> 直接说：</p>
+
+        <div className="cards cols-2">
+          <Card title="❌ 反例" kind="bad">
+            <code>"Sends a notification"</code>
+            <br /><br />会被各种滥用——模型不知道这通知贵不贵、到不到生产、是否限流、要不要标题。
+          </Card>
+          <Card title="✓ 正例" kind="good">
+            <code>"Sends an email to the address in args.to. Delivery is asynchronous. Idempotent on message_id. Do not call twice for the same logical message."</code>
+            <br /><br />模型知道：副作用、异步语义、幂等键、行为约束。<strong>难误用</strong>。
+          </Card>
+        </div>
+
+        <h4 className="sub-title">好 tool description 的 6 项 checklist</h4>
+        <ol style={{ fontFamily: "var(--font-hand)", fontSize: "1.05em", lineHeight: 1.65 }}>
+          <li><strong>What it does</strong>——一句话</li>
+          <li><strong>What it requires</strong>——前置条件：文件存在、user 存在、process 在跑</li>
+          <li><strong>What it does NOT do</strong>——scope 限制："不抓 URL"、"不改 git state"</li>
+          <li><strong>Side effects</strong>——read / write / network / mutate，明确写出</li>
+          <li><strong>Output envelope</strong>——返回值长什么样，包括截断行为</li>
+          <li><strong>When to prefer it</strong>——"用这个而非 X 当..."</li>
+        </ol>
+
+        <Callout kind="note">本章 viewport reader 的 docstring 6 项全中。从 Chapter 4 起写的每个工具，遇到时都按这个标准 retrofit。</Callout>
+      </Section>
+
+      <Section id="ch11-7" num="11.7" title="SWE-agent 哪里错了（教训反而更深）">
+        <p>原版 SWE-agent ACI 包含一堆<em>定制命令</em>：<code>find_file</code>、<code>search_dir</code>、<code>create</code> 和一个细致的文件 viewer 状态机。<strong>Mini-SWE-agent 跟进版几乎全砍了，只用 bash——SWE-bench 成绩相近，~100 行代码</strong>。</p>
+
+        <p>变了什么？<strong>前沿模型在通用工具上的使用能力变好了</strong>。SWE-agent 为补偿 GPT-4 的笨拙建的那套精致 ACI 命令，到了 Claude 3.5 之后<em>不必要了</em>——只要 output 框架得好，它们能熟练驱动一个 shell。</p>
+
+        <Callout kind="key" title="教训">
+          <p><strong>设计工具来弥补模型的弱点，不要去重造它已有的能力。</strong></p>
+          <ul>
+            <li>Viewport 读仍然值得——任何模型对 5 万 token 的工具输出都不行</li>
+            <li>行范围编辑仍然值得——它是 diff 的本质，让 agent 意图可审计</li>
+            <li><strong>但</strong>当模型能调 bash 时，重新实现 <code>ls</code> 或 <code>grep</code> 很少值得这个维护负担</li>
+          </ul>
+          <p>本书设计正好在这个甜点上：<em>加约束 token 流的（viewport、envelope），让模型用 bash 处理通用情况</em>。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch11-8" num="11.8" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 测量 token 影响">
+            跑一个读 1000 行文件的任务：先用旧 <code>read_file</code>，再用 <code>read_file_viewport</code>。对比总 token 消耗 + 输出质量。<strong>viewport 永远更好，还是只对大文件？</strong>
+          </Card>
+          <Card title="② 给 edit 加 dry_run">
+            加一个 <code>dry_run=True</code> 参数，返回 diff 但不写。Agent 能用它在 commit 前验证。<strong>dry-run 引入哪些权衡？</strong>
+          </Card>
+          <Card title="③ 故意写一个坏工具">
+            写一个 <code>read_file_unbounded</code>——返回整个文件、没有 envelope。把它和 viewport 版一起给 agent。看模型挑哪个。<strong>prompt 短的时候它会偏向更差的那个吗？</strong>这告诉你 description discipline 的价值。
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch11" questions={[
+        {
+          q: "SWE-agent 2024 论文的核心实证发现是什么？",
+          options: [
+            "Claude 比 GPT 强",
+            "同一个模型在 SWE-bench 上 pass@1 从 ~0 提升到 12.5% — 只通过改 ACI 不改模型",
+            "Embedding 比 BM25 强",
+            "Python 比 Rust 适合 agent",
+          ],
+          right: 1,
+          explain: "这就是 ACI 概念的承重发现——接口和模型一样重要。本章 4 原则都来自这篇论文。",
+        },
+        {
+          q: "为什么 viewport reader 的 footer 要带 'call with offset=N for more'？",
+          options: [
+            "为了文档美观",
+            "Explicit envelope 原则——告诉模型缺什么 + 怎么取下一段，不让它猜",
+            "API 要求",
+            "节省 token",
+          ],
+          right: 1,
+          explain: "模型读到 envelope 就知道有更多和怎么继续。它不需要推断或试错。",
+        },
+        {
+          q: "edit_lines 的 splitlines(keepends=True) 是为了什么？",
+          options: [
+            "性能",
+            "行尾保护——防止编辑悄悄破坏 newline（朴素 diff-apply 代码的常见 bug）",
+            "Windows 兼容",
+            "JSON 序列化",
+          ],
+          right: 1,
+          explain: "保持每行原本的 \\n 形状。replacement 不以 \\n 结尾且后面还有行时，我们补上一个。",
+        },
+        {
+          q: "Mini-SWE-agent 用 ~100 行只靠 bash 就达到了与 SWE-agent 相近 SWE-bench 成绩——意味着？",
+          options: [
+            "ACI 不重要了",
+            "前沿模型变强了——为补偿 GPT-4 笨拙建的精致 ACI 命令到 Claude 3.5 后不必要；但 viewport / envelope 仍值得（约束 token 流）",
+            "Python 取代了 shell",
+            "GPT-5 是错误方向",
+          ],
+          right: 1,
+          explain: "设计工具来弥补模型弱点，不要重造它已有能力。本章工具集（viewport + edit + bash）正在那个甜点上。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter11 = Chapter11;

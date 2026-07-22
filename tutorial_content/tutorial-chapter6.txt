@@ -1,0 +1,525 @@
+/* tutorial-chapter6.jsx — Chapter 6 full content: Safe Tool Execution */
+
+/* ─── Local diagrams ─── */
+function FourGatesDiagram() {
+  const gates = [
+    { label: "name 存在?",      sub: "registry.tools",        color: "var(--accent-3)" },
+    { label: "args ⊃ schema?",  sub: "jsonschema validator",  color: "var(--accent-3)" },
+    { label: "去重器?",          sub: "_check_loop",            color: "var(--accent-3)" },
+    { label: "execute",         sub: "tool.run(**args)",       color: "var(--green)" },
+  ];
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 950 260" preserveAspectRatio="xMidYMid meet">
+        {gates.map((g, i) => (
+          <g key={i}>
+            <rect x={20 + i * 230} y={30} width={195} height={75} rx={12}
+                  fill={i < 3 ? "rgba(212,160,23,0.15)" : "rgba(74,124,58,0.15)"}
+                  stroke={g.color} strokeWidth="3"
+                  style={{ filter: "url(#sketchy-edge-soft)" }} />
+            <text x={117 + i * 230} y={62} fontFamily="var(--font-h)" fontSize="22"
+                  fill={g.color} textAnchor="middle" fontWeight="700">{g.label}</text>
+            <text x={117 + i * 230} y={89} fontFamily="var(--font-mono)" fontSize="14"
+                  fill="var(--ink-soft)" textAnchor="middle">{g.sub}</text>
+            {i < 3 && <SkArrow x1={215 + i * 230} y1={66} x2={250 + i * 230} y2={66} />}
+          </g>
+        ))}
+        {/* "否" arrows go straight down to a horizontal bus line, then bus → box */}
+        {[0,1,2].map(i => (
+          <g key={i}>
+            <text x={117 + i * 230} y={128} fontFamily="var(--font-hand)" fontSize="16"
+                  fill="var(--red)" textAnchor="middle">否</text>
+            <line x1={117 + i * 230} y1={137} x2={117 + i * 230} y2={175}
+                  stroke="var(--red)" strokeWidth="2" strokeDasharray="4 3"
+                  style={{ filter: "url(#sketchy-edge-soft)" }} />
+          </g>
+        ))}
+        {/* horizontal red bus collecting the three drops */}
+        <line x1={117} y1={175} x2={577} y2={175}
+              stroke="var(--red)" strokeWidth="2"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        {/* bus → box (single arrow) */}
+        <SkArrow x1={347} y1={175} x2={347} y2={195} color="var(--red)" />
+
+        <rect x={195} y={195} width={400} height={42} rx={12}
+              fill="rgba(185,50,47,0.15)" stroke="var(--red)" strokeWidth="3"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={395} y={222} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--red)" textAnchor="middle" fontWeight="700">结构化错误 → 回到模型</text>
+      </svg>
+      <div className="caption">工具运行前的 4 道闸门。任一"否"短路成<strong>结构化错误</strong>，模型下回合就能学。</div>
+    </div>
+  );
+}
+
+function ReflexionDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 240" preserveAspectRatio="xMidYMid meet">
+        <text x={450} y={30} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          同样的失败，两种错误消息——模型的恢复率天差地别
+        </text>
+
+        {/* Bad */}
+        <rect x={20} y={60} width={400} height={150} rx={14}
+              fill="rgba(185,50,47,0.10)" stroke="var(--red)" strokeWidth="3"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={220} y={85} fontFamily="var(--font-h)" fontSize="20"
+              fill="var(--red)" textAnchor="middle" fontWeight="700">❌ Python 风格</text>
+        <text x={40} y={117} fontFamily="var(--font-mono)" fontSize="13" fill="var(--ink)">
+          TypeError: calc() got an
+        </text>
+        <text x={40} y={138} fontFamily="var(--font-mono)" fontSize="13" fill="var(--ink)">
+          unexpected keyword argument 'expr'
+        </text>
+        <text x={220} y={172} fontFamily="var(--font-hand)" fontSize="17" fill="var(--ink-soft)" textAnchor="middle">
+          模型必须反向推理"哪个参数才对"
+        </text>
+        <text x={220} y={195} fontFamily="var(--font-hand)" fontSize="17" fill="var(--red)" textAnchor="middle" fontWeight="700">
+          恢复率：低，常常多耗 1-2 个回合
+        </text>
+
+        {/* Good */}
+        <rect x={480} y={60} width={400} height={150} rx={14}
+              fill="rgba(74,124,58,0.10)" stroke="var(--green)" strokeWidth="3"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={680} y={85} fontFamily="var(--font-h)" fontSize="20"
+              fill="var(--green)" textAnchor="middle" fontWeight="700">✓ 结构化</text>
+        <text x={500} y={117} fontFamily="var(--font-mono)" fontSize="13" fill="var(--ink)">
+          calc: invalid arguments.
+        </text>
+        <text x={500} y={138} fontFamily="var(--font-mono)" fontSize="13" fill="var(--ink)">
+          args.expression: 'expression' is a
+        </text>
+        <text x={500} y={159} fontFamily="var(--font-mono)" fontSize="13" fill="var(--ink)">
+          required property
+        </text>
+        <text x={680} y={185} fontFamily="var(--font-hand)" fontSize="17" fill="var(--ink-soft)" textAnchor="middle">
+          模型读完就知道该改什么
+        </text>
+        <text x={680} y={205} fontFamily="var(--font-hand)" fontSize="17" fill="var(--green)" textAnchor="middle" fontWeight="700">
+          恢复率：通常 1 回合内解决
+        </text>
+      </svg>
+      <div className="caption">Shinn et al. 2023 Reflexion (NeurIPS) 经验性地量化了这个差异。结构化反馈让 agent 恢复速度显著加快。</div>
+    </div>
+  );
+}
+
+/* ─── Chapter 6 ─── */
+function Chapter6() {
+  return (
+    <section className="chapter" id="ch6">
+      <h2 className="chapter-title">
+        <span className="ch-num">6</span>
+        安全工具执行
+      </h2>
+      <p className="chapter-meta">Safe Tool Execution　·　关掉第 2 章剩下的 2 个 break</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：流式、中断、重试都齐了。Loop 能挺过网络失败、能在 Ctrl-C 上干净关闭。但参数名拼错仍然要等 Python 在函数体里抛 <code>TypeError</code> 才发现；registry 还看不出来模型在转圈。
+        <br /><br />
+        <strong>第 2 章那张 5-break 表，还有两个开着的：</strong>
+      </div>
+
+      <CmpTable
+        headers={["#", "Break", "现状"]}
+        rows={[
+          ["2", "模型传错了参数 shape（{expr: ...} 而不是 {expression: ...}）",   "Python 在函数体里抛 TypeError 才发现——太晚了"],
+          ["4", "模型用同样参数把同一个工具调一遍又一遍",                          "MAX_ITERATIONS=20 在 20 次浪费之后才接住——也太晚了"],
+        ]}
+      />
+
+      <Outcomes items={[
+        "Schema 校验在 dispatch 之前——bad args 永远到不了你的工具函数",
+        "结构化的错误消息让模型在下一回合就能纠正（Reflexion 效应）",
+        "Loop detector：同名+同参 N 次重复 → 注入结构化提示叫它换策略",
+        "Unknown tool 时给出 'Did you mean ...?' 建议——免费的恢复信号",
+      ]} />
+
+      <FourGatesDiagram />
+
+      <Section id="ch6-1" num="6.1" title="为什么在 dispatch 之前校验">
+        <ReflexionDiagram />
+
+        <div className="cards cols-2">
+          <Card title="① 更好的错误消息（给模型）">
+            <p>当 <code>calc</code> 抛 <code>TypeError: calc() got an unexpected keyword argument 'expr'</code>，registry 现在原样回传给模型。<strong>不能说错</strong>，但<strong>不够好</strong>——模型必须从一段瞄向人类调试器的 Python 风格错误里反向推理出"哪个参数才对"。</p>
+            <p>schema-aware validator 可以说<em>"tool calc requires <code>expression</code> (string); got <code>expr</code>"</em>——模型下一次尝试通常一击即中。</p>
+          </Card>
+          <Card title="② 安全">
+            <p>一个像 <code>write_file</code> 的工具收到 <code>&#123;"path": "/etc/passwd", "content": ...&#125;</code>，本来就不该进入函数体。
+            把参数 shape 校验做在 registry 层，给我们一个干净的地方在工具能做任何破坏之前 enforce invariants。</p>
+            <p>本章只做<strong>结构性</strong>校验——"这是不是我期望的 shape？"。第 14 章加<strong>语义</strong>检查——"这个路径被允许吗？"——但叠在同一层机器上。</p>
+          </Card>
+        </div>
+
+        <Callout kind="key" title="研究背书：Reflexion 2023">
+          Shinn et al. <em>Reflexion: Language Agents with Verbal Reinforcement Learning</em> (NeurIPS 2023) 跨多个 agent benchmark 经验性证明：
+          <strong>收到关于失败的结构化反馈（用模型自己的词汇说清错了什么）的 agent，恢复速度显著快于只看原始错误 trace 的 agent</strong>，并且效应在多步任务上复合。在生产里就是可测量的——每个错命名参数省一个回合，乘以你跑的所有回合。
+        </Callout>
+
+        <p>生产 harness 大多用 Pydantic 或 jsonschema。Pydantic 对 Python 原生类型更顺手；jsonschema 是 JSON Schema 规范的参考实现。我们用 <strong>jsonschema</strong>，因为我们的工具 schema <em>就是</em> JSON Schema——库刚好为这个设计。</p>
+
+        <CodeBlock filename="shell" lang="shell">{`uv add 'jsonschema>=4.22'`}</CodeBlock>
+      </Section>
+
+      <Section id="ch6-2" num="6.2" title="Validator">
+        <CodeBlock filename="src/harness/tools/validation.py" lang="python">{`from __future__ import annotations
+from dataclasses import dataclass
+
+import jsonschema
+from jsonschema import Draft202012Validator
+
+
+@dataclass(frozen=True)
+class ValidationError:
+    message: str
+    path: str  # JSON-pointer-ish; e.g. "args.expression"
+
+    def __str__(self) -> str:
+        return f"{self.path}: {self.message}"
+
+
+def validate(args: dict, schema: dict) -> list[ValidationError]:
+    """Return a list of validation errors. Empty list == valid."""
+    validator = Draft202012Validator(schema)
+    errors: list[ValidationError] = []
+    for err in validator.iter_errors(args):
+        path = "args" + "".join(f".{p}" for p in err.absolute_path)
+        errors.append(ValidationError(message=err.message, path=path))
+    return errors`}</CodeBlock>
+
+        <Callout kind="key" title="两个值得说的设计点">
+          <p><strong>返回 list，不抛异常。</strong> 一次调用可能有多个问题（类型错 + 缺必填 + 多了未知字段）。<em>模型从"一条错误消息列出三件事"里学得比"连续 3 个回合各修一个"快得多</em>。</p>
+          <p><strong>路径是人类可读的。</strong> 我们发 <code>args.expression</code>、<code>args.items[0].name</code>。模型读这个跟人一样顺。"at $.items.0.name"难解析得多。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch6-3" num="6.3" title="把校验穿进 dispatch">
+        <CodeBlock filename="src/harness/tools/registry.py" lang="python">{`from __future__ import annotations
+import difflib, json
+from dataclasses import dataclass, field
+
+from ..messages import ToolResult
+from .base import Tool
+from .validation import ValidationError, validate
+
+
+MAX_REPEAT_CALLS = 3   # same (tool, args) this many times in a row → halt
+
+
+@dataclass
+class ToolRegistry:
+    tools: dict[str, Tool] = field(default_factory=dict)
+    _call_history: list[tuple[str, str]] = field(default_factory=list, init=False)
+
+    def __init__(self, tools: list[Tool] | None = None) -> None:
+        self.tools = {}
+        self._call_history = []
+        for t in tools or []:
+            self.add(t)
+
+    def add(self, tool: Tool) -> None:
+        if tool.name in self.tools:
+            raise ValueError(f"duplicate tool name: {tool.name}")
+        self.tools[tool.name] = tool
+
+    def schemas(self) -> list[dict]:
+        return [t.schema_for_provider() for t in self.tools.values()]
+
+    def dispatch(self, name: str, args: dict, call_id: str) -> ToolResult:
+        if name not in self.tools:
+            return self._unknown_tool(name, call_id)
+
+        tool = self.tools[name]
+        errors = validate(args, tool.input_schema)
+        if errors:
+            return self._validation_failure(name, errors, call_id)
+
+        self._record(name, args)
+        loop_result = self._check_loop(name, args, call_id)
+        if loop_result is not None:
+            return loop_result
+
+        try:
+            content = tool.run(**args)
+        except Exception as e:
+            return ToolResult(
+                call_id=call_id,
+                content=f"{name} raised {type(e).__name__}: {e}",
+                is_error=True,
+            )
+        return ToolResult(call_id=call_id, content=content)
+
+    # --- helpers -----------------------------------------------------
+
+    def _unknown_tool(self, name: str, call_id: str) -> ToolResult:
+        # difflib's default cutoff is 0.6 — for 'calculator' vs 'calc'
+        # the ratio is ~0.57, which the default would reject. 0.5 still
+        # rejects unrelated names.
+        close = difflib.get_close_matches(
+            name, list(self.tools.keys()), n=1, cutoff=0.5,
+        )
+        suggestion = f" Did you mean {close[0]!r}?" if close else ""
+        return ToolResult(
+            call_id=call_id,
+            content=(
+                f"unknown tool: {name!r}.{suggestion} "
+                f"Available: {sorted(self.tools.keys())}"
+            ),
+            is_error=True,
+        )
+
+    def _validation_failure(self, name, errors, call_id):
+        summary = "; ".join(str(e) for e in errors)
+        return ToolResult(
+            call_id=call_id,
+            content=f"{name}: invalid arguments. {summary}",
+            is_error=True,
+        )
+
+    def _record(self, name: str, args: dict) -> None:
+        self._call_history.append((name, json.dumps(args, sort_keys=True)))
+        if len(self._call_history) > 100:
+            self._call_history = self._call_history[-100:]
+
+    def _check_loop(self, name, args, call_id) -> ToolResult | None:
+        key = (name, json.dumps(args, sort_keys=True))
+        repeats = sum(1 for k in self._call_history[-MAX_REPEAT_CALLS:] if k == key)
+        if repeats >= MAX_REPEAT_CALLS:
+            return ToolResult(
+                call_id=call_id,
+                content=(
+                    f"tool-call loop detected: {name} called with identical "
+                    f"arguments {MAX_REPEAT_CALLS} times in a row. "
+                    "Try a different approach or different arguments, or "
+                    "stop and return your current best answer."
+                ),
+                is_error=True,
+            )
+        return None`}</CodeBlock>
+
+        <h4 className="sub-title">3 个新行为</h4>
+        <div className="cards cols-3">
+          <Card title="① Unknown tool 给出建议" kind="good">
+            模型叫 <code>calculator</code>，我们只有 <code>calc</code>——<code>difflib.get_close_matches</code> 产出 <em>"Did you mean 'calc'?"</em>。<br />
+            经验上这能恢复 ~80% 的拼错工具名，代价是 <code>import difflib</code> 三行。
+          </Card>
+          <Card title="② 校验错误结构化回传" kind="good">
+            模型读到 <code>calc: invalid arguments. args.expression: 'expression' is a required property</code>——通常下一个回合就修好了。
+            对比预校验版本看到的 Python TypeError——都行，<strong>结构化更快</strong>。
+          </Card>
+          <Card title="③ 工具调用循环被检测+解释" kind="good">
+            连续 3 次相同调用 → registry 合成一个解释错误。这是关键干预——和 §6.1 的 Reflexion 框架是同一原则，应用在不同失败模式上：<strong>模型得到结构化外部提示，而不是又一次同样无效的输出</strong>。
+          </Card>
+        </div>
+      </Section>
+
+      <Section id="ch6-4" num="6.4" title='"相同"意味着什么'>
+        <p>Loop detector 用 <code>(name, json.dumps(args, sort_keys=True))</code> 作为 dedup key。<strong>这是精确匹配</strong>。一个调 <code>calc("1+1")</code> 然后调 <code>calc("1 + 1")</code> 的模型会绕过它。<em>这通常没问题</em>——模型在变化参数（哪怕是琐碎变化）就是在前进。我们关心的失败模式是<strong>"模型已经无招可出"</strong>那种。</p>
+
+        <h4 className="sub-title">两个诱人但没进来的扩展</h4>
+        <div className="cards cols-2">
+          <Card title="模糊匹配" kind="bad">
+            压缩空白、规范化大小写、舍入浮点数。<strong>能抓琐碎变化，但也会抓到合法的变化</strong>——"read lines 1-50" 和 "read lines 1-51" 看起来模糊相同，但第二个是真的前进。<em>误报"前进"比漏报"循环"更糟</em>。
+          </Card>
+          <Card title="语义匹配" kind="bad">
+            一个基于 LLM 的"两次调用是不是真的一样"的 judge。<strong>贵 · 非确定性 · 复现不出 bug 的好途径</strong>。
+          </Card>
+        </div>
+
+        <Callout kind="key">
+          精确匹配版本抓住那个糟糕情况——真正卡住的循环——而不踩到真实前进。命中误漏？调低 <code>MAX_REPEAT_CALLS</code>，或者用领域专属启发式。
+        </Callout>
+      </Section>
+
+      <Section id="ch6-5" num="6.5" title="关于 MAX_ITERATIONS">
+        <p>
+          到本章为止，loop 的外部边界一直是 <code>MAX_ITERATIONS = 20</code>。registry 层的 loop detector 给了我们更聪明的<strong>内部</strong>边界——如果模型在转圈，我们在 20 步之前就停。但 <code>MAX_ITERATIONS</code> 本身仍是个粗糙的安全网，
+          <em>而"几个迭代算多"的正确答案不是一个数字——是预算</em>。
+        </p>
+        <p>基于 token（第 20 章）或基于墙钟秒数的<strong>成本预算</strong> 比迭代次数诚实。短任务带几个 100K-token 的工具结果几下就撞上成本上限；长任务带细小的工具结果可以合法跑 40 个迭代且很便宜。<strong>数迭代是 proxy，成本才是要数的东西</strong>。</p>
+        <Callout kind="note">
+          我们在第 20 章把 <code>MAX_ITERATIONS</code> 升级成正经预算。现在它继续做 fail-safe，<code>_check_loop</code> 的介入才是真正信号。
+        </Callout>
+      </Section>
+
+      <Section id="ch6-6" num="6.6" title="一小套测试">
+        <p>现在该开始<strong>故意测 loop 的错误路径</strong>，不只是 happy path。一直靠"能跑完"的例子不够——我们需要测试覆盖第 2 章那张 5-break 表，确认它们都<em>优雅</em>失败。</p>
+
+        <CodeBlock filename="tests/test_registry.py" lang="python">{`from harness.tools.registry import ToolRegistry
+from harness.tools.std import calc
+
+
+def test_unknown_tool_with_suggestion():
+    registry = ToolRegistry(tools=[calc])
+    result = registry.dispatch("calculator", {"expression": "2+2"}, "call-1")
+    assert result.is_error
+    assert "Did you mean 'calc'?" in result.content
+
+
+def test_validation_missing_required():
+    registry = ToolRegistry(tools=[calc])
+    result = registry.dispatch("calc", {}, "call-1")
+    assert result.is_error
+    assert "expression" in result.content
+    assert "required" in result.content
+
+
+def test_validation_wrong_type():
+    registry = ToolRegistry(tools=[calc])
+    result = registry.dispatch("calc", {"expression": 42}, "call-1")
+    assert result.is_error
+    assert "string" in result.content.lower() or "str" in result.content.lower()
+
+
+def test_loop_detection():
+    registry = ToolRegistry(tools=[calc])
+    for i in range(3):
+        result = registry.dispatch("calc", {"expression": "1+1"}, f"call-{i}")
+    # the third call should be caught by the loop detector
+    result = registry.dispatch("calc", {"expression": "1+1"}, "call-3")
+    assert result.is_error
+    assert "tool-call loop" in result.content
+
+
+def test_happy_path():
+    registry = ToolRegistry(tools=[calc])
+    result = registry.dispatch("calc", {"expression": "2+2"}, "call-1")
+    assert not result.is_error
+    assert result.content == "4"`}</CodeBlock>
+
+        <CodeBlock filename="shell" lang="shell">{`uv run pytest tests/test_registry.py -q
+# 5 passed`}</CodeBlock>
+
+        <Callout kind="note">
+          全套不算完整——第 19 章会建正经的 trajectory eval——<strong>但已经够抓 registry 的回归</strong>，而 registry 现在是 harness 的中心组件。
+        </Callout>
+      </Section>
+
+      <Section id="ch6-7" num="6.7" title="值得再写一个工具：json_query">
+        <p>Registry 现在够稳，可以承得起一个<strong>合同窄</strong>的工具。<code>json_query</code> 拿 JSON 字符串和一个 JSONPath-ish 表达式。这是校验的好压力测试——schema 有两个必填字符串、形状具体，而且失败模式（JSON 无效、路径不存在）validator 和工具会各分一份。</p>
+
+        <CodeBlock filename="src/harness/tools/std.py（追加）" lang="python">{`import json
+
+
+@tool(side_effects={"read"})
+def json_query(data: str, path: str) -> str:
+    """Query JSON data with a simple dot-path expression.
+
+    data: a JSON string (object or array).
+    path: a dot-separated path; e.g. "items.0.name" or "user.email".
+          Array indices are integers; object keys are dot-separated.
+
+    Returns the queried value as JSON, or an error string if the path
+    doesn't exist.
+
+    Side effects: none.
+    """
+    obj = json.loads(data)   # invalid JSON → registry catches it
+    current = obj
+    for part in path.split("."):
+        if isinstance(current, list):
+            current = current[int(part)]
+        elif isinstance(current, dict):
+            if part not in current:
+                raise KeyError(f"path not found: {part}")
+            current = current[part]
+        else:
+            raise TypeError(
+                f"cannot index {type(current).__name__} with {part}"
+            )
+    return json.dumps(current)`}</CodeBlock>
+
+        <p>现在 registry 有 5 个工具。拿你喜欢的 provider 跑一下——当模型传错参数，registry 的错误消息结构化抵达，模型纠正，下一个调用对。大多数时候。</p>
+      </Section>
+
+      <Section id="ch6-8" num="6.8" title="Registry 还不做什么（每个都对应未来一章）">
+        <div className="cards cols-3">
+          <Card title="无权限控制" kind="">
+            任何人都能用任意 path 调 <code>write_file</code>。<strong>第 14 章</strong>建权限层。
+          </Card>
+          <Card title="无可观测性" kind="">
+            Registry 什么都不 log。失败调用在事后分析里看不见。<strong>第 18 章</strong>给每次 dispatch 加 OpenTelemetry span。
+          </Card>
+          <Card title="无成本核算" kind="">
+            Registry 不知道、也不在乎模型花了多少钱去发起这次调用。<strong>第 20 章</strong>接入预算感知 dispatch。
+          </Card>
+        </div>
+
+        <Callout kind="key">
+          <p>三个都干净地插入，<strong>因为 registry 是唯一的 dispatch 点</strong>。我们不必把权限检查穿过每个工具；不必教每个工具去 log。<em>Registry 是设计上的拦截层</em>，而这本书加这些功能的代价正比于它们做的事——而不是我们有多少工具。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch6-9" num="6.9" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 找一个合法的循环">
+            构造一个 prompt，agent 真的需要用相同参数重试同一个工具（比如轮询一个慢操作）。Loop detector 触发吗？正确行为吗？如何区分轮询循环 vs 卡住循环？
+          </Card>
+          <Card title="② 测量恢复率">
+            拿 30 个会触发畸形工具调用的 prompt 跑你的 harness。记录模型在收到校验错误后下一回合恢复的次数 vs 放弃的次数。<strong>那个数字是你的 schema 和错误消息设计质量的代理指标</strong>。
+          </Card>
+          <Card title="③ 给 close-match 写测试">
+            证明把 <code>calc</code> 重命名为 <code>calculate</code> 会让你硬编码的 <em>Did you mean</em> 测试失败。你会改什么，让测试不管具体名字都能绿？你的答案就是更大测试套件需要长什么样的草图。
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch6" questions={[
+        {
+          q: "为什么 validator 在 dispatch 之前跑，而不是工具内部自检？",
+          options: [
+            "Validator 更快",
+            "为了给模型结构化错误反馈（Reflexion 效应）+ 在工具能造成破坏之前 enforce invariants",
+            "Pydantic 要求",
+            "为了减少代码",
+          ],
+          right: 1,
+          explain: "这两件 §6.1 都点名了。生产级 harness 都把校验 hoist 到 dispatch 层。",
+        },
+        {
+          q: "为什么 ValidationError 列表而不是抛第一个错？",
+          options: [
+            "Python 习惯",
+            "为了批量记日志",
+            "因为模型从一条列出 3 个问题的消息学得比连续 3 个回合各修一个快",
+            "随便选的",
+          ],
+          right: 2,
+          explain: "这是好错误消息设计的基础原则——多个独立的问题在一次反馈里给出。",
+        },
+        {
+          q: "Loop detector 为什么用精确匹配（json.dumps + sort_keys）而不是模糊匹配？",
+          options: [
+            "精确匹配性能更好",
+            "模糊匹配会把'真正的前进'误判为'循环'——误报比漏报更糟",
+            "Python 字典无序",
+            "JSON Schema 要求",
+          ],
+          right: 1,
+          explain: "'read lines 1-50' 和 'read lines 1-51' 看似模糊相同但语义是前进。精确匹配只抓真的'无招可出'，不踩真实前进。",
+        },
+        {
+          q: "Registry 当前还不做哪件事，需要后续章节补足？",
+          options: [
+            "工具命名校验",
+            "权限控制、可观测性、成本核算——分别对应第 14 / 18 / 20 章",
+            "类型注解",
+            "JSON 序列化",
+          ],
+          right: 1,
+          explain: "Registry 是唯一 dispatch 点，所以这些都能干净插入——加这些功能的代价正比于它们做的事。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter6 = Chapter6;

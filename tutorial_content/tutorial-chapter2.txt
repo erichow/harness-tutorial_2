@@ -1,0 +1,366 @@
+/* tutorial-chapter2.jsx — Chapter 2 full content */
+
+function Chapter2() {
+  return (
+    <section className="chapter" id="ch2">
+      <h2 className="chapter-title">
+        <span className="ch-num">2</span>
+        最小可用循环
+      </h2>
+      <p className="chapter-meta">The Minimum Viable Loop　·　40 行代码造一个能跑的 agent，再故意把它打碎</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：第 1 章搭好了 repo 骨架并约定了词汇——Model 是函数，Agent 是循环，Harness 是循环周围的工程。还没有代码。
+        <br /><br />
+        <strong>一个 <code>while</code> 循环</strong> 是"聊天界面"和"agent"之间最小的差别——它把"一次 API 调用"变成"多次"：模型读到自己上一回合的输出，并据此决定下一步。这就是 <Term k="ReAct">ReAct (reason-act-observe)</Term> 模式。
+      </div>
+
+      <Outcomes items={[
+        "用 40 行写出一个能跑的 agent loop（mock provider + 一个 calc 工具）",
+        "理解 loop 上每个回合的 3 个决策：问 · 分类 · 执行",
+        "看到 5 种刻意的崩溃——它们就是后续 22 章的路线图",
+        "建立 Provider 协议这个'缝'，保证 harness 永远与具体厂商解耦",
+      ]} />
+
+      <Section id="ch2-1" num="2.1" title="循环到底要做什么">
+        <p>每一次迭代，loop 都要做 3 个决策：</p>
+
+        <LoopAnimation />
+
+        <div className="cards cols-3">
+          <Card title="① 问 (Ask)" kind="">
+            把当前 transcript 发给模型，拿一次响应。
+          </Card>
+          <Card title="② 分类 (Classify)" kind="">
+            响应是 <strong>tool_call</strong> 还是 <strong>final answer</strong>？
+            tool_call → 执行工具、把结果 append 回 transcript；
+            final → 停，返回它。
+          </Card>
+          <Card title="③ 兜底 (Bound)" kind="">
+            如果跑了 N 轮还没收尾，强制退出。
+            <em>无界的 loop 不是 feature，是 bug。</em>
+          </Card>
+        </div>
+
+        <Callout kind="key" title="两个值得记住的微妙点">
+          <p><strong>Transcript 就是状态。</strong> Loop 没有别的记忆——任何要跨回合存在的事实，要么活在 transcript 里（永远占 token），要么根本不存活。后续的 scratchpad、checkpoint、retrieval，每一个都是因为 transcript 太窄而被引入的。</p>
+          <p><strong>Provider 是依赖，不是主角。</strong> Loop 不关心响应来自 Anthropic / OpenAI / 本地 Llama / mock——它只关心"有东西按它能读懂的形状返回了响应"。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch2-2" num="2.2" title="Provider 协议（早早地建好这道缝）">
+        <p>
+          多数教程的第一行写 <code>anthropic.Anthropic()</code>——探索时这是对的，但要建长寿的东西，<strong>这就是错的</strong>。
+          一旦厂商 SDK 进入核心 loop，你就把它的全部怪癖（响应封装、流式协议、token 计数、错误分类）一并继承了。
+        </p>
+
+        <CodeBlock filename="src/harness/providers/base.py" lang="python">{`from __future__ import annotations
+from dataclasses import dataclass
+from typing import Protocol
+
+
+@dataclass(frozen=True)
+class ProviderResponse:
+    """What a provider gives us back: either text, or a tool call."""
+    kind: str  # "text" or "tool_call"
+    text: str | None = None
+    tool_name: str | None = None
+    tool_args: dict | None = None
+    tool_call_id: str | None = None
+
+
+class Provider(Protocol):
+    def complete(
+        self, transcript: list[dict], tools: list[dict]
+    ) -> ProviderResponse:
+        """Given a transcript and available tools, produce one response."""
+        ...`}</CodeBlock>
+
+        <Callout kind="tip" title="两个值得停下来看的细节">
+          <p><strong>transcript 和 tools 还是 list[dict]</strong>——刻意的简化。第 3 章会把它们升级为类型化的 dataclasses + Transcript wrapper。<em>抽象在它的痛感被感受到之前就引入，那是债。</em></p>
+          <p><strong>ProviderResponse 把两种情况塞进同一个 shape</strong>。真实响应有 token 计数、finish reason、reasoning trace——但 loop 此刻只想知道一件事：调工具，还是给答案？其他都是别人的问题。</p>
+        </Callout>
+
+        <p>Mock provider——脚本化的 fake，跑离线、确定性、零成本：</p>
+
+        <CodeBlock filename="src/harness/providers/mock.py" lang="python">{`from __future__ import annotations
+from .base import Provider, ProviderResponse
+
+
+class MockProvider(Provider):
+    """A scripted provider for teaching and testing.
+    Walks through a fixed list of responses, one per call.
+    """
+
+    def __init__(self, responses: list[ProviderResponse]) -> None:
+        self._responses = list(responses)
+        self._index = 0
+
+    def complete(
+        self, transcript: list[dict], tools: list[dict]
+    ) -> ProviderResponse:
+        if self._index >= len(self._responses):
+            raise RuntimeError("mock ran out of responses")
+        response = self._responses[self._index]
+        self._index += 1
+        return response`}</CodeBlock>
+
+        <Callout kind="note" title="为什么 class MockProvider(Provider) 还要继承？">
+          Python 的 Protocol 是<strong>结构性</strong>的——只要方法名匹配就算实现。继承的两个理由：①<strong>表明意图</strong>，读代码的人一眼看到"这是 Provider 实现"；②<strong>把不匹配从隐藏 bug 升级成 mypy/pyright 错误</strong>——少写一个方法或改了签名，立刻报错而不是等 loop 跑起来时炸。
+        </Callout>
+      </Section>
+
+      <Section id="ch2-3" num="2.3" title="40 行 loop（朴素版）">
+        <p>
+          <strong>朴素</strong> 这个词是故意的——它马上就要以 5 种方式破。但它仍是有用的起点，因为接下来缺的每一样东西都有具体的失败动机。
+        </p>
+
+        <CodeBlock filename="src/harness/agent.py" lang="python">{`from __future__ import annotations
+from typing import Callable
+from .providers.base import Provider, ProviderResponse
+
+MAX_ITERATIONS = 20
+
+
+def run(
+    provider: Provider,
+    tools: dict[str, Callable[..., str]],
+    tool_schemas: list[dict],
+    user_message: str,
+) -> str:
+    transcript: list[dict] = [{"role": "user", "content": user_message}]
+
+    for _ in range(MAX_ITERATIONS):
+        response = provider.complete(transcript, tool_schemas)
+
+        if response.kind == "text":
+            transcript.append({"role": "assistant", "content": response.text})
+            return response.text or ""
+
+        if response.kind == "tool_call":
+            if response.tool_name is None:
+                raise RuntimeError("tool_call response is missing tool_name")
+            if response.tool_name not in tools:
+                raise RuntimeError(f"unknown tool: {response.tool_name!r}")
+
+            tool_fn = tools[response.tool_name]
+            result = tool_fn(**(response.tool_args or {}))
+
+            transcript.append({
+                "role": "assistant",
+                "content": [{"type": "tool_use",
+                             "name": response.tool_name,
+                             "id": response.tool_call_id,
+                             "input": response.tool_args}]
+            })
+            transcript.append({
+                "role": "user",
+                "content": [{"type": "tool_result",
+                             "tool_use_id": response.tool_call_id,
+                             "content": result}]
+            })
+            continue
+
+        raise RuntimeError(f"unexpected response kind: {response.kind!r}")
+
+    raise RuntimeError(f"agent did not finish in {MAX_ITERATIONS} iterations")`}</CodeBlock>
+
+        <Callout kind="warn" title="读这段 loop 两次——后面整本书都在解决它的隐含选择">
+          <ul style={{ margin: 0 }}>
+            <li>transcript 是 list of dicts——<strong>没类型、没校验、没块结构</strong></li>
+            <li>tools 是 <code>dict[str, Callable]</code>——<strong>没 schema 检查、没副作用声明、没权限闸门</strong></li>
+            <li>工具被 <code>**response.tool_args</code> 隐式信任</li>
+            <li>result 是字符串，<strong>哪怕它有 50000 字符</strong>，也直接进 transcript</li>
+            <li>没有 streaming、cancellation、retry、可观测性、成本统计</li>
+            <li><code>MAX_ITERATIONS = 20</code> 是 loop 与"失控成本"之间唯一的栏杆</li>
+          </ul>
+        </Callout>
+      </Section>
+
+      <Section id="ch2-4" num="2.4" title="先让它能跑——calculator 例子">
+        <CodeBlock filename="examples/ch02_calculator.py" lang="python">{`from harness.agent import run
+from harness.providers.base import ProviderResponse
+from harness.providers.mock import MockProvider
+
+
+def calc(expression: str) -> str:
+    # dangerous in real life; fine for a mock
+    return str(eval(expression, {"__builtins__": {}}, {}))
+
+
+mock = MockProvider([
+    ProviderResponse(
+        kind="tool_call",
+        tool_name="calc",
+        tool_args={"expression": "2 + 2"},
+        tool_call_id="call-1",
+    ),
+    ProviderResponse(kind="text", text="2 + 2 is 4."),
+])
+
+tool_schemas = [{
+    "name": "calc",
+    "description": "Evaluate a Python arithmetic expression.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"expression": {"type": "string"}},
+        "required": ["expression"],
+    },
+}]
+
+answer = run(
+    provider=mock,
+    tools={"calc": calc},
+    tool_schemas=tool_schemas,
+    user_message="What is 2 + 2?",
+)
+print(answer)  # -> "2 + 2 is 4."`}</CodeBlock>
+
+        <CodeBlock filename="shell" lang="shell">{`uv run examples/ch02_calculator.py
+# → "2 + 2 is 4."`}</CodeBlock>
+
+        <Callout kind="key" title="这就是 agent">
+          两个回合——模型请求工具、我们执行、模型读结果、模型给答案——<strong>这就是结构上完整的 agent</strong>。
+          一个小的、人为的、脆弱的 agent，但每一个真实 harness 都是同样这两回合模式上层层加工程的产物。
+        </Callout>
+      </Section>
+
+      <Section id="ch2-5" num="2.5" title="5 种刻意制造的崩溃">
+        <p>现在是教学上有用的部分。我们要往 loop 里喂 5 种具体场景，每一次都暴露朴素版的一个缺失部分。</p>
+
+        <FiveBreaksDiagram />
+
+        <div className="cards cols-2">
+          <Card title="Break 1 · 模型叫了一个不存在的工具" kind="bad">
+            <p><code>tool_name="calculator"</code>（不是 "calc"）</p>
+            <p>→ <code>RuntimeError: unknown tool: 'calculator'</code></p>
+            <p>错误清楚了，但模型<strong>没机会恢复</strong>——异常把整个 loop 拆掉，前面 9 个回合的有用工作没了。</p>
+            <p><strong>缺：</strong>把"unknown tool"作为结构化错误返回给模型的派发层。<em>→ 第 4 章 ToolRegistry</em></p>
+          </Card>
+
+          <Card title="Break 2 · 工具参数 schema 不匹配" kind="bad">
+            <p><code>tool_args=&#123;"expr": "2+2"&#125;</code>（key 错了）</p>
+            <p>→ <code>TypeError: calc() got an unexpected keyword argument 'expr'</code></p>
+            <p>跟 Break 1 同类，但更深一层——模型搞错了参数名，但<strong>看不到自己错在哪</strong>。</p>
+            <p><strong>缺：</strong>调用前的 schema 校验，把 ValidationError 喂回模型。<em>→ 第 6 章</em></p>
+          </Card>
+
+          <Card title="Break 3 · 工具自己抛异常" kind="bad">
+            <p><code>tool_args=&#123;"expression": "1 / 0"&#125;</code></p>
+            <p>→ <code>ZeroDivisionError</code>，loop 死</p>
+            <p>更隐蔽的版本：网络超时、文件权限、shell exit code 1、远程 503——<strong>所有"做点有意思的事"都会遇到</strong>，但 loop 此刻没地方放它们。</p>
+            <p><strong>缺：</strong>包装 tool dispatch，把异常变成结构化 tool_result。<em>→ 第 6 章</em></p>
+          </Card>
+
+          <Card title="Break 4 · 模型永远停不下来" kind="bad">
+            <p>mock 给 100 次相同 tool_call，<code>MAX_ITERATIONS=20</code> 在 20 步时抛 RuntimeError，丢掉所有 transcript。</p>
+            <p>20 这个数字本身就是问题——对真任务太小，对真失控太大。<strong>需要的是基于成本的边界。</strong></p>
+            <p><strong>缺：</strong>① token 预算（不是迭代次数）；② 保留 transcript 的可观测性；③ 检测重复调用的去重器。<em>→ 第 6 / 18 / 20 章</em></p>
+          </Card>
+
+          <Card title="Break 5 · 工具返回 200KB 的内容" kind="bad" style={{ gridColumn: "1 / -1" }}>
+            <p><code>return "X" * 200_000</code>（想象一个 read_file 工具读了 60K-token 的 JSON）</p>
+            <p>Loop 技术上还在跑——但 transcript 里塞进了 200KB，下一回合把整个 transcript 又发回 provider。第 5 回合早就超出窗口，provider 返回 error，会话神秘地崩——<strong>而真正的原因是没人在追踪工具返回了多少</strong>。</p>
+            <p><strong>这是塑造全书后半的中心问题。</strong></p>
+            <p><strong>缺：</strong>上下文记账（Ch 7）+ 压缩（Ch 8）+ 外部状态（Ch 9）+ 检索（Ch 10）+ 工具设计（Ch 11）——<em>整整 5 章</em>。</p>
+          </Card>
+        </div>
+      </Section>
+
+      <Section id="ch2-6" num="2.6" title="路线图——这 5 个 break 就是这本书">
+        <CmpTable
+          headers={["#", "Break", "缺什么", "对应章节"]}
+          rows={[
+            ["1", "工具不存在",        "结构化错误的派发层",       "4, 6"],
+            ["2", "参数 schema 不匹配", "调用前的 schema 校验",     "6"],
+            ["3", "工具自己抛异常",     "被包装的 tool execution",  "6"],
+            ["4", "模型永远停不下来",   "预算 + 去重 + 可观测性",    "6, 18, 20"],
+            ["5", "工具返回 200KB",     "上下文工程（核心 5 章）",   "7 – 11"],
+          ]}
+        />
+        <Callout kind="key">
+          <p>如果某个机制让你觉得"过度设计"——回来看这张表。<strong>每一块工程都因为我们眼睁睁看着它的缺失打碎了 loop 才存在。</strong></p>
+        </Callout>
+      </Section>
+
+      <Section id="ch2-7" num="2.7" title="真实 harness 长这样吗？">
+        <p>合上这章前的健全性检查：真实 harness 真的就是"一个 <code>while</code> 里 dispatch"吗？答案是——值得看的那些里，确实是。</p>
+
+        <CmpTable
+          headers={["Harness", "规模", "形状"]}
+          rows={[
+            ["Claude Code",      "Anthropic 公开文档说核心 loop ~88 行",            "和我们写的完全一样：响应 → 含 tool_calls 就 dispatch + append → loop；否则 return。外加权限闸门、压缩、checkpoint。"],
+            ["smolagents",       "~1000 行整库",                                  "MultiStepAgent.run() 就是 for _ in range(max_steps)，3 个决策完全同形，多了更丰富的错误分类和 observation 格式化。"],
+            ["mini-swe-agent",   "~100 行",                                       "用同样的结构，只是没有 registry，只有一个 bash 工具——一个工具就够时 harness 能瘦到这个程度的参考。"],
+            ["LangGraph",        "看上去不同——它是编译图",                          "但图编译成 Pregel 执行模型，ReAct agent 就是 LLM 节点和工具节点之间的一个 cycle。同样三个决策，不同包装。"],
+          ]}
+        />
+
+        <Callout kind="key">
+          <p>Wang et al. 2024 的 LLM agent 综述分析了 100+ 实现——绝大多数都是这同一个核心结构。<strong>Loop 不是教学简化，它就是事物的真实形状。</strong>其余一切都是围绕它的工程。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch2-8" num="2.8" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 重现 5 个 break">逐个套用，亲眼看每个失败的具体形状。用自己的话写下"正确处理应该长什么样"——在你知道答案之前的表述，就是学习。</Card>
+          <Card title="② 自己想第 6 个 break">候选：provider 自己抛异常（网络错误、429）；mock 返回包含 JSON 工具调用语法的文本但 loop 没解析；工具返回非字符串。它落到 5 类的哪一类？还是新一类？</Card>
+          <Card title="③ 最小的类型安全版">用 TypedDict 重写 run()。类型检查器能抓住哪些 break？抓不住哪些？为什么？（这就是第 3 章的动机来源。）</Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch2" questions={[
+        {
+          q: "在 loop 的 3 个决策里，哪一个是 agent 与 'prompt 反复跑' 最本质的区别？",
+          options: [
+            "调用模型",
+            "让模型读到自己上一回合的输出并据此决定",
+            "兜底超出迭代次数",
+            "执行工具",
+          ],
+          right: 1,
+          explain: "ReAct 的核心。一个不能观察自己上一动作的模型不能 debug、不能恢复、不能完成。",
+        },
+        {
+          q: "为什么本书第一行 loop 就跑在 mock provider 上？",
+          options: [
+            "Mock 比真模型聪明",
+            "为了离线 / 确定 / 免费",
+            "因为厂商 SDK 还没装好",
+            "为了建立 Provider 协议这道'缝'——一旦厂商 SDK 进了核心 loop，迁移和测试都更难",
+          ],
+          right: 3,
+          explain: "前 3 个都是好处但不是根本动机。adapter 缝是第一块真正的架构。",
+        },
+        {
+          q: "Break 5（工具返回 200KB）的根本问题是？",
+          options: [
+            "工具实现有 bug",
+            "loop 没有上下文记账——它无法分辨'200 字节有用信号'和'200KB 噪音'",
+            "应该用更大窗口的模型",
+            "应该把它丢掉",
+          ],
+          right: 1,
+          explain: "这是塑造后半本书的中心问题。需要 5 章（7-11）才能完整应对。",
+        },
+        {
+          q: "下列哪条不是 5 个 break 暴露的缺失？",
+          options: [
+            "结构化错误派发",
+            "schema 校验",
+            "GPU 显存管理",
+            "上下文工程",
+          ],
+          right: 2,
+          explain: "GPU 是 model serving 层的问题，不在 harness 范围内。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter2 = Chapter2;

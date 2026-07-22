@@ -1,0 +1,498 @@
+/* tutorial-chapter9.jsx — Chapter 9 full content: External State (Scratchpad) */
+
+/* ─── Diagram: In-context vs External ─── */
+function ContextVsExternalDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 380" preserveAspectRatio="xMidYMid meet">
+        {/* IN-CONTEXT row */}
+        <text x={30} y={40} fontFamily="var(--font-h)" fontSize="24"
+              fill="var(--red)" fontWeight="700">IN-CONTEXT 一切都在窗口里</text>
+        <rect x={30} y={56} width={820} height={62} rx={10}
+              fill="var(--paper-2)" stroke="var(--red)" strokeWidth="2.5"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <rect x={36} y={62} width={50} height={50} fill="var(--accent-4)" opacity={0.6} />
+        <text x={61} y={92} fontFamily="var(--font-hand)" fontSize="13" fill="var(--paper)" textAnchor="middle">sys</text>
+
+        <rect x={92} y={62} width={70} height={50} fill="var(--accent-3)" opacity={0.6} />
+        <text x={127} y={92} fontFamily="var(--font-hand)" fontSize="13" fill="var(--paper)" textAnchor="middle">plan</text>
+
+        {Array.from({ length: 10 }, (_, i) => (
+          <rect key={i} x={168 + i * 65} y={62} width={60} height={50}
+                fill="var(--accent-2)" opacity={0.7 - i * 0.05} />
+        ))}
+        <text x={500} y={92} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--paper)" textAnchor="middle" fontWeight="700">tool outputs (bloat) — 42K tokens</text>
+
+        <text x={870} y={94} fontFamily="var(--font-h)" fontSize="18"
+              fill="var(--red)" textAnchor="end" fontWeight="700">now</text>
+
+        <text x={130} y={138} fontFamily="var(--font-hand)" fontSize="15" fill="var(--ink-soft)">
+          ↑ 几轮之后 compactor 来了，"plan" 可能被一起 mask 掉
+        </text>
+
+        {/* EXTERNAL row */}
+        <text x={30} y={200} fontFamily="var(--font-h)" fontSize="24"
+              fill="var(--green)" fontWeight="700">EXTERNAL plan 在磁盘上</text>
+        <rect x={30} y={216} width={820} height={62} rx={10}
+              fill="var(--paper-2)" stroke="var(--green)" strokeWidth="2.5"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <rect x={36} y={222} width={50} height={50} fill="var(--accent-4)" opacity={0.6} />
+        <text x={61} y={252} fontFamily="var(--font-hand)" fontSize="13" fill="var(--paper)" textAnchor="middle">sys</text>
+
+        <rect x={92} y={222} width={130} height={50} fill="rgba(74,124,58,0.4)"
+              stroke="var(--green)" strokeWidth="2" />
+        <text x={157} y={245} fontFamily="var(--font-mono)" fontSize="13" fill="var(--ink)" textAnchor="middle">
+          read('plan')
+        </text>
+        <text x={157} y={262} fontFamily="var(--font-hand)" fontSize="11" fill="var(--ink-soft)" textAnchor="middle">
+          按需
+        </text>
+
+        {Array.from({ length: 8 }, (_, i) => (
+          <rect key={i} x={232 + i * 75} y={222} width={70} height={50}
+                fill="var(--accent-2)" opacity={0.7 - i * 0.05} />
+        ))}
+
+        <text x={870} y={254} fontFamily="var(--font-h)" fontSize="18"
+              fill="var(--green)" textAnchor="end" fontWeight="700">now</text>
+
+        <text x={130} y={300} fontFamily="var(--font-hand)" fontSize="15" fill="var(--ink-soft)">
+          compactor 怎么压都不会动到 plan——它根本不在窗口里
+        </text>
+
+        {/* Disk */}
+        <ellipse cx={750} cy={340} rx={120} ry={22}
+                 fill="var(--paper-2)" stroke="var(--ink)" strokeWidth="2.5"
+                 style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={750} y={346} fontFamily="var(--font-h)" fontSize="18"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          scratchpad/*.txt
+        </text>
+        <path d={`M 157 272 Q 400 320 630 340`}
+              fill="none" stroke="var(--green)" strokeWidth="2"
+              strokeDasharray="6 4" />
+      </svg>
+      <div className="caption">能在压缩中存活的状态，是<strong>从来不在 context 里</strong>的状态。</div>
+    </div>
+  );
+}
+
+/* ─── Cost comparison diagram ─── */
+function ScratchpadEconomicsDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 250" preserveAspectRatio="xMidYMid meet">
+        <text x={450} y={32} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          一个 2000-token 的 plan，30 个 turn，只有 3 个 turn 需要它
+        </text>
+
+        {/* In-context */}
+        <rect x={50} y={70} width={380} height={150} rx={14}
+              fill="rgba(185,50,47,0.08)" stroke="var(--red)" strokeWidth="3"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={240} y={102} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--red)" textAnchor="middle" fontWeight="700">❌ 留在 context</text>
+        <text x={240} y={134} fontFamily="var(--font-mono)" fontSize="16"
+              fill="var(--ink)" textAnchor="middle">2000 × 30 turns</text>
+        <text x={240} y={160} fontFamily="var(--font-mono)" fontSize="24"
+              fill="var(--red)" textAnchor="middle" fontWeight="700">= 60,000 tokens</text>
+        <text x={240} y={196} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--ink-soft)" textAnchor="middle">
+            模型每一回合都重读它 · 哪怕用不上
+        </text>
+
+        {/* Scratchpad */}
+        <rect x={470} y={70} width={380} height={150} rx={14}
+              fill="rgba(74,124,58,0.08)" stroke="var(--green)" strokeWidth="3"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={660} y={102} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--green)" textAnchor="middle" fontWeight="700">✓ scratchpad</text>
+        <text x={660} y={134} fontFamily="var(--font-mono)" fontSize="16"
+              fill="var(--ink)" textAnchor="middle">2000 × 3 reads</text>
+        <text x={660} y={160} fontFamily="var(--font-mono)" fontSize="24"
+              fill="var(--green)" textAnchor="middle" fontWeight="700">= 6,000 tokens</text>
+        <text x={660} y={196} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--ink-soft)" textAnchor="middle">
+            按需读 · 10× 节省
+        </text>
+      </svg>
+      <div className="caption">"agent 不每回合都需要"的所有东西都该考虑 scratchpad。订阅量级的节省。</div>
+    </div>
+  );
+}
+
+/* ─── Chapter 9 ─── */
+function Chapter9() {
+  return (
+    <section className="chapter" id="ch9">
+      <h2 className="chapter-title">
+        <span className="ch-num">9</span>
+        外部状态：草稿本
+      </h2>
+      <p className="chapter-meta">External State: The Scratchpad　·　把 agent 不需要每回合看的东西移出窗口</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：第 8 章压缩。旧 tool result 被 mask；前缀在 mask 不够时被 summarize。Transcript 撑得过长 session。<strong>但 agent 想原样保留的任何东西都受 compactor 摆布</strong>。
+        <br /><br />
+        <em>Compactor 是个清洁工</em>。它扔掉看起来不重要的东西。对 tool 结果和过气讨论是 OK 的——但有时候 agent <strong>自己知道</strong>某样东西重要：一个计划、一个发现、一个想坚持的决定。这些东西不应该在 context window 里——
+        <strong>它们应该在 agent 能按需读取的、压缩动不到的、durable 的存储里</strong>。
+      </div>
+
+      <Outcomes items={[
+        "Scratchpad 模式：write_scratchpad / read_scratchpad / list_scratchpad 三件套，背后是文件系统目录",
+        "Context 里只放指针（key），内容在磁盘——压缩永远不能触及",
+        "Agent 跨 session 工作的关键——明天的 agent 读今天的 agent 写的",
+        "Voyager 叫 skill library；Generative Agents 叫 memory stream；Claude Code 叫 CLAUDE.md——同一模式不同名",
+      ]} />
+
+      <Section id="ch9-1" num="9.1" title="为什么不直接用更长的窗口">
+        <ContextVsExternalDiagram />
+
+        <Callout kind="warn" title="一个诱人但走不通的想法">
+          <p><em>"模型现在 200K / 1M token 都支持，把 plan 写进对话里、让 compactor 别动它不就行了？"</em> 两个理由不行：</p>
+          <ol style={{ margin: "8px 0" }}>
+            <li>
+              <strong>Compactor 不会自己分辨"重要 plan"和"啰嗦 tool output"</strong>，除非你教它。你可以教（"保留标了 X 的"），但现在<em>你的"重要东西分类"成了 compactor 的关切</em>——每加一种重要状态都是 compactor 一次改动。外部 scratchpad 把这个关切推到 agent 自己的层——工具界面。
+            </li>
+            <li>
+              <strong>Context 不撑得过进程死</strong>。Harness 崩、用户明天回来——context 没了。Scratchpad 文件还在磁盘上。<em>第 21 章建完整的 session checkpointing；scratchpad 是它的先驱，并且自己就 cover 80% 的用法</em>。
+            </li>
+          </ol>
+        </Callout>
+
+        <h4 className="sub-title">第 3 个理由：成本</h4>
+        <ScratchpadEconomicsDiagram />
+      </Section>
+
+      <Section id="ch9-2" num="9.2" title="Scratchpad 接口">
+        <p>3 个工具：write、read、list。一个目录加一层薄薄的纪律。</p>
+
+        <CodeBlock filename="src/harness/tools/scratchpad.py" lang="python">{`from __future__ import annotations
+from pathlib import Path
+
+from .base import Tool
+from .decorator import tool
+
+
+class Scratchpad:
+    """Durable per-session key-value store, exposed to the agent as tools."""
+
+    def __init__(self, root: Path | str) -> None:
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, key: str) -> Path:
+        # Simple key sanitization: allow alphanumerics, dash, underscore.
+        safe = "".join(c for c in key if c.isalnum() or c in "-_")
+        if safe != key:
+            raise ValueError(f"invalid key {key!r}: use [A-Za-z0-9_-]+")
+        if not safe:
+            raise ValueError("key cannot be empty")
+        return self.root / f"{safe}.txt"
+
+    def write(self, key: str, content: str) -> str:
+        path = self._path(key)
+        path.write_text(content, encoding="utf-8")
+        return f"wrote {len(content)} chars to scratchpad[{key}]"
+
+    def read(self, key: str) -> str:
+        path = self._path(key)
+        if not path.exists():
+            raise KeyError(f"scratchpad[{key}] not found")
+        return path.read_text(encoding="utf-8")
+
+    def list(self) -> list[str]:
+        return sorted(p.stem for p in self.root.glob("*.txt"))
+
+    def as_tools(self) -> list[Tool]:
+        pad = self
+
+        @tool(side_effects={"write"})
+        def scratchpad_write(key: str, content: str) -> str:
+            """Store a value in the scratchpad under the given key.
+
+            key: alphanumeric, dashes, underscores only. No slashes, dots.
+            content: any string; overwrites existing value for this key.
+
+            Side effects: writes one file to the scratchpad directory.
+
+            Use this for: plans, discovered facts, decisions that should
+            survive the context window. Write once, read on demand.
+            """
+            return pad.write(key, content)
+
+        @tool(side_effects={"read"})
+        def scratchpad_read(key: str) -> str:
+            """Retrieve a value from the scratchpad.
+
+            key: the key used when writing.
+            Returns the stored content, or an error if not found.
+
+            Side effects: reads one file.
+            """
+            return pad.read(key)
+
+        @tool(side_effects={"read"})
+        def scratchpad_list() -> str:
+            """List keys currently in the scratchpad.
+
+            Returns a newline-separated list of keys.
+
+            Side effects: reads the scratchpad directory.
+
+            Use this at the start of a session to discover what prior
+            agents (or you, in a past turn) have stored.
+            """
+            keys = pad.list()
+            return "\\n".join(keys) if keys else "(empty)"
+
+        return [scratchpad_write, scratchpad_read, scratchpad_list]`}</CodeBlock>
+
+        <Callout kind="key" title="3 个设计点">
+          <div className="cards cols-3">
+            <Card title="① Key 被消毒，不是编码">
+              一个含 <code>/</code> 或 <code>.</code> 的 key 能让 agent 不小心写到 scratchpad 目录之外——路径遍历漏洞。<strong>我们拒绝并给清晰错误</strong>，模型很快学会约定：<code>plan-a</code>、<code>findings-1</code>、<code>schema-cache</code>。
+            </Card>
+            <Card title="② 内容永远是字符串">
+              Scratchpad 不懂类型。Agent 存 JSON，就是 JSON 字符串；读出来也是字符串。<strong>类型纪律是 agent 的事，不是 scratchpad 的</strong>。
+            </Card>
+            <Card title="③ 用 as_tools() 一起暴露">
+              这个模式 MCP 章会复用：一个<em>有状态</em>的组件以"闭包捕获的工具 bundle"形式暴露给模型——而不是个别顶层函数。Scratchpad 实例对 tool 包私有、不污染全局。
+            </Card>
+          </div>
+        </Callout>
+      </Section>
+
+      <Section id="ch9-3" num="9.3" title="教会模型使用它的 system prompt">
+        <p>Agent 需要知道 scratchpad <strong>存在</strong>、它<strong>是干啥的</strong>。好的 scratchpad 使用是 system-prompt 决定，<em>不只是 tool description</em>——tool description 说"这个工具做什么"，system prompt 说"什么时候去拿它"。</p>
+
+        <CodeBlock filename="system prompt（scratchpad 教学）" lang="text">{`You have access to a scratchpad — a durable key-value store that survives
+the context window. Use it whenever you discover or decide something you
+expect to need more than two turns later.
+
+Examples of what to write to the scratchpad:
+- Plans you commit to. If you decide on a 5-step approach, write it to
+  "plan" immediately. Read it back when you're unsure of your next step.
+- Findings from expensive tools. If you ran a 10-second database query,
+  store the result in "query-result-1" so you don't have to re-run it.
+- Constraints the user has expressed. "No changes to production" goes to
+  "constraints" and stays there for the session.
+- Decisions you don't want to revisit. "Using port 8081 because 8080 is
+  taken" goes to "port-decision".
+
+Call scratchpad_list() at the start of a session to see what's already
+stored. Call scratchpad_read(key) to retrieve values you remember writing.
+Call scratchpad_write(key, content) to persist. Use short keys: "plan",
+"constraints", "query-result-1".
+
+The scratchpad is durable. What you write here will be readable by future
+sessions (including yourself, tomorrow). Treat it like a shared notebook.`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>这不是装饰。"用得好的 agent"和"用不好的 agent"之间的差别<strong>大部分</strong>来自 system prompt。</p>
+          <p>没有这些指令，多数模型偶尔会写 scratchpad 但不<em>系统化</em>。有了这些指令，它们会在<strong>每个</strong>复杂 session 开头先写一个 <code>plan</code>，迷茫时读回去。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch9-4" num="9.4" title="一个需要 scratchpad 的场景">
+        <CodeBlock filename="examples/ch09_investigation.py" lang="python">{`from harness.agent import arun
+from harness.context.accountant import ContextAccountant
+from harness.context.compactor import Compactor
+from harness.providers.anthropic import AnthropicProvider
+from harness.tools.registry import ToolRegistry
+from harness.tools.scratchpad import Scratchpad
+from harness.tools.std import read_file, bash, calc
+
+
+SYSTEM = """\\
+You are an investigative agent. You have a scratchpad — a durable
+key-value store that survives the context window. Use it whenever you
+discover or decide something you expect to need more than two turns later.
+[... 9.3 的完整 scratchpad system prompt ...]
+
+At the start of every session, call scratchpad_list() to see what's there.
+"""
+
+
+async def main() -> None:
+    provider = AnthropicProvider()
+    pad = Scratchpad(root=Path(".scratchpad"))
+    registry = ToolRegistry(
+        tools=[calc, read_file, bash] + pad.as_tools()
+    )
+    accountant = ContextAccountant()
+    compactor = Compactor(accountant, provider)
+
+    await arun(
+        provider=provider, registry=registry,
+        accountant=accountant, compactor=compactor,
+        system=SYSTEM,
+        user_message=(
+            "Investigate this machine. First, make a plan in the scratchpad. "
+            "Then carry it out: learn about the OS, CPU, memory, disk, and "
+            "recent activity. Record your findings in the scratchpad as you "
+            "go. When done, synthesize a 200-word report."
+        ),
+    )`}</CodeBlock>
+
+        <p>跑完之后看 scratchpad 目录：</p>
+        <CodeBlock filename="shell" lang="shell">{`ls .scratchpad/
+# plan.txt   findings-os.txt   findings-cpu.txt   report-draft.txt`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>模型把工作<strong>分区</strong>了：plan 单独存，每个 finding 单独 key。Compaction 可以自由触发——tool 结果可以被 mask、旧 turn 可以被 summarize——但 agent 仍能按需访问 plan 和 findings。</p>
+        </Callout>
+
+        <h4 className="sub-title">第二次跑——更说明问题</h4>
+        <CodeBlock filename="examples/ch09_followup.py" lang="python">{`# 同一个 harness，不同 user message，同一个 scratchpad 目录
+await arun(
+    provider=provider, registry=registry, system=SYSTEM,
+    user_message="What did you learn yesterday? Briefly summarize.",
+)`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>这次 session 全新——<strong>没有 context、没有 history</strong>——但 agent 调 <code>scratchpad_list()</code>、看到 <code>plan.txt</code>、<code>findings-os.txt</code> 等，<em>重建出上一次 agent 做了什么</em>。</p>
+          <p><strong>这就是持久化 agent 记忆</strong>——一个目录加 3 个工具搭出来的。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch9-5" num="9.5" title="Claude Code 的 CLAUDE.md 约定">
+        <p>Claude Code 用一个值得点名的具体约定——因为它公开记录、并且能启发更广泛的 scratchpad 实践：</p>
+
+        <CmpTable
+          headers={["文件位置", "内容", "由谁写"]}
+          rows={[
+            ["项目根的 CLAUDE.md",         "项目级规则（'我们用 pytest；测试在 tests/；build 用 uv'）",  "人类"],
+            ["子目录里的 CLAUDE.md",        "该目录专属规则（'这份代码是生成的；别直接改'）",            "人类"],
+            ["# Compact Instructions 节",  "压缩指令（'compact 时永远保留我们用 uv 这件事'）",          "人类"],
+          ]}
+        />
+
+        <Callout kind="note">
+          <p>这是<strong>另一种风味</strong>的 scratchpad：agent 不写、<em>人类</em>写。它是静态的、不是动态的。但它扮演同一角色——<strong>能跨压缩存活的持久 context</strong>——而且机制完全一样。</p>
+          <p>本书的 scratchpad 同时支持两种角色：人类可以预填文件再开 session；agent 通过 <code>scratchpad_list</code> / <code>scratchpad_read</code> 读进来。加一个 <code>persistent-rules.txt</code> 并教 agent 先读它——你就有了 CLAUDE.md 风格的机制，<em>不需要任何特殊处理</em>。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch9-6" num="9.6" title='并发与"单写者"假设'>
+        <Callout kind="warn">
+          <p>多个 agent 同时写同一个 scratchpad，就有经典的共享状态问题——两个 sub-agent 在同一时刻写同一个 key，一个赢一个输，谁都不知道。</p>
+          <p><strong>第 17 章</strong>用 lease 系统正面解决。本章里 scratchpad 是单 agent 的。如果你并行跑多个 agent，<em>要么给每个不同的 root 目录</em>，要么不让它们写同样的 key。</p>
+          <p><strong>能救你的约定</strong>：key 里包含 agent 的角色或 ID 来做命名空间——<code>plan</code> 一个 agent 时 OK；<code>plan-investigator</code> / <code>plan-writer</code> 就是第 17 章会正式化的形式的起点。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch9-7" num="9.7" title="要不要换成数据库？">
+        <p>文件系统目录是<strong>能跑的最简版本</strong>。生产系统经常想要更多：SQLite 做索引、Redis 做速度、Postgres 做事务性、S3 做跨机器的持久。</p>
+
+        <p>§9.2 的接口<strong>不依赖具体后端</strong>。30 行就能换成 SQLite：</p>
+
+        <CodeBlock filename="src/harness/tools/scratchpad_sqlite.py" lang="python">{`import sqlite3
+
+
+class SqliteScratchpad:
+    def __init__(self, db_path: str) -> None:
+        self._conn = sqlite3.connect(db_path)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS scratchpad (
+                key TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+    def write(self, key: str, content: str) -> str:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO scratchpad (key, content) VALUES (?, ?)",
+            (key, content),
+        )
+        self._conn.commit()
+        return f"wrote {len(content)} chars to scratchpad[{key}]"
+
+    def read(self, key: str) -> str:
+        row = self._conn.execute(
+            "SELECT content FROM scratchpad WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"scratchpad[{key}] not found")
+        return row[0]
+
+    # ... 同样的 as_tools()`}</CodeBlock>
+
+        <Callout kind="note">
+          <p>本书主线<strong>不</strong>切到 SQLite，因为文件系统版本够用、有一个教学优势：<code>cat .scratchpad/plan.txt</code> 就能读 agent 写了什么。</p>
+          <p>第 21 章把完整 session checkpointing 建出来时，SQLite / Postgres 就开始挣到它们的工资了。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch9-8" num="9.8" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 测量 context 节省">
+            把第 8 章那个 heavy-tool 长 session 跑两遍：第一遍不用 scratchpad，第二遍配一个教 agent 存中间发现的 system prompt。<strong>对比 peak utilization 和 compaction 次数。</strong>
+          </Card>
+          <Card title="② 抓一个误用">
+            加一个故意用非字母数字 key 的工具：<code>pad.write("../../etc/evil", "oops")</code>。确认它 raise。去掉 sanitization、确认它不 raise。<strong>那 5 行 _path 函数是一个小而真的安全边界</strong>。
+          </Card>
+          <Card title="③ 跑双 session 测试">
+            跑 investigation 场景；杀掉进程；用不同 user message 重新开问"昨天我们发现了什么"。新 session 有效地重建了旧 session 的状态吗？没有？scratchpad 写得不够具体。
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch9" questions={[
+        {
+          q: "为什么不能简单地把 plan 写进对话历史让 compactor 别动它？",
+          options: [
+            "Compactor 性能差",
+            "Compactor 不会自己分辨'重要 plan'和'啰嗦 output'，而且 context 不撑得过进程死——scratchpad 把'重要东西分类'推到 agent 自己的工具界面",
+            "对话历史不支持长文本",
+            "字符串太大",
+          ],
+          right: 1,
+          explain: "把分类的关切放在哪里是核心设计决定。Scratchpad 让 compactor 永远不需要懂'什么重要'。",
+        },
+        {
+          q: "Scratchpad 在 30 个回合中只用到 3 次的 2000-token plan，能节省？",
+          options: [
+            "无节省",
+            "约 10× 节省：60000 → 6000 tokens（不读不算）",
+            "2× 节省",
+            "取决于 provider",
+          ],
+          right: 1,
+          explain: "这就是 §9.1 的经济学。任何'不每回合都用'的信息都应该考虑外移。",
+        },
+        {
+          q: "为什么 key 要严格消毒（拒绝 / 和 .）？",
+          options: [
+            "为了文件名长度",
+            "防止 agent 不小心写到 scratchpad 目录之外——路径遍历漏洞；并让模型快速学会简短约定 key",
+            "性能",
+            "Windows 兼容性",
+          ],
+          right: 1,
+          explain: "5 行 _path 函数是个小而真的安全边界。这是 §9.8 第二题的实验目标。",
+        },
+        {
+          q: "Claude Code 的 CLAUDE.md 是什么角色？",
+          options: [
+            "项目 README",
+            "另一种风味的 scratchpad — 由人类写、agent 读；扮演同样'能跨压缩存活的持久 context'角色",
+            "API 配置",
+            "测试夹具",
+          ],
+          right: 1,
+          explain: "本书的 scratchpad 同时支持 agent 写和人类写，没有特殊处理。CLAUDE.md 的机制本质和我们的 scratchpad_read 一样。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter9 = Chapter9;

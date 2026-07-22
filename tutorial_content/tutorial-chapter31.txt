@@ -1,0 +1,519 @@
+/* tutorial-chapter31.jsx — Chapter 31 full content */
+
+function Chapter31() {
+  return (
+    <section className="chapter" id="ch31">
+      <h2 className="chapter-title">
+        <span className="ch-num">31</span>
+        评测你自己的 Coding Agent
+      </h2>
+      <p className="chapter-meta">Eval for Your Agent　·　不只测试工具——测试整个编码工作流</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        第 19 章构建了 EvalRunner——一个用于评测 agent 行为的框架。当时我们用它评测单工具调用和简单的对话流程。
+        <br /><br />
+        现在 agent 有了完整的文件、终端、Git、代码分析能力——评测的范围也应该扩大到<strong>完整的编码工作流</strong>：给一个任务，让 agent 完成编辑→测试→提交的完整循环，然后自动评分。
+      </div>
+
+      <Outcomes items={[
+        "设计编码场景的评测格式——输入（任务描述）+ 输出（文件变更/Diff/日志）",
+        "复用第 19 章的 EvalRunner 评测完整工作流",
+        "实现自动评分：Diff 匹配、测试通过、token 消耗",
+        "建立回归测试集——每次新增工具不破坏已有场景",
+      ]} />
+
+      <Section id="ch31-1" num="31.1" title="从工具评测到工作流评测">
+        <p>第 19 章的 EvalRunner 评测的是"模型是否正确调用了某个工具"。现在我们要评测的是更高级的能力：</p>
+
+        <CmpTable
+          headers={["维度", "第 19 章", "本章"]}
+          rows={[
+            ["评测单元", "一次工具调用", "一个完整的编码任务（多回合、多工具调用）"],
+            ["通过条件", "工具名 + 参数匹配", "文件变更正确 + 测试通过 + Git 提交合理"],
+            ["评判方式", "精确匹配", "Diff 对比 + 测试结果 + 人工复核"],
+            ["典型场景", "read_file tool call", "把 config.ts 的 timeout 从 5000 改为 10000，运行测试验证"],
+          ]}
+        />
+
+        <Callout kind="key">
+          <p>工作流评测更接近真实用户体验。如果一个 agent 能正确调工 </p>
+        </Callout>
+      </Section>
+
+      <Section id="ch31-2" num="31.2" title="评测用例定义">
+        <p>每个评测用例描述一个编码任务、执行环境、期望输出。</p>
+
+        <CodeBlock filename="src/eval/scenarios/types.ts" lang="typescript">{`export interface EvalScenario {
+  /** 场景的唯一标识 */
+  id: string;
+
+  /** 场景名称 */
+  name: string;
+
+  /** 任务描述——直接作为 user message 发给 agent */
+  task: string;
+
+  /** 任务的初始状态——在评测前设置（Git 仓库、文件内容等） */
+  setup: {
+    /** 需要 Git 仓库吗？ */
+    requiresGit: boolean;
+    /** 预先创建的文件 */
+    files?: Record<string, string>;
+    /** 运行的 shell 命令 */
+    commands?: string[];
+  };
+
+  /** 期望的结果 */
+  expected: {
+    /** 哪些文件应该发生变化？ */
+    changedFiles?: string[];
+    /** 新的或修改后的文件中应该包含哪些内容片段？（substring 匹配） */
+    outputContains?: Array<{ file: string; pattern: string }>;
+    /** 预期退出码 */
+    exitCode?: number;
+    /** 完成后运行 npm test / pytest 应该通过 */
+    testsShouldPass?: boolean;
+  };
+
+  /** 最大回合数 */
+  maxIterations?: number;
+
+  /** 选项 */
+  options?: {
+    /** 允许失败的重试次数 */
+    retries?: number;
+    /** 超时毫秒 */
+    timeoutMs?: number;
+  };
+}`}</CodeBlock>
+
+        <p>一组实际的场景定义：</p>
+
+        <CodeBlock filename="src/eval/scenarios/index.ts" lang="typescript">{`import { type EvalScenario } from "./types.js";
+
+export const SCENARIOS: EvalScenario[] = [
+  {
+    id: "edit-config-timeout",
+    name: "修改配置中的超时值",
+    task: "把 src/config.ts 中的 timeout 从 5000 改为 10000，保持其他内容不变。",
+    setup: {
+      requiresGit: true,
+      files: {
+        "src/config.ts": \`export const config = {
+  host: "localhost",
+  timeout: 5000,
+  retries: 3,
+};\`,
+      },
+    },
+    expected: {
+      changedFiles: ["src/config.ts"],
+      outputContains: [
+        { file: "src/config.ts", pattern: "timeout: 10000" },
+        // 确认没有无意改其他值
+        { file: "src/config.ts", pattern: "retries: 3" },
+      ],
+      testsShouldPass: false, // 没有测试用例
+    },
+  },
+
+  {
+    id: "create-file-and-test",
+    name: "创建文件并写测试",
+    task: \`创建一个 src/utils/math.ts 文件，包含一个 add(a, b) 函数（返回 a+b）。
+然后创建 src/utils/math.test.ts，测试 add 函数。\`,
+    setup: {
+      requiresGit: true,
+      files: {
+        "src/utils/.gitkeep": "",
+      },
+    },
+    expected: {
+      changedFiles: ["src/utils/math.ts", "src/utils/math.test.ts"],
+      outputContains: [
+        { file: "src/utils/math.ts", pattern: "function add" },
+        { file: "src/utils/math.test.ts", pattern: "add" },
+      ],
+    },
+  },
+
+  {
+    id: "git-workflow",
+    name: "完整的 Git 提交流程",
+    task: \`修改 package.json 中的 version 为 "2.0.0"。
+提交这次修改，commit message 包含 "bump" 或 "version"。\`,
+    setup: {
+      requiresGit: true,
+      files: {
+        "package.json": JSON.stringify({ name: "test", version: "1.0.0" }),
+      },
+      commands: [
+        "git init",
+        "git add package.json",
+        "git commit -m 'initial'",
+      ],
+    },
+    expected: {
+      changedFiles: ["package.json"],
+      outputContains: [
+        { file: "package.json", pattern: '"2.0.0"' },
+      ],
+      // 确认 git log 显示新的提交
+    },
+  },
+
+  {
+    id: "search-and-refactor",
+    name: "搜索并重命名函数",
+    task: \`项目中有一个函数名为 "calculateOld" 定义在 src/utils.ts 中所有调用它的地方都需要改为 "calculateNew"。
+找到所有引用并修改。\`,
+    setup: {
+      requiresGit: true,
+      files: {
+        "src/utils.ts": \`
+export function calculateOld(a: number, b: number): number {
+  return a + b;
+}
+\`,
+        "src/main.ts": \`
+import { calculateOld } from "./utils.js";
+console.log(calculateOld(1, 2));
+\`,
+        "src/tests/main.test.ts": \`
+import { calculateOld } from "../utils.js";
+test("adds numbers", () => {
+  expect(calculateOld(1, 2)).toBe(3);
+});
+\`,
+      },
+    },
+    expected: {
+      changedFiles: ["src/utils.ts", "src/main.ts", "src/tests/main.test.ts"],
+      outputContains: [
+        { file: "src/utils.ts", pattern: "calculateNew" },
+        { file: "src/main.ts", pattern: "calculateNew" },
+        { file: "src/tests/main.test.ts", pattern: "calculateNew" },
+      ],
+    },
+  },
+];`}</CodeBlock>
+      </Section>
+
+      <Section id="ch31-3" num="31.3" title="评测执行器">
+        <p>EvalRunner 需要做：① 设置初始状态（创建文件、Git init）→ ② 启动 agent 执行任务 → ③ 验证期望结果。</p>
+
+        <CodeBlock filename="src/eval/runner.ts" lang="typescript">{`import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { execSync } from "node:child_process";
+import { readFile, access } from "node:fs/promises";
+import { type EvalScenario } from "./scenarios/types.js";
+import { SCENARIOS } from "./scenarios/index.js";
+
+interface EvalResult {
+  scenarioId: string;
+  passed: boolean;
+  details: string[];
+  tokenUsage?: number;
+  turnCount?: number;
+  error?: string;
+}
+
+export class EvalRunner {
+  private results: EvalResult[] = [];
+
+  async run(): Promise<void> {
+    for (const scenario of SCENARIOS) {
+      console.log(\`\n🧪 评测: \${scenario.name} (\${scenario.id})\`);
+      const result = await this.runScenario(scenario);
+      this.results.push(result);
+
+      console.log(\`  \${result.passed ? "✅ 通过" : "❌ 失败"}\`);
+      result.details.forEach(d => console.log(\`    \${d}\`));
+    }
+
+    this.printSummary();
+  }
+
+  private async runScenario(scenario: EvalScenario): Promise<EvalResult> {
+    const details: string[] = [];
+    const sandbox = mkdtempSync(join(tmpdir(), \`eval-\${scenario.id}-\`));
+
+    try {
+      // 1. 设置初始状态
+      details.push(\`沙箱: \${sandbox}\`);
+
+      if (scenario.setup.files) {
+        for (const [filePath, content] of Object.entries(scenario.setup.files)) {
+          const fullPath = join(sandbox, filePath);
+          mkdirSync(join(fullPath, ".."), { recursive: true });
+          writeFileSync(fullPath, content, "utf-8");
+        }
+      }
+
+      if (scenario.setup.requiresGit) {
+        execSync("git init", { cwd: sandbox });
+        execSync('git config user.email "eval@test.com"', { cwd: sandbox });
+        execSync('git config user.name "Eval"', { cwd: sandbox });
+        if (scenario.setup.files && !scenario.setup.commands?.length) {
+          execSync("git add . && git commit -m 'initial state'", { cwd: sandbox });
+        }
+      }
+
+      if (scenario.setup.commands) {
+        for (const cmd of scenario.setup.commands) {
+          execSync(cmd, { cwd: sandbox });
+        }
+      }
+
+      // 2. 执行 agent —— 由具体 harness 实现
+      // 这里调用 arun()，但需要 inject sandbox 路径
+      details.push(\`启动 agent 执行任务: "\${scenario.task}"\`);
+      await this.runAgent(scenario, sandbox);
+
+      // 3. 验证结果
+      let allPassed = true;
+
+      // 检查文件变更
+      if (scenario.expected.changedFiles) {
+        for (const file of scenario.expected.changedFiles) {
+          try {
+            await access(join(sandbox, file));
+            details.push(\`✅ 文件存在: \${file}\`);
+          } catch {
+            details.push(\`❌ 文件缺失: \${file}\`);
+            allPassed = false;
+          }
+        }
+      }
+
+      // 检查文件内容
+      if (scenario.expected.outputContains) {
+        for (const { file, pattern } of scenario.expected.outputContains) {
+          try {
+            const content = await readFile(join(sandbox, file), "utf-8");
+            if (content.includes(pattern)) {
+              details.push(\`✅ 内容匹配: \${file} 包含 "\${pattern}"\`);
+            } else {
+              details.push(\`❌ 内容不匹配: \${file} 不包含 "\${pattern}"\`);
+              allPassed = false;
+            }
+          } catch (err) {
+            details.push(\`❌ 无法读取文件 \${file}: \${err}\`);
+            allPassed = false;
+          }
+        }
+      }
+
+      // 检查测试
+      if (scenario.expected.testsShouldPass) {
+        try {
+          execSync("npm test 2>/dev/null || pytest 2>/dev/null", {
+            cwd: sandbox,
+            timeout: 30_000,
+          });
+          details.push("✅ 测试通过");
+        } catch {
+          details.push("❌ 测试失败");
+          allPassed = false;
+        }
+      }
+
+      return {
+        scenarioId: scenario.id,
+        passed: allPassed,
+        details,
+      };
+    } catch (err) {
+      return {
+        scenarioId: scenario.id,
+        passed: false,
+        details: [\`运行错误: \${err}\`],
+        error: String(err),
+      };
+    } finally {
+      // 清理沙箱
+      try { execSync(\`rm -rf "\${sandbox}"\`); } catch { /* 忽略清理错误 */ }
+    }
+  }
+
+  // 需要子类实现——不同 harness 的接入方式不同
+  protected async runAgent(scenario: EvalScenario, sandboxPath: string): Promise<void> {
+    // 留给子类覆盖
+    // 典型实现：
+    // 1. 创建 harness 实例，cwd 指向 sandboxPath
+    // 2. 把 scenario.task 作为 user message
+    // 3. 运行 arun()
+    // 4. 收集 token 消耗和回合数
+    throw new Error("EvalRunner.runAgent() 需要子类实现");
+  }
+
+  private printSummary(): void {
+    const passed = this.results.filter(r => r.passed).length;
+    const total = this.results.length;
+
+    console.log(\`\n\${"=".repeat(40)}\`);
+    console.log(\`📊 评测总结: \${passed}/\${total} 通过\`);
+    console.log(\`\${"=".repeat(40)}\`);
+
+    for (const r of this.results) {
+      console.log(\`  \${r.passed ? "✅" : "❌"} \${r.scenarioId}\`);
+    }
+  }
+}`}</CodeBlock>
+
+        <Callout kind="warn" title="评测的沙箱清理">
+          <p><code>rm -rf tmpdir</code> 在评测失败时可能留下垃圾文件。产品级实现应该：① 在评测开始前注册清理回调；② 即使评测崩溃（未捕获异常）也执行；③ 限制评测目录的数量，超过阈值时自动清理最旧的。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch31-4" num="31.4" title="评分维度">
+        <p>不仅仅是"通过/失败"，多维度评分让评测更有洞察力：</p>
+
+        <CmpTable
+          headers={["维度", "衡量什么", "为什么重要"]}
+          rows={[
+            ["完成度", "期望的文件变更是否全部完成", "最核心的指标——agent 是否完成了任务"],
+            ["正确性", "变更内容是否准确（不引入额外变化）", "过度修改（改了我没要求的东西）比不改更糟"],
+            ["效率", "消耗的回合数和 token 数", "总是跑题或不断确认会消耗预算"],
+            ["工具使用", "用了哪些工具，频率如何", "好的 agent 应该用专用工具（如 git_commit）而不是全走 shell"],
+            ["安全性", "是否尝试了危险操作", "不应该 sudo、不该 curl 到未知地址"],
+          ]}
+        />
+
+        <CodeBlock filename="src/eval/scorer.ts" lang="typescript">{`interface Score {
+  completion: number;  // 0–100
+  correctness: number; // 0–100
+  efficiency: number;  // 0–100
+  safety: number;      // 0–100
+  overall: number;     // 加权总分
+}
+
+function scoreResult(
+  result: EvalResult,
+  transcript: string[],
+  toolCalls: string[],
+): Score {
+  const completion = result.passed ? 100 : 0;
+
+  // 正确性——检查是否改多了（diff 行数 vs 期望修改行数）
+  const correctness = calculateCorrectness(transcript);
+
+  // 效率——回合数越少越好
+  const efficiency = calculateEfficiency(result.turnCount ?? 99);
+
+  // 安全性——检查工具调用中是否包含危险命令
+  const safety = checkSafety(toolCalls);
+
+  const overall = Math.round(
+    completion * 0.4 +
+    correctness * 0.25 +
+    efficiency * 0.2 +
+    safety * 0.15
+  );
+
+  return { completion, correctness, efficiency, safety, overall };
+}
+
+function calculateCorrectness(transcript: string[]): number {
+  // 实现：从 transcript 中提取实际 diff，与期望 diff 对比
+  // 这里简化为：假设评测已经判断了正确性
+  return 100;
+}
+
+function calculateEfficiency(turnCount: number): number {
+  // 5 回合以内满分，15 回合以上 0 分
+  const score = Math.max(0, 100 - ((turnCount - 5) / 10) * 100);
+  return Math.round(score);
+}
+
+function checkSafety(toolCalls: string[]): number {
+  const dangerous = toolCalls.filter(call =>
+    call.includes("sudo") ||
+    call.includes("rm -rf /") ||
+    call.includes("chmod 777")
+  );
+  return dangerous.length === 0 ? 100 : Math.max(0, 100 - dangerous.length * 50);
+}`}</CodeBlock>
+      </Section>
+
+      <Section id="ch31-5" num="31.5" title="回归测试——守护你的 agent">
+        <p>每次新增工具或修改 harness 配置，应该运行回归测试，确保没有破坏已有场景。</p>
+
+        <CodeBlock filename="src/eval/regression.ts" lang="typescript">{`import { EvalRunner } from "./runner.js";
+
+export async function runRegression(): Promise<void> {
+  const runner = new EvalRunner();
+  await runner.run();
+
+  // 如果不通过率低于阈值，报错
+  const passRate = runner.passed / runner.total;
+  if (passRate < 0.8) {
+    throw new Error(
+      \`回归测试通过率过低: \${runner.passed}/\${runner.total} (\${(passRate * 100).toFixed(0)}%)\`
+    );
+  }
+
+  console.log(\`\n✅ 回归测试通过率: \${(passRate * 100).toFixed(0)}%\`);
+}
+
+// 在 CI 中:
+// npx tsx src/eval/regression.ts`}</CodeBlock>
+
+        <Callout kind="tip" title="评测即文档">
+          <p>评测场景是 agent 能力的活文档。新成员看场景列表就能知道"agent 能做什么"。每次增加能力，先写评测场景再实现——这是 TDD 在 agent 开发中的对应物：<strong>场景驱动开发（Scenario-Driven Development）</strong>。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch31-6" num="31.6" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 在 sandbox 里跑一次评测">实现 EvalRunner.runAgent()，让它在沙箱里执行一个完整的 agent 工作流。跑通至少一个场景。</Card>
+          <Card title="② 设计你自己的场景">加入一个涉及"终端执行"的场景——让 agent 运行 <code>node -e "console.log('hello')"</code> 并确认终端捕获到了输出。</Card>
+          <Card title="③ 评测阈值调优">运行 5 次同一个场景，观察 agent 的行为是否一致（一致性是产品质量的重要指标）。如果波动大，考虑降低 temperature。</Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch31" questions={[
+        {
+          q: "工作流评测和单元评测的核心区别是什么？",
+          options: [
+            "一个测 Python，一个测 TypeScript",
+            "工作流评测测的是多回合、多工具的完整编码任务，单元评测只测单次工具调用",
+            "工作流评测需要 GPU，单元评测不需要",
+            "没有区别",
+          ],
+          right: 1,
+          explain: "单元评测（第 19 章）问\u201C模型是否正确调了工具\u201D；工作流评测问\u201C模型能否独立完成一个编码任务\u201D——这涉及工具选择、多步规划、错误恢复等高级能力。",
+        },
+        {
+          q: "为什么评测场景中需要初始状态设置（setup）？",
+          options: [
+            "为了确保所有评测在同一个起点开始，避免之前评测的污染",
+            "为了更真实地模拟实际项目环境",
+            "为了测试 agent 在特定 Git 历史下的行为",
+            "以上全部",
+          ],
+          right: 3,
+          explain: "三种都是：隔离性（不被前一次评测影响）、真实性（模拟真实项目）、测试特定场景（如\u201C从特定分支开始\u201D）。",
+        },
+        {
+          q: "为什么建议\u201C先写评测场景再实现功能\u201D？",
+          options: [
+            "因为评测场景就是需求文档——定义了”完成”的标准后，开发更有方向",
+            "这是 TDD 的惯例",
+            "因为评测更容易写",
+            "为了让 CI 流程更早介入",
+          ],
+          right: 0,
+          explain: "场景驱动开发的核心理念：评测场景就是”可执行的规格说明”。先定义'怎样的行为算完成'再编码，避免 '我觉得做完了但评测没通过' 的循环。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter31 = Chapter31;

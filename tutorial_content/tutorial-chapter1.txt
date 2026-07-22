@@ -1,0 +1,336 @@
+/* tutorial-chapter1.jsx — Chapter 1 full content */
+
+function Chapter1() {
+  return (
+    <section className="chapter" id="ch1">
+      <h2 className="chapter-title">
+        <span className="ch-num">1</span>
+        Agent 到底是什么
+      </h2>
+      <p className="chapter-meta">What an Agent Actually Is　·　奠定全书词汇基线</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        几个月前，一位朋友请我看一个他在做的系统。他说："我的 agent 老忘记自己在干什么。"<br />
+        他给我看代码——一个 <code>while</code> 循环、一次 <code>messages.create()</code>、三个工具。模型大多数时候调对了工具，但跑到第 40 个回合左右，它会开始混乱、重新推导一小时前已经确定的事实、为自己反应慢而道歉。他想问的是：怎么给它"更好的记忆"？
+        <br /><br />
+        答案不是记忆。他那个 <code>while</code> 循环根本不是 harness——它只是把一个 prompt 反复跑一遍，他追着的"健忘"，只是这个循环没做的所有事情中最显眼的那一项。
+      </div>
+
+      <Outcomes items={[
+        "理解 Model / Agent / Harness 三个词的精确区分（混用它们是过去一年里几乎所有架构事故的根源）",
+        "掌握 4 条坐标轴：自主度、状态、工具、上下文——用来定位任何 Agent 系统",
+        "记住 Anthropic 那条有用的边界：Workflow vs Agent",
+        "建立项目骨架：一个空 repo，加上一个能跑通的烟雾测试",
+      ]} />
+
+      <Section id="ch1-1" num="1.1" title="Model · Agent · Harness：词汇先于代码">
+        <p>
+          三个值得讲清楚的定义。混用它们是我过去一年看到的几乎所有糟糕架构的根源。
+        </p>
+
+        <ModelAgentHarnessDiagram />
+
+        <div className="cards cols-3">
+          <Card title="Model 模型" kind="">
+            一个函数：你给它 <strong>context</strong>，它返回下一 token 的概率分布。<br />
+            <em>无记忆 · 无目标 · 无行动能力。</em>
+            协议是 tokens → tokens，其它一切都在外面。
+          </Card>
+          <Card title="Agent 智能体" kind="">
+            围绕 Model 的一个<strong>循环</strong>，加上<strong>有界状态</strong>、<strong>一组工具</strong>、<strong>跨回合的上下文策略</strong>。
+            <br /><em>Franklin & Graesser 1996 的四属性</em>：自主 · 反应 · 主动 · 嵌入世界——LLM agent 全都满足，只是它的"世界"是你给它的工具围出来的。
+          </Card>
+          <Card title="Harness 框架" kind="">
+            把 Model 变成 Agent 的<strong>那一整套工程</strong>：循环、协议、上下文管理、工具编排、错误处理、可观测性、持久化、权限、预算。
+            <br /><em>本书 22 章建造的，就是它。</em>
+          </Card>
+        </div>
+
+        <Callout kind="key" title="Harness 的真实范围">
+          <p>它包括但不限于这些子系统——每一项都不是可选的：</p>
+          <ul>
+            <li>决定何时调用模型、何时调用工具、何时重试、何时停止的<strong>循环</strong></li>
+            <li>结构化每次输入输出的<strong>回合协议</strong></li>
+            <li>在窗口耗尽前决定模型看什么的<strong>上下文管理</strong>（压缩 / 检索 / 草稿本 / 屏蔽）</li>
+            <li>注册可用动作、安全分发、校验 schema 的<strong>工具编排</strong></li>
+            <li>让一次坏调用不毒化整个会话的<strong>错误处理</strong></li>
+            <li>事后告诉你"为什么昨晚那次跑偏了"的<strong>可观测性</strong></li>
+            <li>让会话能从崩溃中恢复，且副作用不会重跑两次的<strong>持久化</strong></li>
+            <li>不让 agent 做你没授权的事、不让它花你花不起的钱的<strong>权限与预算</strong></li>
+          </ul>
+          <p>"意外形成的 harness"（accidental harness）是绝大多数公开事故的来源——
+          <strong>2025 年那场 4.7 万美元的 agent-loop 事故</strong>，就是两个 agent ping-pong 互发请求 11 天，告警一直在响但没有强制停机。</p>
+        </Callout>
+
+        <h4 className="sub-title">一个有用的小测试</h4>
+
+        <Callout kind="tip" title="如果模型明天变好两倍，你的 agent 会跟着变好两倍吗？">
+          <p>
+            <strong>如果会</strong>，你的 harness 是模型能力的诚实导体——潮起 agent 也起。<br />
+            <strong>如果不会</strong>（实践中几乎总是不会），那么瓶颈在别处——而那个"别处"就在 harness 里。
+          </p>
+          <p style={{ marginTop: 8 }}>
+            Claude Code 是 harness。LangGraph 是 harness。OpenAI Agents SDK 是 harness。Claude 本身是 model。
+          </p>
+        </Callout>
+
+        <p>
+          有一种<strong>类别错误</strong>无处不在：把 <Term k="Agent">agent</Term> 当成 <Term k="Model">model</Term>，以为"构建 agent" = "选个好模型"。
+          供应商给你卖 model 时叫它 agent；你在聊天界面里看到模型调了次工具就叫它 agentic。
+          有时是用词随意，有时是真的承重——而当它承重时，<strong>它会让你不去建那些真正需要建的部分</strong>，用户会从可靠性、延迟、成本、安全四个维度感受到——通常按这个顺序。
+        </p>
+      </Section>
+
+      <Section id="ch1-2" num="1.2" title="四轴设计空间">
+        <p>每一个 agent harness 都能定位到 4 条坐标轴。这是全书的坐标系。</p>
+        <FourAxisDiagram />
+        <p>
+          诚实地把你自己的系统投影到这 4 条轴上，下一步该做什么就会自己浮出来。
+          <strong>一个好的 harness 不是把 4 条轴都拉满，而是有意识地选一个点，然后把那个点工程做到位。</strong>
+          本书构造的 harness 落在：<em>中等自主度 · 三档状态全部 · 约 12 个手工设计的工具 · 激进的上下文工程</em>——这是一个具体选择，不是宇宙真理。
+        </p>
+      </Section>
+
+      <Section id="ch1-3" num="1.3" title="Workflow vs. Agent —— Anthropic 那条有用的边界">
+        <p>
+          Anthropic 2024.12 的 "Building Effective Agents" 给出了一条值得内化的边界：
+        </p>
+        <WorkflowVsAgentDiagram />
+
+        <CmpTable
+          headers={["维度", "Workflow 工作流", "Agent 智能体"]}
+          rows={[
+            ["谁决定控制流",  "你（代码）",                  "模型自己"],
+            ["LLM 的位置",   "插槽里的成分（n 个固定调用）", "驾驶座上的决策者"],
+            ["何时停",       "代码决定",                    "模型决定"],
+            ["可调试性",     "高，路径固定",                 "低，每次轨迹不同"],
+            ["成本可预测",   "高",                          "低"],
+            ["何时该用",     "问题结构是可预测的",           "需要动态选工具/迭代细化/开放探索"],
+          ]}
+        />
+
+        <Callout kind="warn" title="最容易被忽略的观察">
+          <p>
+            Workflow 赢的概率比建造者预期的高得多。如果你的问题结构是可预测的，workflow 会比同等 agent <strong>更快、更便宜、更可靠、更易调</strong>。
+            <strong>Agent 只有当问题真的需要动态工具选择、迭代细化、或开放探索时才值得它的复杂度。</strong>
+          </p>
+          <p style={{ marginTop: 8 }}>作者的经验：他见过的"production agent"里大概有 3/4 本该是 workflow。</p>
+        </Callout>
+
+        <h4 className="sub-title">4 问诊断法</h4>
+        <p>下次有人在团队里说"我们把这个做成 agentic 的吧"，跑一遍这个：</p>
+        <div className="cards cols-2">
+          <Card title="① 能用 N 次固定 LLM 调用的流水线解决吗？">如果能，<strong>建 workflow</strong>，别建 agent。</Card>
+          <Card title="② 需要模型在运行时选工具 / 排序工具吗？">如果是，<strong>有了 agent 的雏形</strong>。</Card>
+          <Card title="③ 需要 Agent 迭代——读结果再决定下一步？">如果是，<strong>需要真正的循环</strong>。</Card>
+          <Card title="④ 需要长跨度的规划-失败-重规划？">如果是，<strong>需要本书造的那种完整 harness</strong>，还要配上评测。</Card>
+        </div>
+      </Section>
+
+      <Section id="ch1-4" num="1.4" title="Harness 为什么难——三股力量">
+        <p>把人咬得最狠的三件事，按出现频率排序。</p>
+        <ThreeForcesDiagram />
+
+        <h4 className="sub-title">① 上下文是流动的目标</h4>
+        <p>
+          模型的<Term k="Context Window">上下文窗口</Term>是固定大小（典型 200K，premium 1M），但<strong>工具输出无界</strong>，并且工具输出会进 context。算一下：读一个 60K-token 的文件，半个窗口没了；读两个，会话基本结束——因为没空间留给模型该做的推理。
+        </p>
+        <p>
+          但硬上限只是故事的一半。<Term k="Lost in the Middle">Lost in the Middle</Term>（Liu et al. 2023）显示模型对窗口两端的注意力远高于中间；<Term k="Context Rot">Context Rot</Term>（Chroma 2025.7）把这件事扩展到了所有检索任务——
+          <strong>性能在窗口远未填满前就连续下降。</strong>
+        </p>
+
+        <h4 className="sub-title">② 工具会撒谎，模型会相信</h4>
+        <p>静默截断、schema 模糊、歧义的 null、副作用惊喜——
+        工具不是给人类用的 API，它是给一个非人类用户用的认知接口，<strong>设计工具是单独的一门学科</strong>（第 11 章一整章都在讲）。</p>
+
+        <h4 className="sub-title">③ 失败会复合</h4>
+        <Callout kind="warn">
+          <p style={{ margin: 0 }}>每步 95% 准确率 → 10 步任务通过率 <strong>≈ 60%</strong></p>
+          <p style={{ margin: 0 }}>每步 85% 准确率 → 10 步任务通过率 <strong>≈ 20%</strong></p>
+        </Callout>
+        <p>
+          长跨度 agent 不是因为某一步灾难才失败，而是因为<strong>每一步都是一次独立的掷币，掷币会相乘</strong>。
+          <em>Harness 之所以挣到它的工资，就是把"掷币"变成"决策"</em>——每一步校验、出错恢复、不让一个小错毒化下一个十步。
+          所以本书的多数工程是<strong>防御性</strong>的——这不是遗憾，这就是工作本身。
+        </p>
+      </Section>
+
+      <Section id="ch1-5" num="1.5" title="本书最终造出来的 harness">
+        <p>到第 22 章，你的 repo 会包含一个 harness：</p>
+        <ul style={{ fontFamily: "var(--font-hand)", fontSize: "1.05em", lineHeight: 1.7 }}>
+          <li>✅ 通过一个薄 adapter 层跑在任何 provider 上——Anthropic / OpenAI / 本地 OSS——agent 代码不变</li>
+          <li>✅ 通过压缩、observation masking、外部草稿本自管上下文</li>
+          <li>✅ 支持有界的子 agent 派发，附带 per-agent 成本归因和派生预算</li>
+          <li>✅ 用文件系统 allowlist 和显式权限闸门沙箱化工具执行</li>
+          <li>✅ 通过 MCP 消费外部工具，与内置工具享受同一套权限模型</li>
+          <li>✅ 流式响应、可中断、崩溃后可持久化恢复</li>
+          <li>✅ 发射 OpenTelemetry traces，附 session/task/agent 归因</li>
+          <li>✅ 在升级模型前跑一套黄金轨迹回归测试</li>
+        </ul>
+
+        <Callout kind="key" title="一个刻意的约束：Provider-agnostic from day one">
+          第 2 章写的第一行循环就是跑在 mock provider 上的——不是因为 mock 好教学，而是<strong>一旦把某厂商 SDK 硬编进 harness，未来迁移、测试、定价都不再受你控制</strong>。
+          adapter 缝是第一块真正的架构，后续每一章都尊重它。
+        </Callout>
+      </Section>
+
+      <Section id="ch1-6" num="1.6" title="怎么读这本书">
+        <div className="cards cols-2">
+          <Card title="📖 线性模式" kind="good">
+            打开第 2 章，按行抄代码、跑测试、commit。每章对应 5-15 个 commit。出问题时 <code>git checkout chXX-tag</code> 回到已知好的版本。
+          </Card>
+          <Card title="🔍 参考模式" kind="good">
+            你已经有 harness，只想搞懂压缩 / 子 agent / 评测。每章可以单独读，开头讲问题、结尾讲"你应该理解了什么"。
+          </Card>
+        </div>
+        <p>
+          两种模式都假设你会 Python 3.11+，熟悉类型注解和 <code>async/await</code>，至少用过一次 LLM API。
+          你不需要建过 agent——但如果建过，前几章会跑得很快，没关系，第 7-11 章会把这笔投资还给你。
+        </p>
+      </Section>
+
+      <Section id="ch1-7" num="1.7" title="项目骨架（动手）">
+        <p>本书所有命令都用 <code>uv</code> 跑——它一个二进制管理 Python 工具链、venv、依赖，比 <code>pip</code> 快约 10 倍。</p>
+
+        <CodeBlock filename="shell" lang="shell">{`mkdir agent-harness && cd agent-harness
+uv init --package --python 3.11`}</CodeBlock>
+
+        <p>替换 <code>pyproject.toml</code>：</p>
+
+        <CodeBlock filename="pyproject.toml" lang="toml">{`[project]
+name = "harness"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.27"]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.40"]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/harness"]`}</CodeBlock>
+
+        <Callout kind="tip" title="为什么 anthropic / openai 是可选 extras？">
+          核心 harness 应该在没装任何厂商 SDK 时也能装上。第 3 章里 mock provider 完成所有工作，真实 SDK 仍未安装——这件事就是在练这个性质。
+        </Callout>
+
+        <p>同步环境：</p>
+        <CodeBlock filename="shell" lang="shell">{`uv sync`}</CodeBlock>
+
+        <h4 className="sub-title">项目布局</h4>
+        <CodeBlock filename="tree" lang="text">{`agent-harness/
+├── pyproject.toml
+├── README.md
+├── src/
+│   └── harness/
+│       ├── __init__.py
+│       ├── agent.py            # 循环（第 2 章）
+│       ├── messages.py         # 有类型的 transcript（第 3 章）
+│       ├── providers/          # provider 适配器（第 3 章）
+│       │   ├── base.py         # Provider 协议
+│       │   └── mock.py         # 内存假实现
+│       ├── tools/              # 工具协议 + 注册表（第 4-5 章）
+│       └── context/            # 上下文记账 + 压缩（第 7-11 章）
+├── tests/
+└── examples/`}</CodeBlock>
+
+        <p>烟雾测试，证明包能 import、Python 版本正确：</p>
+        <CodeBlock filename="tests/test_smoke.py" lang="python">{`import sys
+import harness
+
+def test_python_version() -> None:
+    assert sys.version_info >= (3, 11), "This book assumes Python 3.11+"
+
+def test_package_imports() -> None:
+    assert harness is not None`}</CodeBlock>
+
+        <CodeBlock filename="shell" lang="shell">{`uv run pytest tests/test_smoke.py -q
+# 应该看到两个 passing tests`}</CodeBlock>
+
+        <CodeBlock filename="git" lang="shell">{`git init
+git add .
+git commit -m "ch01: project skeleton"
+git tag ch01-skeleton`}</CodeBlock>
+
+        <Callout kind="note" title="为什么打 tag？">
+          每一章都会留一个 <code>chXX-...</code> 形状的 tag。如果第 5 章你跟丢了，<code>git checkout ch04-...</code> 就能把你拉回已知好的代码。
+        </Callout>
+      </Section>
+
+      <Section id="ch1-8" num="1.8" title="试一试（章末练习）">
+        <div className="cards cols-3">
+          <Card title="🗺 把三个系统投影到四轴">
+            选 3 个你用过的 agent 形态系统：ChatGPT、Claude Code、Cursor、客服机器人……把它们投影到 §1.2 的 4 条轴。这是全书最后一次让你"先思考不写代码"。
+          </Card>
+          <Card title="❓ Workflow 还是 Agent？">
+            拿一个你或团队正要自动化的任务，跑一遍 §1.3 的 4 问诊断。如果诚实的答案是"其实是 workflow"——注意到这一点。
+          </Card>
+          <Card title="📖 读一份真实 harness 的核心循环">
+            <code>smolagents/agents.py</code>（~1000 行）或 <code>mini-swe-agent/.../agent.py</code>（~100 行）。在主循环里找出 3 个决策点：调工具、停止、产出最终答案。
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch1" questions={[
+        {
+          q: "下面哪个说法最准确？",
+          options: [
+            "Agent 就是更聪明的 model",
+            "Harness 是循环、工具、上下文管理、错误处理等围绕 model 的全部工程",
+            "Workflow 只是低端的 agent",
+            "调用了一次 API 就叫 agentic",
+          ],
+          right: 1,
+          explain: "Model 是函数，Agent 是循环，Harness 是工程。后两个选项是常见的类别错误。",
+        },
+        {
+          q: "下面哪一条最适合用 workflow 而不是 agent？",
+          options: [
+            "需要根据工具结果决定下一步调哪个工具",
+            "需要长跨度规划、失败再规划",
+            "把发票图片 OCR → 抽取字段 → 校验 → 入库（路径固定）",
+            "开放探索一个未知代码库找 bug",
+          ],
+          right: 2,
+          explain: "路径固定 = workflow。模型只是流程里的一个'步骤组件'，没必要让它驾驶。",
+        },
+        {
+          q: "为什么 95% 的单步准确率在 10 步任务上变成 60%？",
+          options: [
+            "因为模型记忆衰减",
+            "因为每步是独立掷币，0.95¹⁰ ≈ 0.60，错误会复合",
+            "因为上下文丢失",
+            "因为 LLM 不擅长数学",
+          ],
+          right: 1,
+          explain: "失败复合（compounding failure）。所以 harness 的多数工程是防御性的——把掷币变成决策。",
+        },
+        {
+          q: "本书的 harness 在'四轴'上是？",
+          options: [
+            "最低自主度、context-only、零工具、纯 append",
+            "最高自主度、durable、50+ 工具、激进上下文",
+            "中等自主度、session + durable、~12 个手工工具、激进上下文",
+            "全部最大化",
+          ],
+          right: 2,
+          explain: "好的 harness 不是把 4 条轴拉满，而是有意识地选一个点然后把它做到位。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter1 = Chapter1;

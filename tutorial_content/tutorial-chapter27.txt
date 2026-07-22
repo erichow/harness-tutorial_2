@@ -1,0 +1,619 @@
+/* tutorial-chapter27.jsx — Chapter 27 full content */
+
+function Chapter27() {
+  return (
+    <section className="chapter" id="ch27">
+      <h2 className="chapter-title">
+        <span className="ch-num">27</span>
+        语言服务器协议
+      </h2>
+      <p className="chapter-meta">Language Server Protocol　·　让 agent 拥有 IDE 级别的代码理解能力——补全、跳转、引用、诊断</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        第 24 章的文本搜索让 agent 能找到"字符串级别的代码"——它在文件中找到了符号名。但编码需要的不只是文本匹配：它需要知道一个函数的定义在哪、一个符号的所有引用在哪、某个位置应该有什么自动补全、某段代码有没有类型错误……
+        <br /><br />
+        这就是 <strong>LSP（Language Server Protocol）</strong> 登场的地方。它是 VS Code 和几乎所有现代编辑器的语言支持基础。把它集成到 agent 里，相当于给了 agent 一个可以问任何语言问题的"IDE 大脑"。
+      </div>
+
+      <Outcomes items={[
+        "理解 LSP 的基本协议结构——initialize、textDocument/completion、definition、references、hover、diagnostic",
+        "实现 LSP 服务器生命周期管理——启动、初始化、关闭清理",
+        "设计 6 个 LSP 工具，对比与纯文本搜索的优劣",
+        "理解为什么每个项目只需要一个 LSP 工具入口，而不是拆成 6 个独立工具",
+      ]} />
+
+      <Section id="ch27-1" num="27.1" title="LSP 五分钟速成">
+        <p>LSP 是 JSON-RPC 之上的协议，客户端与语言服务器之间通过 stdin/stdout（或 TCP）通信。</p>
+
+        <CodeBlock lang="text">{`┌──────────┐         JSON-RPC          ┌──────────────┐
+│  Client   │ ──── initialize ──────→  │  Language    │
+│ (editor   │ ←── capabilities ──────  │  Server      │
+│  / agent) │                           │              │
+│           │ ──── didOpen(text) ───→  │  (ts-server, │
+│           │ ──── completion ──────→  │  pyright,    │
+│           │ ←── CompletionList ────  │  rust-analyzer)│
+│           │ ──── shutdown ────────→  │              │
+│           │ ←── ──────────          └──────────────┘
+`}</CodeBlock>
+
+        <p>核心生命周期：</p>
+        <ul>
+          <li><strong>initialize</strong>：客户端告诉服务器能力，服务器回复能力</li>
+          <li><strong>textDocument/didOpen</strong>：客户端通知服务器"用户打开了一个文件"</li>
+          <li><strong>textDocument/completion、definition、references、hover</strong>：问答式请求</li>
+          <li><strong>textDocument/diagnostic</strong>：服务器推送或客户端拉取诊断信息</li>
+          <li><strong>shutdown / exit</strong>：清理关闭</li>
+        </ul>
+
+        <Callout kind="key">
+          <p>LSP 的美妙之处：它对语言服务器内部使用什么技术毫无限制——TypeScript Server 是 TypeScript 写的，pyright 是 Python 写的，rust-analyzer 是 Rust 写的。但客户端看到的是同一个 JSON-RPC 接口。<strong>和 Provider 协议一样——这是一道缝。</strong></p>
+        </Callout>
+      </Section>
+
+      <Section id="ch27-2" num="27.2" title="初始化与生命周期管理">
+        <p>实现一个 LSP 客户端管理器：启动服务器、初始化、维护连接、关闭。</p>
+
+        <CodeBlock filename="src/harness/lsp/client.ts" lang="typescript">{`import { spawn, type ChildProcess } from "node:child_process";
+import { createInterface, type Interface } from "node:readline";
+import { EventEmitter } from "node:events";
+
+interface LSPServerConfig {
+  command: string;
+  args: string[];
+  language: string;
+}
+
+interface LSPResponse {
+  id: number;
+  result?: unknown;
+  error?: { code: number; message: string };
+}
+
+export class LSPClient extends EventEmitter {
+  private process: ChildProcess | null = null;
+  private rl: Interface | null = null;
+  private requestId = 1;
+  private pending = new Map<number, {
+    resolve: (v: unknown) => void;
+    reject: (e: Error) => void;
+  }>();
+  private buffer = "";
+  private initialized = false;
+  private capabilities: Record<string, unknown> = {};
+  readonly language: string;
+
+  constructor(readonly config: LSPServerConfig) {
+    super();
+    this.language = config.language;
+  }
+
+  async start(): Promise<void> {
+    this.process = spawn(this.config.command, this.config.args, {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    this.rl = createInterface({ input: this.process.stdout! });
+    this.rl.on("line", (line) => this.handleMessage(line));
+    this.process.stderr!.on("data", (chunk: Buffer) => {
+      // 很多 LSP 服务器把日志输出到 stderr
+      this.emit("log", chunk.toString());
+    });
+    this.process.on("exit", (code) => {
+      this.emit("exit", code);
+      this.initialized = false;
+    });
+
+    // 发送 initialize 请求
+    const result = await this.request("initialize", {
+      processId: process.pid,
+      capabilities: {
+        textDocument: {
+          completion: { completionItem: { snippetSupport: true } },
+          definition: {},
+          references: {},
+          hover: {},
+          diagnostic: {},
+        },
+      },
+      workspaceFolder: null,
+    });
+
+    this.capabilities = result as Record<string, unknown>;
+    this.initialized = true;
+
+    // 通知服务器 initialized
+    this.notify("initialized", {});
+  }
+
+  async openDocument(uri: string, text: string): Promise<void> {
+    this.notify("textDocument/didOpen", {
+      textDocument: {
+        uri,
+        languageId: this.language,
+        version: 1,
+        text,
+      },
+    });
+  }
+
+  async closeDocument(uri: string): Promise<void> {
+    this.notify("textDocument/didClose", {
+      textDocument: { uri },
+    });
+  }
+
+  async getCompletion(uri: string, line: number, column: number): Promise<unknown> {
+    return this.request("textDocument/completion", {
+      textDocument: { uri },
+      position: { line, character: column },
+    });
+  }
+
+  async getDefinition(uri: string, line: number, column: number): Promise<unknown> {
+    return this.request("textDocument/definition", {
+      textDocument: { uri },
+      position: { line, character: column },
+    });
+  }
+
+  async getReferences(uri: string, line: number, column: number): Promise<unknown> {
+    return this.request("textDocument/references", {
+      textDocument: { uri },
+      position: { line, character: column },
+      context: { includeDeclaration: true },
+    });
+  }
+
+  async getHover(uri: string, line: number, column: number): Promise<unknown> {
+    return this.request("textDocument/hover", {
+      textDocument: { uri },
+      position: { line, character: column },
+    });
+  }
+
+  async getDiagnostics(uri: string): Promise<unknown> {
+    return this.request("textDocument/diagnostic", {
+      textDocument: { uri },
+    });
+  }
+
+  async shutdown(): Promise<void> {
+    if (!this.initialized) return;
+    await this.request("shutdown", null);
+    this.notify("exit", {});
+    this.process?.kill();
+  }
+
+  private async request(method: string, params: unknown): Promise<unknown> {
+    const id = this.requestId++;
+    const message = JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method,
+      params,
+    });
+
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.send(message);
+    });
+  }
+
+  private notify(method: string, params: unknown): void {
+    const message = JSON.stringify({
+      jsonrpc: "2.0",
+      method,
+      params,
+    });
+    this.send(message);
+  }
+
+  private send(message: string): void {
+    // LSP 使用 Header（Content-Length） + 换行 + Body 的格式
+    const header = \`Content-Length: \${Buffer.byteLength(message, "utf-8")}\\r\\n\`;
+    this.process?.stdin?.write(header + "\\r\\n" + message);
+  }
+
+  private handleMessage(line: string): void {
+    // LSP 消息是 Content-Length header + 空行 + JSON body
+    // 内容长度已在 header 中，我们需要积累 buffer 直到拿到完整消息
+    this.buffer += line + "\\n";
+
+    // 检查是否有完整的 LSP 消息
+    const match = this.buffer.match(/Content-Length: (\\d+)\\r\\n\\r\\n/);
+    if (!match) return;
+
+    const contentLength = parseInt(match[1], 10);
+    const headerEnd = this.buffer.indexOf("\\r\\n\\r\\n") + 4;
+    const body = this.buffer.slice(headerEnd);
+
+    if (body.length < contentLength) return; // 还没收到完整 body
+
+    this.buffer = this.buffer.slice(headerEnd + contentLength);
+
+    try {
+      const msg = JSON.parse(body) as LSPResponse & { method?: string };
+
+      if (msg.id !== undefined && this.pending.has(msg.id)) {
+        const { resolve, reject } = this.pending.get(msg.id)!;
+        this.pending.delete(msg.id);
+
+        if (msg.error) {
+          reject(new Error(\`LSP error: \${msg.error.message}\`));
+        } else {
+          resolve(msg.result);
+        }
+      } else if (msg.method) {
+        // 服务端主动通知（如 diagnostics）
+        this.emit("notification", msg.method, msg.params);
+      }
+    } catch (err) {
+      this.emit("parseError", err, body);
+    }
+  }
+}`}</CodeBlock>
+
+        <Callout kind="warn" title="LSP 客户端实现的隐性成本">
+          <p>上面的实现大约 120 行，但只是 LSP 的最小子集。完整实现需要处理：<code>textDocument/didChange</code>（增量同步）、多个文件的打开/关闭管理、<code>textDocument/willSave</code>、<code>textDocument/formatting</code>、代码片段的处理、服务端推送的通知队列……<br />
+          <strong>建议：</strong> 在产品中使用现成的 LSP 客户端库（如 <code>vscode-languageserver-protocol</code> 的 Node.js 客户端），而不是自己实现 JSON-RPC 解析。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch27-3" num="27.3" title="LSP Manager——多语言管理">
+        <p>项目通常包含多种语言。需要一个管理器来按需启动和复用 LSP 服务器。</p>
+
+        <CodeBlock filename="src/harness/lsp/manager.ts" lang="typescript">{`import { LSPClient } from "./client.js";
+
+interface LSPConfig {
+  [language: string]: {
+    command: string;
+    args: string[];
+  };
+}
+
+const DEFAULT_LSP_CONFIG: LSPConfig = {
+  typescript: {
+    command: "typescript-language-server",
+    args: ["--stdio"],
+  },
+  javascript: {
+    command: "typescript-language-server",
+    args: ["--stdio"],
+  },
+  python: {
+    command: "pyright-langserver",
+    args: ["--stdio"],
+  },
+};
+
+export class LSPManager {
+  private clients = new Map<string, LSPClient>();
+  private config: LSPConfig;
+
+  constructor(config?: Partial<LSPConfig>) {
+    this.config = { ...DEFAULT_LSP_CONFIG, ...config };
+  }
+
+  async getClient(language: string): Promise<LSPClient> {
+    const existing = this.clients.get(language);
+    if (existing) return existing;
+
+    const cfg = this.config[language];
+    if (!cfg) {
+      throw new Error(\`Unsupported language: \${language}\`);
+    }
+
+    const client = new LSPClient({
+      command: cfg.command,
+      args: cfg.args,
+      language,
+    });
+
+    await client.start();
+    this.clients.set(language, client);
+    return client;
+  }
+
+  async closeAll(): Promise<void> {
+    for (const client of this.clients.values()) {
+      await client.shutdown();
+    }
+    this.clients.clear();
+  }
+}`}</CodeBlock>
+      </Section>
+
+      <Section id="ch27-4" num="27.4" title="LSP 工具——统一入口设计">
+        <p>LSP 工具的设计有一个重要决策：每个 LSP 能力一个工具，还是一个统一的 <code>lsp_query</code> 工具？</p>
+
+        <CmpTable
+          headers={["", "每个能力一个工具", "统一入口"]}
+          rows={[
+            ["工具数量", "6 个", "1 个"],
+            ["模型友好度", "模型直接知道要调哪个", "模型需要构造查询参数"],
+            ["可扩展性", "加新能力 = 加新工具", "加新能力 = 加一个 operation 值"],
+            ["工具悬崖影响", "占用 6 个位置", "只占 1 个位置"],
+            ["本章选择", "—", "✅ 统一入口"],
+          ]}
+        />
+
+        <Callout kind="key">
+          <p>选择统一入口的核心原因：<strong>工具悬崖（第 12 章）。</strong> 你已经有文件工具（6 个）、终端工具（5 个）、Git 工具（6 个）……再加 6 个 LSP 工具就是 23 个。在 20+ 工具的场景下，模型选错工具的概率大幅上升。一个统一的 <code>lsp_query</code> 工具加上 <code>operation</code> 参数，让模型只需要知道"需要 IDE 能力时用这个工具"，然后在参数里指定具体操作。</p>
+        </Callout>
+
+        <CodeBlock filename="src/harness/tools/lsp.ts" lang="typescript">{`import { LSPManager } from "../lsp/manager.js";
+import { type Tool } from "./types.js";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
+// 全局 LSP 管理器
+const lspManager = new LSPManager();
+
+// 语言 -> 文件后缀映射
+const LANGUAGE_MAP: Record<string, string> = {
+  ".ts": "typescript",
+  ".tsx": "typescript",
+  ".js": "javascript",
+  ".jsx": "javascript",
+  ".py": "python",
+};
+
+function detectLanguage(path: string): string | null {
+  const ext = Object.entries(LANGUAGE_MAP)
+    .find(([suffix]) => path.endsWith(suffix));
+  return ext?.[1] ?? null;
+}
+
+function pathToUri(absolutePath: string): string {
+  return "file://" + absolutePath;
+}
+
+export const lspQueryTool: Tool = {
+  name: "lsp_query",
+  description: "向语言服务器发送查询。支持 operation: completion（补全）、definition（跳转定义）、references（查找引用）、hover（悬停文档）、diagnostics（诊断错误）。需要提供文件路径和行/列号。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      operation: {
+        type: "string",
+        enum: ["completion", "definition", "references", "hover", "diagnostics"],
+        description: "要执行的 LSP 操作",
+      },
+      path: {
+        type: "string",
+        description: "目标文件路径（相对于项目根目录）",
+      },
+      line: {
+        type: "number",
+        description: "行号（从 0 开始，definition/references/hover/completion 需要）",
+      },
+      column: {
+        type: "number",
+        description: "列号（从 0 开始，definition/references/hover/completion 需要）",
+      },
+    },
+    required: ["operation", "path"],
+  },
+  async handler(args: {
+    operation: string;
+    path: string;
+    line?: number;
+    column?: number;
+  }): Promise<string> {
+    const language = detectLanguage(args.path);
+    if (!language) {
+      return \`不支持的文件类型: \${args.path}\`;
+    }
+
+    const client = await lspManager.getClient(language);
+    const absPath = resolve(process.cwd(), args.path);
+    const uri = pathToUri(absPath);
+
+    // 打开文档（如果不打开，LSP 服务器无法分析）
+    const content = await readFile(absPath, "utf-8");
+    await client.openDocument(uri, content);
+
+    try {
+      switch (args.operation) {
+        case "completion": {
+          if (args.line === undefined || args.column === undefined) {
+            return "completion 需要 line 和 column 参数";
+          }
+          const result = await client.getCompletion(uri, args.line, args.column);
+          return formatCompletion(result);
+        }
+
+        case "definition": {
+          if (args.line === undefined || args.column === undefined) {
+            return "definition 需要 line 和 column 参数";
+          }
+          const result = await client.getDefinition(uri, args.line, args.column);
+          return formatLocations(result);
+        }
+
+        case "references": {
+          if (args.line === undefined || args.column === undefined) {
+            return "references 需要 line 和 column 参数";
+          }
+          const result = await client.getReferences(uri, args.line, args.column);
+          return formatLocations(result);
+        }
+
+        case "hover": {
+          if (args.line === undefined || args.column === undefined) {
+            return "hover 需要 line 和 column 参数";
+          }
+          const result = await client.getHover(uri, args.line, args.column);
+          return formatHover(result);
+        }
+
+        case "diagnostics": {
+          const result = await client.getDiagnostics(uri);
+          return formatDiagnostics(result);
+        }
+
+        default:
+          return \`未知操作: \${args.operation}\`;
+      }
+    } finally {
+      await client.closeDocument(uri);
+    }
+  },
+};
+
+/* ──── 格式化函数 ──── */
+
+function formatCompletion(result: unknown): string {
+  // LSP CompletionList 格式
+  const list = (result as any)?.items ?? (result as any) ?? [];
+  if (!Array.isArray(list) || list.length === 0) return "没有补全建议。";
+
+  return list
+    .slice(0, 20)
+    .map((item: any) => {
+      const detail = item.detail ? \` — \${item.detail}\` : "";
+      const kind = item.kind ? \`[\${["","Text","Method","Function","Constructor","Field","Variable","Class","Interface","Module","Property"][item.kind] || item.kind}]\` : "";
+      return \`  \${kind} \${item.label}\${detail}\`;
+    })
+    .join("\n");
+}
+
+function formatLocations(result: unknown): string {
+  if (!result) return "没有找到。";
+
+  const locations = Array.isArray(result) ? result : [result];
+  if (locations.length === 0) return "没有找到。";
+
+  return locations
+    .slice(0, 30)
+    .map((loc: any) => {
+      const uri = loc.uri || loc.targetUri || "?";
+      const range = loc.range || loc.targetRange || {};
+      const start = range.start || {};
+      return \`  \${uri}:\${start.line + 1}:\${(start.character || 0) + 1}\`;
+    })
+    .join("\n");
+}
+
+function formatHover(result: unknown): string {
+  if (!result) return "没有悬停信息。";
+
+  const contents = (result as any)?.contents;
+  if (!contents) return "没有文档。";
+
+  const value = typeof contents === "string"
+    ? contents
+    : Array.isArray(contents)
+      ? contents.map((c: any) => c.value || c).join("\\n")
+      : contents.value || JSON.stringify(contents);
+
+  return value;
+}
+
+function formatDiagnostics(result: unknown): string {
+  const items = (result as any)?.items ?? [];
+  if (!Array.isArray(items) || items.length === 0) return "没有诊断错误。";
+
+  return items.map((d: any) => {
+    const sev = ["", "错误", "警告", "信息", "提示"][d.severity] || "未知";
+    const pos = d.range?.start
+      ? \`:\${d.range.start.line + 1}:\${d.range.start.character + 1}\`
+      : "";
+    return \`[\${sev}]\${pos} \${d.message}\`;
+  }).join("\n");
+}`}</CodeBlock>
+      </Section>
+
+      <Section id="ch27-5" num="27.5" title="LSP vs 文本搜索——何时用哪个">
+        <p>LSP 和文本搜索（find_text_in_files）不是替代关系，而是互补关系：</p>
+
+        <CmpTable
+          headers={["任务", "用 LSP", "用文本搜索"]}
+          rows={[
+            ["找函数定义", "✅ 精确——LSP 理解声明和实现的区别", "❌ 只匹配文本——找到的是同名变量不是功能定义"],
+            ["找所有引用", "✅ 精确——只找语言层面的引用", "❌ 找到的可能是注释中的名字或字符串中的同名"],
+            ["自动补全", "✅ LSP 唯一能做", "❌ 不可能"],
+            ["类型/文档", "✅ 返回类型签名和文档注释", "❌ 需要自己找 JSDoc"],
+            ["诊断错误", "✅ 报告类型错误和语法错误", "❌ 不可能"],
+            ["搜索 API 使用模式", "❌ LSP 不做跨文件语义搜索", "✅ grep 灵活性好"],
+            ["找配置项的值", "❌ 配置不是代码", "✅ 文本匹配最适合"],
+            ["首次项目探索", "❌ 需要启动语言服务器", "✅ 零成本"],
+          ]}
+        />
+
+        <Callout kind="tip">
+          <p>一个经验法则：<strong>需要语义理解的任务先用 LSP，需要文本搜索的任务先用 grep。</strong> Agent 的 system prompt 应该帮助模型做这个选择——让 model 先尝试 LSP 获取精确定义，再用文本搜索补充 grep 风格的发现。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch27-6" num="27.6" title="注册与注意事项">
+        <CodeBlock filename="src/harness/tools/register.ts" lang="typescript">{`export function registerLSPTools(registry: ToolRegistry): void {
+  registry.register(lspQueryTool);
+}`}</CodeBlock>
+
+        <p>几个重要的部署注意事项：</p>
+
+        <div className="cards cols-2">
+          <Card title="LSP 服务器需预装" kind="warn">
+            typescript-language-server、pyright 等需要作为项目的 devDependency 或全局安装。首次使用会有一个短暂的启动延迟（500ms–2s）。<br />
+            <code>npm install -D typescript-language-server</code>
+          </Card>
+          <Card title="内存消耗" kind="warn">
+            每个 LSP 服务器消耗 50–200MB 内存。如果你的 agent 同时打开 TypeScript + Python + Rust 服务器，那就是多语言的内存压力。<br />
+            解决方案：按需启动 + 闲置超时关闭。
+          </Card>
+        </div>
+      </Section>
+
+      <Section id="ch27-7" num="27.7" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 安装 TypeScript LSP">全局安装 typescript-language-server，在项目中的 .ts 文件上测试 lsp_query completion 和 definition。</Card>
+          <Card title="② 对比 LSP 和文本搜索">在同一个项目里，用 LSP definition 和 find_text_in_files 分别找一个导出的函数。对比结果的质量和用时。</Card>
+          <Card title="③ 设计超时关闭">如果 LSP 服务器在 5 分钟内没有被使用，自动关闭以释放内存。这个逻辑放在哪里？LSPManager 还是单独的 watchdog？</Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch27" questions={[
+        {
+          q: "为什么本章选择统一入口的 lsp_query 而非每个能力一个工具？",
+          options: [
+            "写代码更方便",
+            "减少工具总数——6 个 LSP 工具会增加工具悬崖的风险",
+            "模型更擅长 parse 一个工具的多种参数",
+            "LSP 协议本身就是一个统一的接口",
+          ],
+          right: 1,
+          explain: "第 12 章的工具悬崖说明 20+ 工具时模型选错率会非线性上升。统一入口把 LSP 的 6 个能力压成 1 个工具，节省了工具位。",
+        },
+        {
+          q: "LSP 的 definition 和 find_text_in_files 的关键区别是什么？",
+          options: [
+            "LSP 更快",
+            "LSP 理解语言语义——它能区分类名、函数名、变量名，而文本搜索只匹配字符串",
+            "find_text_in_files 更准确",
+            "没有区别",
+          ],
+          right: 1,
+          explain: "LSP 返回的是语言服务器解析的结果——它知道一个符号是函数定义还是变量引用。文本搜索不知道这些——它只关心字符串匹配。",
+        },
+        {
+          q: "LSP 服务器为什么需要 openDocument 才能工作？",
+          options: [
+            "因为 LSP 协议要求先通知服务器文件内容",
+            "因为服务器不做磁盘 IO——它只分析通过协议发给它的内容",
+            "因为文件可能有未保存的更改",
+            "以上全部",
+          ],
+          right: 3,
+          explain: "LSP 服务器不直接读磁盘。客户端必须通过 didOpen/didChange 将文件内容通知服务器。这是 LSP 协议的设计核心——它让客户端控制哪些文件被分析。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter27 = Chapter27;

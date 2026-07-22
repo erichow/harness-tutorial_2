@@ -1,0 +1,612 @@
+/* tutorial-chapter12.jsx — Chapter 12: Tool Cliff & Dynamic Loading */
+
+const { useState: useS12 } = React;
+
+/* ─── Tool cliff curve diagram ─── */
+function ToolCliffDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 320" preserveAspectRatio="xMidYMid meet">
+        <text x={450} y={28} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          工具数量 vs. 选择准确率
+        </text>
+
+        {/* Axes */}
+        <line x1={70} y1={250} x2={830} y2={250} stroke="var(--ink)" strokeWidth="2" />
+        <line x1={70} y1={70} x2={70} y2={250} stroke="var(--ink)" strokeWidth="2" />
+
+        {/* Curve: flat 0-20, degrading 20-50, cliff 50+ */}
+        <path d="M 90 90 L 280 95 Q 360 110 440 175 Q 520 240 700 252 L 820 254"
+              fill="none" stroke="var(--accent-4)" strokeWidth="4"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+
+        {/* Zone shading */}
+        <rect x={70} y={70} width={210} height={180} fill="rgba(74,124,58,0.07)" />
+        <rect x={280} y={70} width={170} height={180} fill="rgba(212,160,23,0.08)" />
+        <rect x={450} y={70} width={380} height={180} fill="rgba(185,50,47,0.08)" />
+
+        {/* Zone labels */}
+        <text x={175} y={94} fontFamily="var(--font-h)" fontSize="18" fill="var(--green)" textAnchor="middle" fontWeight="700">flat</text>
+        <text x={175} y={116} fontFamily="var(--font-hand)" fontSize="13" fill="var(--ink-soft)" textAnchor="middle">0–20</text>
+
+        <text x={365} y={94} fontFamily="var(--font-h)" fontSize="18" fill="var(--accent-3)" textAnchor="middle" fontWeight="700">degrading</text>
+        <text x={365} y={116} fontFamily="var(--font-hand)" fontSize="13" fill="var(--ink-soft)" textAnchor="middle">20–50</text>
+
+        <text x={640} y={94} fontFamily="var(--font-h)" fontSize="18" fill="var(--red)" textAnchor="middle" fontWeight="700">cliff</text>
+        <text x={640} y={116} fontFamily="var(--font-hand)" fontSize="13" fill="var(--ink-soft)" textAnchor="middle">50+</text>
+
+        {/* X-axis ticks */}
+        {[
+          { x: 90,  v: "0" },
+          { x: 280, v: "20" },
+          { x: 450, v: "50" },
+          { x: 700, v: "100" },
+          { x: 820, v: "工具数" },
+        ].map((t, i) => (
+          <g key={i}>
+            <line x1={t.x} y1={250} x2={t.x} y2={258} stroke="var(--ink)" />
+            <text x={t.x} y={274} fontFamily="var(--font-hand)" fontSize="13"
+                  fill="var(--ink-soft)" textAnchor="middle">{t.v}</text>
+          </g>
+        ))}
+
+        {/* Y-axis label */}
+        <text x={45} y={160} fontFamily="var(--font-hand)" fontSize="13"
+              fill="var(--ink)" textAnchor="middle" transform="rotate(-90 45 160)">选择准确率</text>
+
+        {/* Selector annotation */}
+        <circle cx={140} cy={92} r="10" fill="var(--green)" stroke="var(--ink)" strokeWidth="2" />
+        <text x={140} y={96} fontFamily="var(--font-h)" fontSize="14" fill="var(--paper)" textAnchor="middle" fontWeight="700">★</text>
+        <text x={140} y={306} fontFamily="var(--font-hand)" fontSize="15" fill="var(--green)" textAnchor="middle" fontWeight="700">
+          selector 把我们守在这里（~10-15 loaded）
+        </text>
+      </svg>
+      <div className="caption">动态加载让我们停留在 flat zone——无论目录里有 30 个还是 300 个工具。</div>
+    </div>
+  );
+}
+
+/* ─── Three problems hiding inside one observation ─── */
+function ThreeProblemsCards() {
+  return (
+    <div className="cards cols-3">
+      <Card title="① Schema 的 token 成本" kind="bad">
+        每个工具的 schema 在 prompt 里占 100–500 tokens。
+        <br /><strong>50 工具 = 每回合 10–25K tokens 的开销</strong>，用户还没开口。
+      </Card>
+      <Card title="② 注意力稀释" kind="bad">
+        模型必须从列表里"选对的工具"。<strong>列表越长，选择越难</strong>。即便正确工具的描述<em>本来明确</em>，选择准确率也下降。
+      </Card>
+      <Card title="③ 名字/参数碰撞" kind="bad">
+        <code>search_docs</code> 和 <code>search_code</code> 参数形状相似 → 被混淆。
+        <br />模型<strong>选对了工具，但传错了参数</strong>，因为它把两个相似 schema 混在一起。
+      </Card>
+    </div>
+  );
+}
+
+/* ─── Interactive selector demo ─── */
+function SelectorInteractiveDemo() {
+  const [query, setQuery] = useS12("read file find errors");
+  // Mock catalog of 15 tools with simulated BM25 scores
+  const catalog = [
+    { name: "read_file_viewport",  desc: "Read a slice of a text file with line numbers",                    kw: "read file viewport text lines" },
+    { name: "edit_lines",          desc: "Replace a line range in a file with new content",                  kw: "edit lines file replace write" },
+    { name: "bash",                desc: "Run a shell command in the current working directory",             kw: "bash shell command run execute" },
+    { name: "calc",                desc: "Evaluate a Python arithmetic expression",                          kw: "calc math arithmetic compute" },
+    { name: "search_docs",         desc: "Search documentation corpus by keywords",                          kw: "search docs documentation find" },
+    { name: "github_search",       desc: "Search code across GitHub repositories",                           kw: "github search code repository" },
+    { name: "npm_info",            desc: "Get information about an npm package",                             kw: "npm package node info" },
+    { name: "run_tests",           desc: "Run the project test suite and report results",                    kw: "run tests pytest jest errors" },
+    { name: "git_diff",            desc: "Show changes between commits or working tree",                     kw: "git diff commits changes" },
+    { name: "git_status",          desc: "Show working tree status",                                         kw: "git status changes file" },
+    { name: "http_fetch",          desc: "Fetch a URL and return the response body",                         kw: "http fetch url request" },
+    { name: "slack_post",          desc: "Post a message to a Slack channel",                                kw: "slack post message channel" },
+    { name: "scratchpad_list",     desc: "List keys in the durable scratchpad",                              kw: "scratchpad list keys" },
+    { name: "scratchpad_read",     desc: "Read a value from the scratchpad",                                 kw: "scratchpad read key value" },
+    { name: "list_available_tools", desc: "Discover tools available in the catalog (pinned)",                kw: "list available tools discover help" },
+  ];
+
+  // Very rough BM25-ish scoring: count overlap of query tokens with tool keywords + description
+  const qTokens = query.toLowerCase().match(/\w+/g) || [];
+  const scored = catalog.map(t => {
+    const haystack = (t.kw + " " + t.name + " " + t.desc).toLowerCase();
+    let score = 0;
+    for (const q of qTokens) {
+      // term-frequency-like with diminishing returns
+      const m = haystack.match(new RegExp(`\\b${q.replace(/[^a-z0-9]/gi, "")}`, "g"));
+      if (m) score += 1 + Math.log(m.length);
+    }
+    return { ...t, score };
+  });
+
+  // Always pin list_available_tools and scratchpad_*
+  const pinnedNames = new Set(["list_available_tools"]);
+  const pinned = scored.filter(t => pinnedNames.has(t.name));
+  const rest = scored
+    .filter(t => !pinnedNames.has(t.name) && t.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  const k = 7;
+  const selected = [...pinned, ...rest.slice(0, k - pinned.length)];
+  const selectedNames = new Set(selected.map(t => t.name));
+
+  return (
+    <div className="loop-demo">
+      <div style={{ fontFamily: "var(--font-h)", fontSize: 24, marginBottom: 10 }}>
+        🎛 试一下：改变 query，看 selector 选哪 7 个工具
+      </div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12,
+                    fontFamily: "var(--font-hand)", fontSize: 16 }}>
+        <span style={{ minWidth: 60 }}>query:</span>
+        <input
+          type="text"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          style={{ flex: 1, padding: "6px 12px", fontFamily: "var(--font-mono)", fontSize: 14,
+                   border: "2px solid var(--rule)", borderRadius: 8, background: "var(--paper)" }}
+        />
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap",
+                    fontFamily: "var(--font-hand)", fontSize: 13 }}>
+        <span style={{ color: "var(--ink-soft)" }}>试试：</span>
+        {[
+          "read file find errors",
+          "github post slack",
+          "git diff tests",
+          "hi help what can you do",
+        ].map((q, i) => (
+          <button key={i} onClick={() => setQuery(q)}
+                  style={{ background: "var(--paper-2)", border: "1.5px solid var(--rule)",
+                           padding: "2px 8px", borderRadius: 999, cursor: "pointer",
+                           fontFamily: "var(--font-hand)", fontSize: 13 }}>
+            {q}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        {/* Full catalog */}
+        <div style={{ flex: 1 }}>
+          <div style={{ fontFamily: "var(--font-h)", fontSize: 18, color: "var(--ink)", marginBottom: 6 }}>
+            完整 catalog（15 个工具）
+          </div>
+          <div style={{ background: "var(--paper-2)", border: "1.5px dashed var(--rule)",
+                        borderRadius: 8, padding: 8, fontSize: 13, fontFamily: "var(--font-mono)" }}>
+            {scored.sort((a,b)=>b.score-a.score).map((t, i) => {
+              const isSelected = selectedNames.has(t.name);
+              const isPinned = pinnedNames.has(t.name);
+              return (
+                <div key={i} style={{ display: "flex", padding: "3px 6px", borderRadius: 4,
+                                      background: isSelected ? "rgba(74,124,58,0.12)" : "transparent",
+                                      opacity: isSelected ? 1 : 0.5,
+                                      color: "var(--ink)" }}>
+                  <span style={{ minWidth: 20, color: "var(--ink-faint)" }}>
+                    {isSelected ? "✓" : "·"}
+                  </span>
+                  <span style={{ flex: 1, fontWeight: isPinned ? 700 : 400 }}>
+                    {t.name}{isPinned ? " 📌" : ""}
+                  </span>
+                  <span style={{ color: "var(--accent)", fontWeight: 600 }}>{t.score.toFixed(1)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Selected tools (the agent sees) */}
+        <div style={{ flex: 1 }}>
+          <div style={{ fontFamily: "var(--font-h)", fontSize: 18, color: "var(--green)", marginBottom: 6 }}>
+            模型看到的（top-{k}）
+          </div>
+          <div style={{ background: "rgba(74,124,58,0.08)", border: "2px solid var(--green)",
+                        borderRadius: 8, padding: 10, fontSize: 13, minHeight: 200 }}>
+            {selected.length === 0 ? (
+              <div style={{ fontFamily: "var(--font-hand)", color: "var(--red)", fontStyle: "italic" }}>
+                ⚠ 没有匹配——只 pinned 的 <code>list_available_tools</code> 进得来
+              </div>
+            ) : (
+              selected.map((t, i) => (
+                <div key={i} style={{ padding: "4px 0", fontFamily: "var(--font-mono)" }}>
+                  <div style={{ fontWeight: 700 }}>
+                    {t.name}{pinnedNames.has(t.name) ? " 📌" : ""}
+                  </div>
+                  <div style={{ fontFamily: "var(--font-hand)", fontSize: 12, color: "var(--ink-soft)" }}>
+                    {t.desc.substring(0, 70)}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, fontFamily: "var(--font-hand)", fontSize: 14,
+                    color: "var(--ink-soft)", padding: 10,
+                    background: "var(--paper-2)", border: "1.5px dashed var(--rule)", borderRadius: 8 }}>
+        💡 试 "hi help what can you do"——0 分匹配场景。<strong>list_available_tools 被钉死</strong>，所以模型仍有出路。
+      </div>
+    </div>
+  );
+}
+
+/* ─── Chapter 12 ─── */
+function Chapter12() {
+  return (
+    <section className="chapter" id="ch12">
+      <h2 className="chapter-title">
+        <span className="ch-num">12</span>
+        工具悬崖与动态加载
+      </h2>
+      <p className="chapter-meta">The Tool Cliff and Dynamic Loading　·　工具数 ≥ 20 时模型选错的非线性塌陷</p>
+
+      <Prereqs />
+
+      <Callout kind="warn" title="📦 这一章会改 arun() 的签名——按这里迁移">
+        <p>本章把 <code>arun(..., registry=registry, ...)</code> <strong>改成</strong> <code>arun(..., catalog=ToolCatalog(tools=...), ...)</code>。Ch 4-11 的所有 example 直接跑会报 <code>TypeError: arun() got unexpected keyword 'registry'</code>。</p>
+        <p>迁移方法（任选其一）：</p>
+        <ul style={{ margin: 0 }}>
+          <li><strong>方法 A</strong>（保留旧代码）：在 ToolCatalog 上加一个 <code>from_registry(reg)</code> classmethod；老 example 改一行 <code>catalog=ToolCatalog.from_registry(registry)</code></li>
+          <li><strong>方法 B</strong>（推荐）：把所有 example 的 <code>registry=ToolRegistry(tools=[...])</code> 直接换成 <code>catalog=ToolCatalog(tools=[...])</code></li>
+        </ul>
+      </Callout>
+
+      <div className="lead">
+        前情：第 11 章把工具设计成模型用得动的样子。Harness 现在有<strong>一小撮设计良好的工具</strong>。如果你需要 30 个会发生什么？
+        <br /><br />
+        <strong>"工具悬崖"是一种非线性性能塌陷</strong>。Jenova AI 2025 <em>AI Tool Overload</em> 分析（第 4 章引过的实证发现）及之后多次独立复现都看到：模型在 10 工具上几乎完美、20 工具上明显退化、30 到 50 之间<strong>断崖</strong>——工具选择准确率剧降、参数 shape 在工具间混淆、单是 tool schema 就吃掉 5-7% 窗口。
+      </div>
+
+      <ToolCliffDiagram />
+
+      <Outcomes items={[
+        "理解工具悬崖背后的 3 个独立问题（schema token 成本 / 注意力稀释 / 参数碰撞）",
+        "用 BM25 索引把'工具选择'当作'检索问题'来解决",
+        "ToolCatalog.select(query, k) + pinned 工具机制",
+        "discovery_tool（list_available_tools）：让模型永远有路问'我能干什么'",
+        "把 selector 接入 loop——arun 的 registry 参数变成 catalog",
+      ]} />
+
+      <Section id="ch12-1" num="12.1" title="一个观察里藏着的 3 个独立问题">
+        <ThreeProblemsCards />
+
+        <Callout kind="key">
+          <p>Fix 是<strong>动态工具加载</strong>。与其每回合给模型看所有工具，<em>给它看一小撮和当前任务相关的</em>。EclipseSource 2026 <em>MCP and Context Overload</em> 把这框架成"<strong>工具选择是个检索问题</strong>"——而我们就这么实现它。</p>
+        </Callout>
+
+        <h4 className="sub-title">设计空间</h4>
+        <CmpTable
+          headers={["方案", "做法", "代价", "适合"]}
+          rows={[
+            ["静态子集",     "定几个固定子集（'只读模式'/'代码模式'），显式切换",        "agent 不能在任务中混合",    "工作负载明显二分（Cursor 的 ask vs agent 模式）"],
+            ["Top-K by embedding", "Embed 工具描述和任务，按相似度取 top-K",          "依赖 embedding 模型 + 延迟",  "大规模生产系统"],
+            ["Top-K by BM25", "同上但基于关键词",                                          "释义查询差一些",                "我们控制查询，能用同一词汇"],
+          ]}
+        />
+
+        <Callout kind="note">本书建 BM25 版本。<em>升级到 embedding 是 20 行代码的事</em>——接口 <code>catalog.select(query, k)</code> 不变。</Callout>
+      </Section>
+
+      <Section id="ch12-2" num="12.2" title="Selector — ToolCatalog">
+        <CodeBlock filename="src/harness/tools/selector.py" lang="python">{`from __future__ import annotations
+import re
+from dataclasses import dataclass
+
+from rank_bm25 import BM25Okapi
+
+from .base import Tool
+
+
+def _tokenize(text: str) -> list[str]:
+    return re.findall(r"\\w+", text.lower())
+
+
+@dataclass
+class ToolCatalog:
+    """A catalog of tools, with a BM25 index over names + descriptions."""
+
+    tools: list[Tool]
+
+    def __post_init__(self) -> None:
+        self._tokenized = [
+            _tokenize(f"{t.name} {t.description}") for t in self.tools
+        ]
+        self._bm25 = BM25Okapi(self._tokenized)
+        self._by_name = {t.name: t for t in self.tools}
+
+    def select(self, query: str, k: int = 7,
+               must_include: set[str] | None = None) -> list[Tool]:
+        """Return up to k tools most relevant to the query.
+
+        must_include: 这些名字的工具不管 score 都进——通常是 "core" 工具，
+                      agent 必须总有。
+        """
+        must_include = must_include or set()
+        pinned = [self._by_name[n] for n in must_include if n in self._by_name]
+
+        scores = self._bm25.get_scores(_tokenize(query))
+        ranked = sorted(enumerate(scores), key=lambda x: -x[1])
+
+        picks: list[Tool] = list(pinned)
+        seen = {t.name for t in pinned}
+        remaining = max(0, k - len(pinned))
+
+        for i, score in ranked:
+            if remaining <= 0: break
+            t = self.tools[i]
+            if t.name in seen: continue
+            if score <= 0: continue       # 不要 0 分匹配，宁可空
+            picks.append(t)
+            seen.add(t.name)
+            remaining -= 1
+        return picks
+
+    def get(self, name: str) -> Tool | None:
+        return self._by_name.get(name)`}</CodeBlock>
+
+        <Callout kind="key" title="两个关键 feature">
+          <p><strong>must_include 钉住的工具</strong>。有些工具应该<em>永远在场</em>——<code>scratchpad_read</code>、<code>scratchpad_list</code>、一个 help 工具。钉住的工具不管检索取到什么都<em>保持可用</em>。这是怎么防止 selector 误把核心能力藏起来。</p>
+          <p><strong>0 分地板</strong>。query 不匹配任何工具时，<em>不</em>把 0 分匹配混进来——只返回 pinned 那几个。<strong>模型学到：空选择 = "目录里没有相关工具"</strong>。</p>
+        </Callout>
+
+        <Callout kind="warn" title="为什么 must_include 是承重的，不是可选">
+          <p>0 分地板有个不舒服的失败模式：query 啥都不匹配时<strong>产出空选择</strong>。第一个 user turn 上——"hi"、"help"、"what can you do?"——每个工具都得 0 分，selector 返回空。<em>Agent 看到 0 个工具，只能用文字回答，没有任何路径去发现这个 harness 能干什么</em>。</p>
+          <p>同一失败模式还会在<strong>任务中途转向</strong>时触发：5 个回合文件操作后，"现在把摘要发到 Slack" 来了——BM25 的查询被文件系统词汇主导而不是 "slack"。</p>
+          <p>钉一个 discovery 工具（§12.5 建）<em>同时关掉两个洞</em>。没有它，你就部署了一个能"盲掉"的 selector-backed agent，而本章后面的机器救不回来。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch12-3" num="12.3" title="选 query 的两种策略">
+        <CmpTable
+          headers={["策略", "做法", "好处", "短板"]}
+          rows={[
+            ["分类 user 消息",      "拿一个小分类器（可用便宜模型或规则）抽 'read file' / 'find errors' 当 BM25 query",   "user turn 是干净任务描述时好",  "对话式多步交互上崩"],
+            ["用 agent 的 transcript", "拿最近 user message + 最近 assistant thought + 最近 tool call 当 query",              "agent 自己的推理自然指向相关词汇",  "需要 agent 已经有进展（第一回合不行）"],
+            ["混合（本书选）",      "user 原始消息当 base，加上最近 1-2 回合（如果有）",                                       "兼顾初衷和当前方向",                "不复杂——但意外地能用"],
+          ]}
+        />
+
+        <CodeBlock filename="src/harness/tools/selector.py（续）" lang="python">{`def query_from_transcript(transcript: Transcript) -> str:
+    """Derive a search query from the transcript: user intent + recent activity."""
+    parts: list[str] = []
+
+    # first user message is the anchor
+    if transcript.messages:
+        first = transcript.messages[0]
+        for b in first.blocks:
+            if isinstance(b, TextBlock):
+                parts.append(b.text)
+
+    # last 3 assistant blocks for current focus
+    recent = [m for m in transcript.messages[-6:] if m.role == "assistant"]
+    for m in recent:
+        for b in m.blocks:
+            if isinstance(b, TextBlock):
+                parts.append(b.text[:500])
+            elif isinstance(b, ToolCall):
+                parts.append(f"{b.name} {list(b.args.keys())}")
+
+    return " ".join(parts)`}</CodeBlock>
+      </Section>
+
+      <Section id="ch12-4" num="12.4" title="把 selector 穿进 loop">
+        <Callout kind="warn" title="签名变化">
+          本章把 <code>arun</code> 的 <code>tools</code> 参数从 <code>registry:</code> 换成 <code>catalog:</code>。前几章（8-11）调 <code>arun(..., registry=registry, ...)</code> 的例子需要改成 <code>arun(..., catalog=ToolCatalog(tools=list(registry.tools.values())), ...)</code>——或者用便利方法 <code>ToolCatalog.from_registry(registry)</code>。
+        </Callout>
+
+        <CodeBlock filename="src/harness/agent.py（selector-aware 版本）" lang="python">{`from .tools.selector import ToolCatalog, query_from_transcript
+
+
+async def arun(
+    provider: Provider,
+    catalog: ToolCatalog,             # 不再是 registry
+    user_message: str,
+    transcript: Transcript | None = None,
+    system: str | None = None,
+    # ... 其它 callback 和 accountant 不变
+    pinned_tools: set[str] | None = None,
+    tools_per_turn: int = 7,
+) -> str:
+    if transcript is None:
+        transcript = Transcript(system=system)
+    transcript.append(Message.user_text(user_message))
+
+    accountant = accountant or ContextAccountant()
+    compactor  = compactor  or Compactor(accountant, provider)
+
+    for _ in range(MAX_ITERATIONS):
+        # **每回合选工具**
+        query = query_from_transcript(transcript)
+        selected = catalog.select(query, k=tools_per_turn, must_include=pinned_tools)
+        registry = ToolRegistry(tools=selected)
+
+        snapshot = accountant.snapshot(transcript, tools=registry.schemas())
+        if on_snapshot: on_snapshot(snapshot)
+        if snapshot.state == "red":
+            await compactor.compact_if_needed(transcript, registry.schemas())
+
+        response = await _one_turn(provider, registry, transcript, on_event=on_event)
+
+        if response.is_final:
+            transcript.append(Message.from_assistant_response(response))
+            return response.text or ""
+
+        transcript.append(Message.from_assistant_response(response))
+        for ref in response.tool_calls:
+            result = registry.dispatch(ref.name, ref.args, ref.id)
+            transcript.append(Message.tool_result(result))
+
+    raise RuntimeError(f"agent did not finish in {MAX_ITERATIONS} iterations")`}</CodeBlock>
+
+        <h4 className="sub-title">如果模型要调本回合没被选中的工具？三种情况</h4>
+        <CmpTable
+          headers={["情况", "结局"]}
+          rows={[
+            ["工具<em>被过滤</em>了", "模型从 registry 收到 'unknown tool' 错误——下一回合 query 含模型刚试过的名字，selector 大概率把它带回来。<strong>Try-fail-retry 是机制，收敛很快</strong>。"],
+            ["工具<em>根本不在 catalog</em>", "同样错误，无法恢复——模型确实在幻觉。"],
+            ["模型<em>不知道工具存在</em>", "Try-fail-retry 救不了——模型不能尝试没见过名字的工具。这是 §12.5 discovery 工具关掉的洞——<strong>没有它，前两条恢复路径都是死信</strong>。"],
+          ]}
+        />
+      </Section>
+
+      <Section id="ch12-5" num="12.5" title="Discovery 工具——永远 pin 它">
+        <p>两个场景会破 selector：</p>
+        <ul style={{ fontFamily: "var(--font-hand)", fontSize: "1.05em" }}>
+          <li><strong>模糊开场</strong>："hi"、"help"——query 每个工具都打 0 分，选择是空</li>
+          <li><strong>任务中途转向</strong>：5 回合文件后突然 "post to Slack"——BM25 query 被文件词汇主导</li>
+        </ul>
+
+        <p>两种情况 fix 都一样：<strong>给 agent 一个总能调的工具，让它<em>自己</em>看完整 catalog</strong>，决定它需要的能力是否存在。</p>
+
+        <CodeBlock filename="src/harness/tools/selector.py（续）" lang="python">{`def discovery_tool(catalog: ToolCatalog) -> Tool:
+    from .decorator import tool as tool_decorator
+
+    @tool_decorator(side_effects={"read"})
+    def list_available_tools(filter_term: str | None = None) -> str:
+        """List tools available in this harness.
+
+        filter_term: 可选——按 substring 在工具名或描述里匹配。catalog 大时用它收窄。
+
+        Returns a newline-separated list of \`name — one-line summary\`.
+
+        Use this when you think a capability you need exists but isn't in
+        your current tool list. After discovering a tool name, you can call
+        it directly — the tool will be loaded for your next turn.
+        """
+        results = []
+        for t in catalog.tools:
+            first_line = t.description.split("\\n", 1)[0]
+            text = f"{t.name} — {first_line}"
+            if filter_term and filter_term.lower() not in text.lower():
+                continue
+            results.append(text)
+        return "\\n".join(results) if results else "(no matching tools)"
+
+    return list_available_tools
+
+
+# 接线：建 catalog、把 discovery 工具加进去、然后 pin 它
+catalog = ToolCatalog(tools=all_tools + [discovery_tool(catalog)])
+
+await arun(
+    provider=provider, catalog=catalog,
+    user_message=user_message,
+    pinned_tools={"list_available_tools"},   # score 多少都钉死
+    tools_per_turn=7,
+)`}</CodeBlock>
+
+        <Callout kind="key">
+          Docstring 的指令（"discovery 之后直接调它"）能 work，是因为<strong>下一回合的 query 会含模型刚试过的工具名</strong>，正常 BM25 不用第二次 discovery round-trip 就能把它带上来。
+        </Callout>
+
+        <SelectorInteractiveDemo />
+      </Section>
+
+      <Section id="ch12-6" num="12.6" title="它真的 work 吗">
+        <p>Selector 试起来很便宜。建一个 30 工具的 catalog（编些合理的：<code>github_search</code>、<code>npm_info</code>、<code>read_file_viewport</code>、<code>edit_lines</code>、<code>run_tests</code>、<code>diff</code>、<code>git_status</code>、<code>git_diff</code>、<code>git_log</code>、<code>http_get</code>、<code>http_post</code>……），钉 <code>list_available_tools</code> + <code>scratchpad_list</code> + <code>scratchpad_read</code>，看它在真任务上的表现。</p>
+
+        <div className="cards cols-3">
+          <Card title="选择基本对" kind="good">
+            清晰任务（"读这文件修 bug"）——top-7 含 <code>read_file_viewport</code>、<code>edit_lines</code>、可能 <code>run_tests</code>。<strong>另外 20 个无关工具留在 context 之外</strong>。
+          </Card>
+          <Card title="少数缺工具，能恢复" kind="good">
+            遇到缺工具时，agent 常通过 <code>list_available_tools</code> 恢复再重试。<em>钉这个工具的回报很高</em>。
+          </Card>
+          <Card title="Schema 开销线性下降" kind="good">
+            从 30 → 7 工具，schema tokens 在我们例子上降约 75%。<strong>这是真实交回的 context 预算</strong>。
+          </Card>
+        </div>
+
+        <Callout kind="note">
+          一个反观察：即便 <code>tools_per_turn=7</code> 或更高，<strong>selector 偶尔会漏掉模型在任务中需要的工具</strong>——比如 transcript 被文件操作主导时的 Slack 工具。这正是 §12.5 的 discovery 处理的情形：模型 <code>list_available_tools("slack")</code>、看到 <code>slack_post</code> 存在、调它、下一回合的 query（现在含 <code>slack_post</code>）通过常规 selection 把它带上来。<em>调 tools_per_turn 减少但不消除这种情况——钉 discovery 才是可靠 fix</em>。
+        </Callout>
+      </Section>
+
+      <Section id="ch12-7" num="12.7" title="什么时候不该用 selector">
+        <div className="cards cols-3">
+          <Card title="工具数 ≤ 5" kind="">
+            全用、永远用。Selector 成本（BM25 索引、query 构建）超过它能省的。<strong>~20 工具以下没有悬崖</strong>。
+          </Card>
+          <Card title="工具明显分仓" kind="">
+            一个 codebase 搜索、一个 shell、一个 deploy——用户清楚地<em>一次只想一个仓</em>。<strong>简单模式切换比动态检索更清爽</strong>。Cursor 的 "agent mode" vs "ask mode" 就是。
+          </Card>
+          <Card title="工具数 200+" kind="">
+            BM25 开始漏——你想要 embedding。<strong>接口（<code>catalog.select(query, k)</code>）不变</strong>，实现变。
+          </Card>
+        </div>
+
+        <Callout kind="key">
+          本书从第 13 章开始（MCP 接入潜在多工具时）使用 selector——<em>那是工具数跨进"值得 selector"领地的点</em>。
+        </Callout>
+      </Section>
+
+      <Section id="ch12-8" num="12.8" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 在你的语料上校准 selector">
+            建一个 15 工具的现实 catalog，跑 10 个代表性任务。记录每回合选中的 top-7。<strong>模型尝试调"没被选中"工具的频率</strong>？fallback (<code>list_available_tools</code>) 救回的频率？
+          </Card>
+          <Card title="② 用糟糕描述把它弄崩">
+            把工具改名 <code>tool_1</code>、<code>tool_2</code>……给模糊描述。看降级——<strong>这就是描述质量重要程度的直接测度</strong>，不论你用不用 selector。
+          </Card>
+          <Card title="③ 把 BM25 换成 embedding">
+            用 sentence-transformers（离线）给 catalog 产生 embedding 索引。<strong>在释义重度查询上质量变好吗？</strong>多少？值这个成本吗？
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch12" questions={[
+        {
+          q: "工具悬崖在哪里开始？",
+          options: [
+            "10 个工具",
+            "20 工具明显退化、30-50 之间断崖——准确率剧降 + 参数 shape 在工具间混淆 + schema 吃 5-7% 窗口",
+            "100 个工具",
+            "数量无关",
+          ],
+          right: 1,
+          explain: "Jenova AI 2025 'AI Tool Overload' + 多次独立复现。本章的 selector 把 agent 留在 flat zone。",
+        },
+        {
+          q: "为什么必须 pin 一个 discovery 工具？",
+          options: [
+            "用户体验需要",
+            "0 分地板的两个失败模式：模糊开场（query 啥都不匹配）+ 任务中途转向（query 被旧词汇主导）——pinned discovery 是闭这俩洞的唯一可靠方式",
+            "Python 类型系统要求",
+            "便于调试",
+          ],
+          right: 1,
+          explain: "没有它，selector-backed agent 会'盲掉'，本章后面的机器救不回来。",
+        },
+        {
+          q: "Selector 漏掉模型本想调的工具时，恢复机制是？",
+          options: [
+            "重启 session",
+            "Try-fail-retry：模型调缺工具 → registry 给 unknown tool 错误 → 下一回合 query 含模型尝试的名字 → BM25 把工具带回来",
+            "扔异常",
+            "手动配置",
+          ],
+          right: 1,
+          explain: "收敛很快——但需要工具存在于 catalog；如果模型不知道工具存在则需要 discovery 工具。",
+        },
+        {
+          q: "什么时候不该用 selector？",
+          options: [
+            "总是用",
+            "≤5 工具时（无悬崖，selector 成本超过节省）/ 工具明显分仓时（模式切换更清爽）",
+            "永远不用",
+            "只在多 agent 时用",
+          ],
+          right: 1,
+          explain: "选 selector 是设计权衡。本书从 ch13 起用——MCP 把工具数推过门槛。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter12 = Chapter12;

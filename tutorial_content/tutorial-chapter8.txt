@@ -1,0 +1,681 @@
+/* tutorial-chapter8.jsx — Chapter 8 full content: Compaction */
+
+const { useState: useS8, useEffect: useE8 } = React;
+
+/* ─── Compaction flow diagram ─── */
+function CompactionFlowDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 380" preserveAspectRatio="xMidYMid meet">
+        {/* Step 1 */}
+        <rect x={300} y={20} width={300} height={55} rx={12}
+              fill="var(--paper-2)" stroke="var(--ink)" strokeWidth="2.5"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={450} y={45} fontFamily="var(--font-h)" fontSize="20" fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          accountant.snapshot() → state == "red"?
+        </text>
+        <text x={450} y={64} fontFamily="var(--font-hand)" fontSize="14" fill="var(--ink-soft)" textAnchor="middle">
+          每个 turn 之前
+        </text>
+        <SkArrow x1={450} y1={80} x2={450} y2={120} />
+
+        {/* Step 2: mask */}
+        <rect x={270} y={120} width={360} height={70} rx={14}
+              fill="rgba(74,124,58,0.12)" stroke="var(--green)" strokeWidth="3"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={450} y={150} fontFamily="var(--font-h)" fontSize="22" fill="var(--green)" textAnchor="middle" fontWeight="700">
+          ① Mask older tool results
+        </text>
+        <text x={450} y={175} fontFamily="var(--font-hand)" fontSize="15" fill="var(--ink-soft)" textAnchor="middle">
+          可逆 · 精确 · 保留 tool_call 痕迹
+        </text>
+        <SkArrow x1={450} y1={195} x2={450} y2={235} label="还红?" />
+
+        {/* Step 3: summarize */}
+        <rect x={270} y={235} width={360} height={70} rx={14}
+              fill="rgba(214,90,49,0.12)" stroke="var(--accent)" strokeWidth="3"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={450} y={265} fontFamily="var(--font-h)" fontSize="22" fill="var(--accent)" textAnchor="middle" fontWeight="700">
+          ② Summarize the prefix
+        </text>
+        <text x={450} y={290} fontFamily="var(--font-hand)" fontSize="15" fill="var(--ink-soft)" textAnchor="middle">
+          有损 · 不可逆 · 调一次 LLM
+        </text>
+        <SkArrow x1={450} y1={310} x2={450} y2={345} />
+
+        {/* Resume */}
+        <rect x={350} y={345} width={200} height={32} rx={16}
+              fill="var(--ink)" stroke="var(--ink)"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={450} y={367} fontFamily="var(--font-h)" fontSize="18" fill="var(--paper)" textAnchor="middle" fontWeight="700">
+          继续 loop
+        </text>
+
+        {/* Side note left */}
+        <text x={130} y={150} fontFamily="var(--font-hand)" fontSize="16" fill="var(--green)" textAnchor="middle" fontWeight="600">
+          先尝试这步
+        </text>
+        <text x={130} y={172} fontFamily="var(--font-hand)" fontSize="14" fill="var(--ink-soft)" textAnchor="middle">
+          多数情况已够
+        </text>
+
+        <text x={770} y={265} fontFamily="var(--font-hand)" fontSize="16" fill="var(--accent)" textAnchor="middle" fontWeight="600">
+          回退方案
+        </text>
+        <text x={770} y={287} fontFamily="var(--font-hand)" fontSize="14" fill="var(--ink-soft)" textAnchor="middle">
+          masking 不够时才来
+        </text>
+      </svg>
+      <div className="caption">先 mask（可逆），不够再 summarize（有损）——按生产系统演化的顺序。</div>
+    </div>
+  );
+}
+
+/* ─── Animated masking demo ─── */
+function MaskingAnimation() {
+  const [step, setStep] = useS8(0);
+  const [playing, setPlaying] = useS8(false);
+
+  useE8(() => {
+    if (!playing) return;
+    if (step >= 4) { setPlaying(false); return; }
+    const t = setTimeout(() => setStep(step + 1), 1300);
+    return () => clearTimeout(t);
+  }, [playing, step]);
+
+  // 6 messages: user, assistant(tool_call), tool_result(LARGE),
+  // assistant(tool_call), tool_result(LARGE), assistant(text)
+  const messages = [
+    { role: "user",      label: "投资这台机器：读 /etc/hosts、ls /Users、df -h",     size: 60,   keep: true },
+    { role: "asst",      label: "→ read_file('/etc/hosts')",                       size: 30,   keep: true },
+    { role: "tool",      label: "/etc/hosts 内容",                                  size: 800,  big: true, kept: step < 2 },
+    { role: "asst",      label: "→ bash('ls /Users')",                              size: 30,   keep: true },
+    { role: "tool",      label: "ls /Users 输出",                                   size: 600,  big: true, kept: step < 2 },
+    { role: "asst",      label: "→ bash('df -h')",                                  size: 30,   keep: true },
+    { role: "tool",      label: "df -h 输出 [recent]",                              size: 700,  big: true, kept: true },
+  ];
+
+  // Step 3: summary collapses turns 0-4 into one
+  const summarized = step >= 3;
+  const visibleMsgs = summarized
+    ? [
+        { role: "summary", label: "[session summary — 5 turns replaced] 读了 /etc/hosts + /Users 列表，准备 df", size: 120, summary: true },
+        messages[5],
+        messages[6],
+      ]
+    : messages;
+
+  const roleColor = {
+    user:    "var(--ink)",
+    asst:    "var(--accent-2)",
+    tool:    "var(--accent)",
+    summary: "var(--accent-3)",
+  };
+
+  return (
+    <div className="loop-demo">
+      <div className="controls">
+        <button onClick={() => { setStep(0); setPlaying(true); }}>▶ 播放</button>
+        <button onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0}>◀ 上一步</button>
+        <button onClick={() => setStep(Math.min(4, step + 1))} disabled={step === 4}>下一步 ▶</button>
+        <button onClick={() => { setStep(0); setPlaying(false); }}>↺ 重置</button>
+        <span style={{ marginLeft: "auto", fontFamily: "var(--font-hand)", color: "var(--ink-soft)" }}>
+          {[
+            "0. 初始 transcript（朴素增长）",
+            "1. accountant 看到 red 状态",
+            "2. mask 旧的 tool_result（最近 1 个保留）",
+            "3. 还红 → summarize 前缀",
+            "4. 继续 loop",
+          ][step]}
+        </span>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, alignItems: "stretch", padding: "12px 4px" }}>
+        {/* Left: transcript */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+          {visibleMsgs.map((m, i) => {
+            const masked = m.big && step >= 2 && m.kept === false;
+            const isSummary = m.summary;
+            return (
+              <div key={i} style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "6px 10px",
+                background: masked ? "rgba(185,50,47,0.06)" : (isSummary ? "rgba(212,160,23,0.15)" : "var(--paper-2)"),
+                border: "1.5px solid " + (isSummary ? "var(--accent-3)" : "var(--rule-soft)"),
+                borderRadius: 8,
+                fontFamily: "var(--font-hand)",
+                fontSize: 15,
+                opacity: masked ? 0.65 : 1,
+                transition: "all 0.4s",
+                textDecoration: masked ? "line-through" : "none",
+              }}>
+                <span style={{
+                  fontFamily: "var(--font-mono)", fontSize: 11,
+                  background: roleColor[m.role], color: "var(--paper)",
+                  padding: "2px 6px", borderRadius: 4, fontWeight: 700,
+                  minWidth: 56, textAlign: "center",
+                }}>
+                  {m.role}
+                </span>
+                <span style={{ flex: 1 }}>
+                  {masked
+                    ? <span>[tool_result elided; call_id=c-{i}; original_tokens=~{Math.round(m.size)}]</span>
+                    : m.label}
+                </span>
+                <span style={{
+                  fontFamily: "var(--font-mono)", fontSize: 12,
+                  color: masked ? "var(--green)" : "var(--ink-faint)",
+                }}>
+                  {masked ? "≈ 40 tok" : (isSummary ? "≈ 120 tok" : `≈ ${m.size} tok`)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Right: budget bar */}
+        <div style={{ width: 140, position: "relative", padding: 4 }}>
+          {(() => {
+            const total = visibleMsgs.reduce((s, m) => {
+              if (m.big && step >= 2 && m.kept === false) return s + 40;
+              return s + m.size;
+            }, 0);
+            const usable = 2200;
+            const u = total / usable;
+            const state = u >= 0.8 ? "red" : u >= 0.6 ? "yellow" : "green";
+            const c = { red: "var(--red)", yellow: "var(--accent-3)", green: "var(--green)" }[state];
+            return (
+              <>
+                <div style={{ fontFamily: "var(--font-h)", fontSize: 18, color: c, fontWeight: 700, marginBottom: 4 }}>
+                  {(u * 100).toFixed(0)}%
+                </div>
+                <div style={{ fontFamily: "var(--font-hand)", fontSize: 12, color: "var(--ink-soft)", marginBottom: 8 }}>
+                  {state}
+                </div>
+                <div style={{ position: "relative", height: 250, width: 28, background: "var(--rule-soft)", borderRadius: 6, overflow: "hidden", border: "1.5px solid var(--ink)" }}>
+                  <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: `${Math.min(u * 100, 100)}%`, background: c, transition: "all 0.4s" }} />
+                  <div style={{ position: "absolute", left: 0, right: 0, top: "20%", height: 1, background: "var(--ink)" }} />
+                  <div style={{ position: "absolute", left: 0, right: 0, top: "40%", height: 1, background: "var(--ink)" }} />
+                </div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-soft)", marginTop: 6 }}>
+                  {total} / {usable}
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Chapter 8 ─── */
+function Chapter8() {
+  return (
+    <section className="chapter" id="ch8">
+      <h2 className="chapter-title">
+        <span className="ch-num">8</span>
+        压缩
+      </h2>
+      <p className="chapter-meta">Compaction　·　把 transcript 缩小，又不伤工具调用记录</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：accountant 能看见上下文窗口。red 状态被检测到但不被作出反应。<strong>Transcript 持续增长直到 provider 拒收</strong>。
+        <br /><br />
+        Compaction 是本书第一个<strong>正确答案不明显、设计空间真正有争议</strong>的子系统：
+        <ul style={{ marginTop: 8 }}>
+          <li><strong>Claude Code</strong>：用更便宜的模型总结旧回合</li>
+          <li><strong>OpenAI Agents SDK</strong>：留给开发者去做</li>
+          <li><strong>LangGraph</strong>：图模型里完全没有原生压缩</li>
+          <li><strong>AutoGen GroupChat</strong>：O(n×m) 随 agent×turn 增长，因为没人压缩</li>
+        </ul>
+        每一个都是一种设计立场，每一个都有具体失败模式。
+      </div>
+
+      <Outcomes items={[
+        "Observation Masking：把旧的 tool_result 内容替换成 [elided; call_id=...]——可逆、精确",
+        "LLM Summarization：把前缀压成 1 条摘要——有损、贵、必要时才上",
+        "在 red 信号触发时按顺序自动执行；保留 tool-call 痕迹（最重要的不变量）",
+        "通过 §8.5 的 5 行 patch 接入 loop——之前的 'pass' 占位被取代",
+      ]} />
+
+      <Section id="ch7-research" num="8 prologue" title="研究框架：MemGPT">
+        <Callout kind="key" title="Packer et al. 2024 · MemGPT (ICML)">
+          <p>把 context window 当成<strong>主存</strong>，把 durable storage 当成<strong>硬盘</strong>，给 agent 显式的"层间数据移动"操作。MemGPT 的具体设计（一个由 agent 工具控制的自管理 memory controller）比我们要建的更激进；<em>本书的 compactor 是自动的，不是 agent 控制的</em>。但范式是同一个：</p>
+          <p>上下文窗口是受管的有限资源 · compaction 是 paging policy · 正确形状是一个分层结构——新鲜、token 昂贵的材料在窗口里，老的被总结或外移。</p>
+          <p>本章每一个具体决定——<em>mask-before-summarize · preserve-tool-call-record · 第 9 章的 scratchpad</em>——都是这个范式里的一个具体取点。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch8-1" num="8.1" title="两种缩小 transcript 的方式">
+        <CompactionFlowDiagram />
+
+        <CmpTable
+          headers={["维度", "Masking 遮蔽", "Summarization 总结"]}
+          rows={[
+            ["做什么",        "把 tool_result.content 替换成 [tool_result elided; call_id=...] 占位",  "拿一段旧 transcript 调 LLM，产一段自然语言摘要替换原文"],
+            ["可逆?",          "✅ 可逆——agent 需要时重跑工具",                                          "❌ 不可逆——细节永远丢了"],
+            ["代价",          "几行字符串操作",                                                          "一次额外 LLM 调用"],
+            ["典型节省",      "1-5× transcript",                                                         "10-30× transcript"],
+            ["失败模式",      "agent 需要的不可重得（如 `last -n 20`）",                                 "summarizer 漏掉/编造关键细节"],
+            ["优先级",        "总是先尝试",                                                              "masking 不够时回退"],
+          ]}
+        />
+
+        <Callout kind="warn" title="一个永远不能违反的不变量">
+          <p><strong>永远不要总结掉 tool-call 记录</strong>。如果 agent 在第 4 轮发了邮件，transcript 必须保留"邮件发过了"这件事——否则 agent 读自己的摘要（"和用户讨论了通知"）然后<em>在第 20 轮再发一次</em>。</p>
+          <p>JetBrains Research 2025.12 的研究发现 artifact tracking（哪些文件被改、哪些调用成功）在所有 compaction 方法上得分只有 2.19-2.45 / 5——<strong>没有一个能可靠保住程序性状态</strong>。所以 compactor 的结构必须让它<em>不能碰</em>事件 log。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch8-2" num="8.2" title="Masking 长什么样">
+        <p>每个 transcript 里的 tool_result 都是 user 角色消息里的一个 ToolResult 块。Masking 把 content 字段换成占位：</p>
+
+        <CodeBlock filename="src/harness/context/masking.py" lang="python">{`from __future__ import annotations
+from ..messages import Message, ToolResult, Transcript
+
+MASK_TEMPLATE = "[tool_result elided; call_id={call_id}; original_tokens={tokens}]"
+
+
+def mask_older_results(
+    transcript: Transcript,
+    keep_recent: int,
+    encoder,
+) -> int:
+    """Replace tool-result content in all but the most recent
+    keep_recent turns. Returns tokens freed."""
+    results: list[tuple[int, int, ToolResult]] = []
+    for mi, message in enumerate(transcript.messages):
+        for bi, block in enumerate(message.blocks):
+            if isinstance(block, ToolResult):
+                results.append((mi, bi, block))
+
+    if len(results) <= keep_recent:
+        return 0
+
+    to_mask = results[:-keep_recent]
+    freed = 0
+    for mi, bi, block in to_mask:
+        if block.content.startswith("[tool_result elided"):
+            continue   # already masked — idempotent
+        tokens = len(encoder.encode(block.content))
+        new_content = MASK_TEMPLATE.format(call_id=block.call_id, tokens=tokens)
+        new_block = ToolResult(
+            call_id=block.call_id, content=new_content, is_error=block.is_error,
+        )
+        new_blocks = list(transcript.messages[mi].blocks)
+        new_blocks[bi] = new_block
+        transcript.messages[mi] = Message(
+            role=transcript.messages[mi].role,
+            blocks=new_blocks,
+            created_at=transcript.messages[mi].created_at,
+            id=transcript.messages[mi].id,
+        )
+        freed += tokens - len(encoder.encode(new_content))
+    return freed`}</CodeBlock>
+
+        <Callout kind="key" title="3 个值得注意的小细节">
+          <ul style={{ margin: 0 }}>
+            <li><strong>幂等</strong>：已经 masked 过的（以 <code>[tool_result elided</code> 开头）不再 mask——因为压缩可能在一个 session 里跑多次</li>
+            <li><strong>返回 tokens 释放数</strong>：调用方据此决定是否够（停手）或升级（不够，上 summarization）</li>
+            <li><strong>重建 message 而不是原地修改</strong>：Chapter 3 的 frozen 块；我们重建整个 message 保持不可变纪律</li>
+          </ul>
+        </Callout>
+      </Section>
+
+      <Section id="ch8-3" num="8.3" title="Summarization 长什么样">
+        <p>Masking 单独不能把 transcript 压到 red 阈值之下时，我们总结一段旧前缀。</p>
+
+        <h4 className="sub-title">在哪里切？三个选项</h4>
+        <CmpTable
+          headers={["选项", "好处", "风险"]}
+          rows={[
+            ["所有早于回合 N 的内容",            "简单",                          "可能在半句话上切断"],
+            ["按 token 计前 K%",                  "合理",                          "可能把用户的初始目标也总结掉——而那通常是你最想原样保留的"],
+            ["跳过第 1 条 user message，再切前 K%", "初始目标 anchor 保留 ✓",      "需要稍微多写几行"],
+          ]}
+        />
+
+        <Callout kind="key">本章选第 3 个——<strong>用户最初的消息是 anchor</strong>，agent 最终要满足它，应该尽可能久保留原样。</Callout>
+
+        <h4 className="sub-title">Summarizer 的 system prompt（设计的承重部分）</h4>
+        <CodeBlock filename="summarizer system prompt" lang="text">{`You are a conversation summarizer for an AI agent session.
+
+Your job is to condense the provided conversation into a brief summary that
+preserves:
+- Key facts discovered (files read, values computed, decisions made).
+- Open questions and in-progress subtasks.
+- Which tools have been called and what they returned, in sequence.
+- Any user-expressed preferences or constraints.
+
+DO NOT:
+- Invent information not present in the transcript.
+- Omit tool calls — list each tool call with a one-line outcome.
+- Exceed 1000 words.
+
+Return plain prose. The summary replaces the original turns in the agent's
+memory, so it must be accurate and complete.`}</CodeBlock>
+
+        <CodeBlock filename="src/harness/context/summarizer.py（节选）" lang="python">{`async def summarize_prefix(
+    transcript: Transcript,
+    provider: Provider,
+    keep_recent_turns: int,
+) -> SummarizationResult | None:
+    """Summarize turns before the last keep_recent_turns, leaving the
+    first user message intact."""
+    if len(transcript.messages) <= keep_recent_turns + 1:
+        return None
+
+    first_user = transcript.messages[0]
+    prefix_end = len(transcript.messages) - keep_recent_turns
+    prefix_to_summarize = transcript.messages[1:prefix_end]
+    if not prefix_to_summarize:
+        return None
+
+    # Render the prefix as text the summarizer can read.
+    rendered_parts: list[str] = []
+    for m in prefix_to_summarize:
+        for block in m.blocks:
+            match block:
+                case TextBlock(text=t):
+                    rendered_parts.append(f"[{m.role}] {t}")
+                case ToolCall(name=n, args=a):
+                    rendered_parts.append(f"[assistant→tool] {n}({a})")
+                case ToolResult(content=c, is_error=err):
+                    prefix = "[tool→error]" if err else "[tool→result]"
+                    rendered_parts.append(f"{prefix} {c}")
+    rendered = "\\n".join(rendered_parts)
+
+    sub_transcript = Transcript(system=SUMMARIZER_SYSTEM)
+    sub_transcript.append(Message.user_text(
+        f"Summarize this conversation.\\n\\n{rendered}"
+    ))
+    response = await provider.acomplete(sub_transcript, tools=[])
+    summary_text = response.text or "(empty summary)"
+
+    # Replace the prefix with a single synthetic message.
+    summary_message = Message.user_text(
+        f"[session summary — {len(prefix_to_summarize)} turns replaced]\\n"
+        f"{summary_text}"
+    )
+    transcript.messages[1:prefix_end] = [summary_message]
+
+    return SummarizationResult(
+        summary_text=summary_text,
+        turns_replaced=len(prefix_to_summarize),
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+    )`}</CodeBlock>
+
+        <Callout kind="key" title="4 个值得注意的设计点">
+          <ul style={{ margin: 0 }}>
+            <li><strong>Summarizer 是另一次 LLM 调用</strong>——同一个 provider，调用方可以传一个更便宜的模型（Haiku 给 Sonnet 当摘要器通常够用）</li>
+            <li><strong>就地替换</strong>——transcript 第 1 条保留，summary 成第 2 条，最近的 turn 还在末尾，列表保持线性</li>
+            <li><strong>Tool calls 显式渲染</strong>——<code>[assistant→tool] calc(&#123;...&#125;)</code> 进了 summarizer 的输入；prompt 让它在摘要里逐行保留 tool call。<em>这就是怎么避免 "lost tool history" 失败模式——不是靠数据结构保护，是靠指令让 summarizer 自己列出来</em></li>
+            <li><strong>system prompt 经过设计</strong>——它点名"保留什么 / 省略什么 / 不能编造"。胡乱编的 summarizer 比没 summarizer 还差；强 system prompt + 小模型通常足够</li>
+          </ul>
+        </Callout>
+      </Section>
+
+      <Section id="ch8-4" num="8.4" title="Compactor 协调者">
+        <CodeBlock filename="src/harness/context/compactor.py" lang="python">{`@dataclass
+class CompactionResult:
+    masking_tokens_freed: int = 0
+    summarization_turns_replaced: int = 0
+    summarization_tokens: int = 0
+    final_state: str = "green"
+
+
+class Compactor:
+    def __init__(
+        self,
+        accountant: ContextAccountant,
+        provider: Provider,
+        keep_recent_results: int = 3,
+        keep_recent_turns_on_summary: int = 6,
+    ) -> None:
+        self.accountant = accountant
+        self.provider = provider
+        self.keep_recent_results = keep_recent_results
+        self.keep_recent_turns_on_summary = keep_recent_turns_on_summary
+
+    async def compact_if_needed(self, transcript, tools) -> CompactionResult:
+        result = CompactionResult()
+        snap = self.accountant.snapshot(transcript, tools=tools)
+        result.final_state = snap.state
+        if snap.state != "red":
+            return result
+
+        # Step 1: mask older tool results
+        freed = mask_older_results(
+            transcript, self.keep_recent_results, self.accountant._enc,
+        )
+        result.masking_tokens_freed = freed
+
+        snap = self.accountant.snapshot(transcript, tools=tools)
+        result.final_state = snap.state
+        if snap.state != "red":
+            return result
+
+        # Step 2: summarize the prefix
+        summary = await summarize_prefix(
+            transcript, self.provider, self.keep_recent_turns_on_summary,
+        )
+        if summary is not None:
+            result.summarization_turns_replaced = summary.turns_replaced
+            result.summarization_tokens = summary.output_tokens
+
+        snap = self.accountant.snapshot(transcript, tools=tools)
+        result.final_state = snap.state
+        if snap.state == "red":
+            log.warning("compaction could not bring transcript under red")
+        return result`}</CodeBlock>
+
+        <Callout kind="key">
+          Compactor <strong>故意朴素</strong>：两根杠杆、按顺序拉、报告它做了什么。两根加起来还压不到 red 之下 → log 警告并放弃。<em>下一轮在 provider 层失败——这正是操作员需要的信息</em>。
+        </Callout>
+      </Section>
+
+      <Section id="ch8-5" num="8.5" title="接入 loop（占位被取代）">
+        <p>Chapter 7 留下的 <code>if snapshot.state == "red": pass</code> 现在变成：</p>
+
+        <CodeBlock filename="src/harness/agent.py（更新）" lang="python">{`from .context.compactor import Compactor
+
+
+async def arun(
+    ...
+    accountant: ContextAccountant | None = None,
+    compactor: Compactor | None = None,    # NEW
+) -> str:
+    if transcript is None:
+        transcript = Transcript(system=system)
+    transcript.append(Message.user_text(user_message))
+
+    accountant = accountant or ContextAccountant()
+    compactor  = compactor  or Compactor(accountant, provider)   # NEW
+
+    for _ in range(MAX_ITERATIONS):
+        snapshot = accountant.snapshot(transcript, tools=registry.schemas())
+        if on_snapshot is not None:
+            on_snapshot(snapshot)
+
+        if snapshot.state == "red":
+            result = await compactor.compact_if_needed(transcript, registry.schemas())
+            log.info("compacted: masked=%d, summarized_turns=%d, new_state=%s",
+                     result.masking_tokens_freed,
+                     result.summarization_turns_replaced,
+                     result.final_state)
+            # Re-snapshot so observers see the post-compaction state in
+            # the same iteration. Otherwise the last visible frame is red
+            # and the compaction's effect is invisible — matters if the
+            # next turn returns a final answer (no iteration after that
+            # to re-fire).
+            if on_snapshot is not None:
+                on_snapshot(accountant.snapshot(transcript, tools=registry.schemas()))
+
+        # ... rest of the turn — unchanged`}</CodeBlock>
+
+        <Callout kind="note" title="为什么压缩后要再发一次 snapshot？">
+          <p>把 <code>on_snapshot</code> 当作"按状态转移触发"，不是"按 iteration 触发"。第一发是<strong>决策帧</strong>——loop 为什么决定走这个分支。第二发是<strong>效果帧</strong>——compactor 做了什么。</p>
+          <p>只在变化时重绘的观察者（实时进度条、TUI）会自然看到 red→yellow/green 的下落；每帧渲染的观察者得到成对的 before/after。<strong>否则短 session 上压缩常在倒数第二回合发生，模型在下一回合给出最终答案，loop 退出——bar 留下的最后一帧就是 "red"</strong>。</p>
+          <p>同一个 hook 也让 compactor 对可观测性工具可见（第 18 章接到 OpenTelemetry span）。Compactor 自己不必知道 tracing 存在。</p>
+        </Callout>
+
+        <h4 className="sub-title">交互式动画：看 mask → summarize 的过程</h4>
+        <MaskingAnimation />
+      </Section>
+
+      <Section id="ch8-6" num="8.6" title="值得跑的一个场景">
+        <p>Compaction 在小例子里看不见。当你把 agent 推进 red 状态并看它恢复时，行为才显现。</p>
+
+        <CodeBlock filename="examples/ch08_long_session.py（关键部分）" lang="python">{`# 故意调紧预算，让 5 步 demo 也能逼进 red。
+# 真实 200K 窗口里要读 100K 文件才能撩到 yellow，5-step demo 永远到不了。
+budget = ContextBudget(
+    window_size=8_000,
+    headroom=1_000,
+    yellow_threshold=0.60,
+    red_threshold=0.80,
+)
+accountant = ContextAccountant(budget=budget)
+compactor = Compactor(
+    accountant, provider,
+    keep_recent_results=2,
+    keep_recent_turns_on_summary=4,
+)
+
+TASK = (
+    "Investigate this machine. Read the files /etc/hosts, /etc/shells, "
+    "/etc/passwd, and /System/Library/CoreServices/SystemVersion.plist. "
+    "Run \`df -h\`, \`uptime\`, and \`ls -la /Users\`. Then summarize in "
+    "about 150 words what you learned about this machine."
+)
+
+await arun(provider=provider, registry=registry,
+           user_message=TASK,
+           accountant=accountant, compactor=compactor,
+           on_snapshot=show, on_event=stream_to_stdout,
+           on_tool_call=on_tool_call, on_tool_result=on_tool_result)`}</CodeBlock>
+
+        <Callout kind="key">
+          跑起来，你会看见 utilization 从 5% 走到 65%、再到 82%——<strong>第一次 compaction 触发那一刻——回落到 50 多</strong>。后续 turn 接上，旧 tool result 现在是占位符。如果 agent 要重读已读过的文件，它就 re-read。最终的摘要和"没压缩过的版本"看不出差异——<em>这就是目的</em>。
+        </Callout>
+      </Section>
+
+      <Section id="ch8-7" num="8.7" title="什么会破，且破得有教育意义">
+        <div className="cards cols-2">
+          <Card title="Masking 抹掉了 agent 需要的东西" kind="">
+            <p>Agent 读了文件，做了别的事，两轮压缩后该文件的内容是占位符。Agent 说"让我重读一下"——<strong>幸运的话 re-read</strong>，结果新鲜，继续。<em>好的：mask 是可逆的，agent 用了这个可逆性</em>。</p>
+            <p>有时候 agent 需要不可重得的东西。它有过一个非幂等工具的输出——可能是 10 分钟前的 <code>last -n 20</code>，列表现在变了。它可以再调工具，但结果<strong>和它原本工作所基于的不一样</strong>。<em>这是真实的限制</em>——第 9 章的 scratchpad 模式就是为此而生：agent 显式把重要发现写到 durable state，让 mask 动不到它。</p>
+          </Card>
+          <Card title="Summarization 默默丢掉了 agent 需要的细节" kind="">
+            <p>一个文件路径出现在被总结的回合里，summary 改写成了"读了一个 config 文件"，agent 后来需要精确路径却找不到。<em>这就是为什么 summarizer 的 system prompt 显式要求保留文件路径、工具参数、决定</em>。即便如此，<strong>损失不可避免</strong>；你会基于 agent 在哪种事上失败来调你的 summarizer 保留什么。</p>
+          </Card>
+        </div>
+
+        <Callout kind="key">这两个都是<strong>调优决定</strong>，不是 bug。第 19 章建评测 harness，让你<em>经验性</em>地调而不是靠直觉。</Callout>
+      </Section>
+
+
+      <Callout kind="tip" title="📍 forward reference：Ch 19 evals 怎么验证压缩没坏事">
+        <p>压缩工作得对不对？回到本章末尾时<em>你测不出来</em>——直到 Ch 19 建好 eval harness。把这 3 个 case 抄下来，Ch 19 读完跑一遍：</p>
+        <CodeBlock filename="tests/evals/compaction_cases.py" lang="python">{`COMPACTION_REGRESSION = [
+    EvalCase(
+        id="compact-survives-file-recall",
+        description="压缩之后 agent 仍能引用早期读过的文件",
+        user_message=(
+            "Read /etc/hostname. Then do 10 unrelated calculations using calc. "
+            "Then tell me the hostname again WITHOUT reading the file."
+        ),
+        check_answer=lambda ans: "localhost" in ans.lower() or len(ans) > 5,
+        max_iterations=15,
+    ),
+    EvalCase(
+        id="compact-preserves-decision",
+        description="压缩之后 agent 记得早期做出的决定",
+        user_message=(
+            "We're going to use port 8081, not 8080. Now read /proc/cpuinfo "
+            "and tell me how many CPUs there are. Then remind me which port we chose."
+        ),
+        check_answer=lambda ans: "8081" in ans,
+    ),
+    EvalCase(
+        id="compact-no-side-effect-duplication",
+        description="压缩之后 agent 不会重复执行已经成功的 mutating 工具",
+        # 需要 Ch 21 的 idempotency 才完全保证；本章只检测 transcript 里是否
+        # 仍保有 tool_use 记录
+        forbidden_tools=[],
+        max_tokens=80_000,
+    ),
+]`}</CodeBlock>
+        <p style={{ margin: 0 }}>3 个全过 = 你的 compactor 工程上 OK。任一个 fail = 调 <code>keep_recent_results</code> 或 <code>keep_recent_turns_on_summary</code> 直到通过。<em>这是把"调参靠直觉"换成"调参靠数据"的具体方式</em>。</p>
+      </Callout>
+
+      <Section id="ch8-8" num="8.8" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 故意低配预算来看">
+            设 <code>budget.window_size = 20_000</code>，跑一个中等 prompt。看到 compactor 触发了吗？最终输出退化吗？退化多少？<strong>能在没人提示下看出退化吗？</strong>
+          </Card>
+          <Card title="② 写一个比我们的更差的 compactor">
+            写一个在 red 时直接截掉前半 transcript 的版本。同样场景跑——agent 输出哪里不同？它忘了什么？<em>这就是你的 eval 要 beat 的"朴素截断"基线</em>。
+          </Card>
+          <Card title="③ 试 summarizer 的 prompt 工程">
+            加一条规则：<em>"保留每个数值原样"</em>。在 agent 计算中间数字的 prompt 上重跑。规则有帮助吗？让 summary 变得太长吗？<strong>你正在体会 compaction 调优在生产里的真实手感</strong>。
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch8" questions={[
+        {
+          q: "为什么要 mask-before-summarize？",
+          options: [
+            "Masking 更新",
+            "Masking 可逆（agent 可以重跑工具）、精确（你知道丢了什么）；summarization 有损不可逆——先用便宜可逆的，不够才回退到贵的有损的",
+            "Provider 限制",
+            "Python 性能",
+          ],
+          right: 1,
+          explain: "这是生产系统演化出来的顺序。同时也是 MemGPT 范式的具体体现。",
+        },
+        {
+          q: "为什么 summary 里必须显式列出每次 tool call？",
+          options: [
+            "为了好看",
+            "因为这是怎么避免 'lost tool history' 失败模式——不是靠数据结构保护，是靠指令让 summarizer 自己列出来；否则 agent 看了摘要可能再发一次邮件",
+            "API 要求",
+            "为了节省 token",
+          ],
+          right: 1,
+          explain: "JetBrains 2025.12 研究：所有 compaction 方法在 artifact tracking 上得分都很低。这条 prompt 规则是最便宜的对策。",
+        },
+        {
+          q: "为什么压缩之后还要再发一次 on_snapshot？",
+          options: [
+            "异步必须双发",
+            "让观察者看到 post-compaction 状态（决策帧 + 效果帧）——短 session 上压缩常在倒数第二轮发生，否则进度条最后一帧永远是 red",
+            "Python GC 需要",
+            "性能",
+          ],
+          right: 1,
+          explain: "把 on_snapshot 当 '状态转移触发' 而不是 'iteration 触发'。同一个 hook 也让 OpenTelemetry 自动得到 before/after。",
+        },
+        {
+          q: "Compactor 两根杠杆都拉了还是 red，应该？",
+          options: [
+            "无限循环重试",
+            "log 警告并放弃——下一轮在 provider 层失败，这正是操作员需要的信息",
+            "强制截断",
+            "切换 provider",
+          ],
+          right: 1,
+          explain: "Compactor 故意朴素。失败的可见性比无声继续重要得多。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter8 = Chapter8;

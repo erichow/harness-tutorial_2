@@ -1,0 +1,567 @@
+/* tutorial-chapter7.jsx — Chapter 7 full content: The Context Window Is a Resource */
+
+const { useState: useS7, useEffect: useE7 } = React;
+
+/* ─── Interactive: live context usage demo ─── */
+function ContextLiveDemo() {
+  const [system, setSystem] = useS7(500);
+  const [schemas, setSchemas] = useS7(2000);
+  const [history, setHistory] = useS7(12000);
+  const [retrieved, setRetrieved] = useS7(4000);
+  const [windowSize] = useS7(200000);
+  const headroom = 4096;
+  const usable = windowSize - headroom;
+  const total = system + schemas + history + retrieved;
+  const u = total / usable;
+  const state = u >= 0.8 ? "red" : u >= 0.6 ? "yellow" : "green";
+  const stateColor = { green: "var(--green)", yellow: "var(--accent-3)", red: "var(--red)" }[state];
+  const stateText = { green: "🟢 green · 安全", yellow: "🟡 yellow · 该考虑压缩", red: "🔴 red · 立即压缩，进入腐烂区" }[state];
+
+  const segs = [
+    { label: "system",    val: system,    color: "var(--accent-4)" },
+    { label: "schemas",   val: schemas,   color: "var(--accent-3)" },
+    { label: "history",   val: history,   color: "var(--accent-2)" },
+    { label: "retrieved", val: retrieved, color: "var(--accent)" },
+    { label: "headroom",  val: headroom,  color: "var(--rule-soft)" },
+  ];
+  let acc = 0;
+
+  return (
+    <div className="loop-demo">
+      <div style={{ fontFamily: "var(--font-h)", fontSize: 24, marginBottom: 10 }}>
+        🎛 自己调一调：5 个滑杆，看 utilization 怎么走
+      </div>
+
+      <svg viewBox="0 0 800 100" style={{ width: "100%", height: 80 }}>
+        {segs.map((s, i) => {
+          const w = (s.val / windowSize) * 760;
+          const x = 20 + acc;
+          acc += w;
+          return (
+            <g key={i}>
+              <rect x={x} y={20} width={Math.max(w, 0)} height={48} fill={s.color}
+                    stroke="var(--ink)" strokeWidth="1.5"
+                    style={{ filter: "url(#sketchy-edge-soft)" }} />
+              {w > 40 && (
+                <text x={x + w / 2} y={48} fontFamily="var(--font-hand)" fontSize="14"
+                      fill={s.label === "headroom" ? "var(--ink)" : "var(--paper)"}
+                      textAnchor="middle" fontWeight="700">{s.label}</text>
+              )}
+            </g>
+          );
+        })}
+        {/* threshold ticks */}
+        {[0.6, 0.8].map(t => (
+          <line key={t} x1={20 + (usable / windowSize) * 760 * t} y1={14}
+                x2={20 + (usable / windowSize) * 760 * t} y2={74}
+                stroke="var(--ink)" strokeWidth="2" strokeDasharray="4 3" />
+        ))}
+      </svg>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                    fontFamily: "var(--font-h)", fontSize: 24, marginTop: 12 }}>
+        <span>使用率：<span style={{ color: stateColor, fontWeight: 700 }}>{(u * 100).toFixed(1)}%</span></span>
+        <span style={{ color: stateColor }}>{stateText}</span>
+        <span style={{ fontFamily: "var(--font-hand)", fontSize: 17, color: "var(--ink-soft)" }}>
+          {total.toLocaleString()} / {usable.toLocaleString()} tokens
+        </span>
+      </div>
+
+      {[
+        { label: "system 提示词", val: system, set: setSystem, max: 5000, step: 100 },
+        { label: "tool schemas",  val: schemas, set: setSchemas, max: 30000, step: 500 },
+        { label: "history（对话历史）", val: history, set: setHistory, max: 180000, step: 1000 },
+        { label: "retrieved（检索）",  val: retrieved, set: setRetrieved, max: 50000, step: 500 },
+      ].map((row, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 12,
+                              fontFamily: "var(--font-hand)", fontSize: 17 }}>
+          <span style={{ width: 200 }}>{row.label}</span>
+          <input type="range" min={0} max={row.max} step={row.step}
+                 value={row.val} onChange={e => row.set(parseInt(e.target.value))}
+                 style={{ flex: 1, accent: "var(--accent)" }} />
+          <span style={{ width: 110, textAlign: "right", fontFamily: "var(--font-mono)" }}>
+            {row.val.toLocaleString()}
+          </span>
+        </div>
+      ))}
+
+      <div style={{ marginTop: 14, padding: 10, background: "var(--paper)",
+                    border: "1.5px dashed var(--rule)", borderRadius: 8,
+                    fontFamily: "var(--font-hand)", fontSize: 16, color: "var(--ink-soft)" }}>
+        💡 拖动 history 到 ~120K，会看见进入 yellow；再到 ~180K 进入 red。
+        把 tool schemas 调到 25K（约 50 个工具）就能直观感受"工具悬崖"的成本侧。
+      </div>
+    </div>
+  );
+}
+
+/* ─── Three findings diagram (Context Rot / Lost-in-the-Middle / RULER) ─── */
+function ThreeFindingsDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 280" preserveAspectRatio="xMidYMid meet">
+        {/* Context Rot curve — decreasing */}
+        <g>
+          <text x={150} y={28} fontFamily="var(--font-h)" fontSize="22"
+                fill="var(--accent)" textAnchor="middle" fontWeight="700">① Context Rot</text>
+          <text x={150} y={50} fontFamily="var(--font-hand)" fontSize="14"
+                fill="var(--ink-soft)" textAnchor="middle">Chroma 2025.7</text>
+          <line x1={40} y1={220} x2={260} y2={220} stroke="var(--ink)" strokeWidth="2" />
+          <line x1={40} y1={70} x2={40} y2={220} stroke="var(--ink)" strokeWidth="2" />
+          <path d="M 40 75 Q 100 90 150 130 T 260 210"
+                fill="none" stroke="var(--accent)" strokeWidth="3"
+                style={{ filter: "url(#sketchy-edge-soft)" }} />
+          <text x={150} y={250} fontFamily="var(--font-hand)" fontSize="14"
+                fill="var(--ink)" textAnchor="middle">输入长度 →</text>
+          <text x={25} y={150} fontFamily="var(--font-hand)" fontSize="14"
+                fill="var(--ink)" textAnchor="middle" transform="rotate(-90 25 150)">准确率</text>
+        </g>
+
+        {/* Lost-in-the-Middle — U curve */}
+        <g>
+          <text x={450} y={28} fontFamily="var(--font-h)" fontSize="22"
+                fill="var(--accent-4)" textAnchor="middle" fontWeight="700">② Lost in the Middle</text>
+          <text x={450} y={50} fontFamily="var(--font-hand)" fontSize="14"
+                fill="var(--ink-soft)" textAnchor="middle">Liu et al. 2023</text>
+          <line x1={340} y1={220} x2={560} y2={220} stroke="var(--ink)" strokeWidth="2" />
+          <line x1={340} y1={70} x2={340} y2={220} stroke="var(--ink)" strokeWidth="2" />
+          <path d="M 340 80 Q 380 100 410 170 T 480 170 T 560 80"
+                fill="none" stroke="var(--accent-4)" strokeWidth="3"
+                style={{ filter: "url(#sketchy-edge-soft)" }} />
+          <text x={450} y={250} fontFamily="var(--font-hand)" fontSize="14"
+                fill="var(--ink)" textAnchor="middle">位置：开头 ← 中间 → 结尾</text>
+          <text x={325} y={150} fontFamily="var(--font-hand)" fontSize="14"
+                fill="var(--ink)" textAnchor="middle" transform="rotate(-90 325 150)">检索准确率</text>
+        </g>
+
+        {/* RULER — claimed vs effective */}
+        <g>
+          <text x={750} y={28} fontFamily="var(--font-h)" fontSize="22"
+                fill="var(--accent-2)" textAnchor="middle" fontWeight="700">③ RULER</text>
+          <text x={750} y={50} fontFamily="var(--font-hand)" fontSize="14"
+                fill="var(--ink-soft)" textAnchor="middle">Hsieh et al. 2024</text>
+          <rect x={640} y={90} width={220} height={36} fill="var(--rule-soft)" stroke="var(--ink)" strokeWidth="2" />
+          <text x={750} y={114} fontFamily="var(--font-hand)" fontSize="16"
+                fill="var(--ink)" textAnchor="middle" fontWeight="700">标称 128K</text>
+          <rect x={640} y={150} width={55} height={36} fill="var(--accent-2)" stroke="var(--ink)" strokeWidth="2" />
+          <text x={745} y={174} fontFamily="var(--font-hand)" fontSize="16"
+                fill="var(--ink)" textAnchor="start">有效 ≈ 32K</text>
+          <text x={750} y={220} fontFamily="var(--font-hand)" fontSize="14"
+                fill="var(--red)" textAnchor="middle" fontWeight="700">通常少 4-8×</text>
+        </g>
+      </svg>
+      <div className="caption">三项研究合在一起证明：标称的 context window 是个上限值，不是预算。检索的有效预算通常只有标称值的 50-70%。</div>
+    </div>
+  );
+}
+
+/* ─── Chapter 7 ─── */
+function Chapter7() {
+  return (
+    <section className="chapter" id="ch7">
+      <h2 className="chapter-title">
+        <span className="ch-num">7</span>
+        上下文窗口是一种资源
+      </h2>
+      <p className="chapter-meta">The Context Window Is a Resource　·　从"一堆 token"到"分层预算"</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：registry 会校验参数、检测循环。第 2 章 5 个 break 都处理了——<strong>除了 Break 5</strong>，它现在是接下来 5 章的主题。一个返回 200KB JSON 的工具，第 4 个回合还是会毒死 loop。
+        <br /><br />
+        上下文窗口是 agent 工程里被误解最严重的资源。人们把它当磁盘空间：大小固定、消耗线性、满了显而易见。<strong>三个直觉都是错的</strong>：
+        <ul style={{ marginTop: 8 }}>
+          <li>"大小固定"——每家 provider 都报一个标称值（200K、1M），<strong>但模型性能在远未撞顶之前就开始连续下降</strong></li>
+          <li>"消耗线性"——tool 结果、检索文档、过往回合的"token/价值"比完全不同</li>
+          <li>"满了显而易见"——模型不会优雅退化；它会<strong>静默失败</strong>，迷失在中间，编造事实来填它找不到证据的空白</li>
+        </ul>
+      </div>
+
+      <Outcomes items={[
+        "构建 ContextAccountant，按组件追踪窗口里的 token——这是后续 4 章压缩 / scratchpad / 检索决策的根基",
+        "理解 5 类组件（system / schemas / history / retrieved / headroom）的占比规律",
+        "记住 3 项研究：Chroma 的 Context Rot、Liu 2023 的 Lost-in-the-Middle、Hsieh 2024 的 RULER",
+        "用阈值（green / yellow / red）驱动下一章的压缩",
+      ]} />
+
+      <Section id="ch7-1" num="7.1" title="研究告诉我们什么">
+        <p>三项发现锚定了本章，合起来说明 context 值得有自己的核算层，不能当成"宽裕的 pile，不必看"。</p>
+
+        <ThreeFindingsDiagram />
+
+        <div className="cards cols-3">
+          <Card title="Chroma 2025 · Context Rot">
+            18 个 SOTA 模型上跑合成检索任务（needle-in-a-haystack）。<strong>即便输入只是窗口的 10%，性能也连续下降</strong>。两种机制同时在作用——注意力被稀释、语义相似但无关的 distractor 干扰。<em>没有被测模型免疫</em>。
+          </Card>
+          <Card title="Liu 2023 · Lost in the Middle">
+            检索准确率是 U 形曲线：开头和结尾的内容被高准确率取回，中间的明显低。这<strong>不是某个模型的 bug</strong>——是 attention 训练机制的产物，跨多代 GPT / Claude / 开源模型都一致。
+          </Card>
+          <Card title="Hsieh 2024 · RULER">
+            13 种任务、不同长度上系统测每个模型的"有效长度"——<strong>每个模型的有效长度都比标称的明显短，通常少 4-8×</strong>。标称 128K 的模型可能只在 32K 内可靠。1M token 模型在 128K 之后明显腐烂。
+          </Card>
+        </div>
+
+        <Callout kind="key" title="练手的经验法则">
+          <p>200K 的窗口<strong>不是 200K 的预算</strong>。对检索重度工作，<em>有效预算通常是标称值的 50-70%</em>，并且窗口内的<strong>位置也很重要</strong>——第 10 章处理位置（关键事实放窗口两端），本章处理预算。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch7-2" num="7.2" title="窗口的 5 类组件">
+        <p>Context 不是一堆 token——它是分层的组合。生产 harness 至少追踪 5 类：</p>
+
+        <ContextLiveDemo />
+
+        <div className="cards cols-2">
+          <Card title="System 提示">
+            指令、人格、工具使用准则、安全策略。<strong>典型 500-3000 tokens，整 session 稳定</strong>。
+          </Card>
+          <Card title="Tool schemas">
+            每个工具的 name + description + input schema 按 provider 约定渲染到 prompt 里。<strong>我们的 4 个工具 ≈ 400 tokens；50 工具的 harness 可能 5000+</strong>——回想 tool cliff，这不只是成本问题，也是质量问题。
+          </Card>
+          <Card title="History（对话历史）">
+            user / assistant / tool 结果跨 session 累积。<strong>朴素 loop 里单调增长</strong>。
+          </Card>
+          <Card title="Retrieved（检索）">
+            为当前 turn 拉进来的文档、搜索结果、scratchpad 内容。第 10 章动态管理。
+          </Card>
+          <Card title="Headroom（留白）">
+            必须留给模型自己响应的空间。<strong>Anthropic 的 <code>max_tokens</code>、OpenAI 的对应参数</strong>——从总预算里减去。
+          </Card>
+          <Card title="Reasoning tokens（如保留）">
+            当 ReasoningBlock 跨回合保留时（Anthropic thinking + tools），它按 history 计费。<strong>困难任务上 reasoning 可达最终答案的 5-10 倍</strong>。
+          </Card>
+        </div>
+
+        <h4 className="sub-title">阈值（rule of thumb）</h4>
+        <CmpTable
+          headers={["状态", "区间", "行动"]}
+          rows={[
+            ["🟢 green",      "≤ 60%",   "无须动作"],
+            ["🟡 yellow",     "60–80%",  "考虑剪枝 / 总结 / 外移"],
+            ["🔴 red",        "> 80%",   "立即压缩；你进入腐烂区"],
+            ["🚨 emergency",  "> 95%",   "下一回合大概率装不下"],
+          ]}
+        />
+
+        <Callout kind="note">这些不是律法，是<strong>可辩护的经验数字</strong>。第 19 章的 eval 会让你按工作负载经验性地调它们。</Callout>
+      </Section>
+
+      <Section id="ch7-3" num="7.3" title="数 token 的三种办法">
+        <CmpTable
+          headers={["方法", "准确性", "代价", "适合"]}
+          rows={[
+            ["官方 counter（Anthropic count_tokens / tiktoken）", "billing 级精确",  "Anthropic 要 network round-trip",  "calibration，不是 hot path"],
+            ["tiktoken 本地估算（cl100k_base / o200k_base）",     "OpenAI 字节精确；Anthropic ≈ 5% 偏差", "几乎零",  "预估算，预算 proxy"],
+            ["Provider 返回值（input_tokens / output_tokens）",  "上回合的 ground truth",  "免费",  "事后对账"],
+          ]}
+        />
+
+        <Callout kind="tip">本章的 accountant 用组合：<strong>本地 tiktoken 做调用前估算，provider 返回值做调用后对账</strong>。</Callout>
+
+        <CodeBlock filename="shell" lang="shell">{`uv add 'tiktoken>=0.8'`}</CodeBlock>
+      </Section>
+
+      <Section id="ch7-4" num="7.4" title="ContextAccountant">
+        <CodeBlock filename="src/harness/context/accountant.py" lang="python">{`from __future__ import annotations
+import json
+from dataclasses import dataclass, field
+from typing import Literal
+
+import tiktoken
+
+from ..messages import (
+    Block, Message, ReasoningBlock, TextBlock,
+    ToolCall, ToolResult, Transcript,
+)
+
+Component = Literal["system", "tools", "history", "retrieved", "headroom"]
+
+
+@dataclass
+class ContextBudget:
+    window_size: int = 200_000
+    headroom: int = 4096          # reserved for the model's response
+    yellow_threshold: float = 0.60
+    red_threshold: float = 0.80
+
+    @property
+    def usable(self) -> int:
+        return self.window_size - self.headroom
+
+
+@dataclass
+class ContextSnapshot:
+    totals: dict[Component, int] = field(default_factory=dict)
+    budget: ContextBudget = field(default_factory=ContextBudget)
+
+    @property
+    def total_used(self) -> int:
+        return sum(v for k, v in self.totals.items() if k != "headroom")
+
+    @property
+    def utilization(self) -> float:
+        return self.total_used / max(self.budget.usable, 1)
+
+    @property
+    def state(self) -> Literal["green", "yellow", "red"]:
+        u = self.utilization
+        if u >= self.budget.red_threshold:    return "red"
+        if u >= self.budget.yellow_threshold: return "yellow"
+        return "green"
+
+
+class ContextAccountant:
+    """Counts tokens per component across a transcript."""
+
+    def __init__(self, encoding_name: str = "cl100k_base",
+                 budget: ContextBudget | None = None) -> None:
+        self._enc = tiktoken.get_encoding(encoding_name)
+        self.budget = budget or ContextBudget()
+
+    def snapshot(self, transcript: Transcript,
+                 tools: list[dict] | None = None,
+                 retrieved: list[str] | None = None) -> ContextSnapshot:
+        totals: dict[Component, int] = {
+            "system":    self._count_text(transcript.system or ""),
+            "tools":     sum(self._count_text(json.dumps(t)) for t in (tools or [])),
+            "history":   sum(self._count_message(m) for m in transcript.messages),
+            "retrieved": sum(self._count_text(r) for r in (retrieved or [])),
+            "headroom":  self.budget.headroom,
+        }
+        return ContextSnapshot(totals=totals, budget=self.budget)
+
+    def _count_text(self, s: str) -> int:
+        return len(self._enc.encode(s))
+
+    def _count_message(self, m: Message) -> int:
+        total = 4   # ~4 tokens of per-message overhead in most provider formats
+        for block in m.blocks:
+            total += self._count_block(block)
+        return total
+
+    def _count_block(self, block: Block) -> int:
+        match block:
+            case TextBlock(text=t):        return self._count_text(t)
+            case ToolCall(name=n, args=a):
+                return self._count_text(n) + self._count_text(json.dumps(a)) + 6
+            case ToolResult(content=c):    return self._count_text(c) + 4
+            case ReasoningBlock(text=t):
+                # Counted when an adapter preserves reasoning on the transcript
+                # (Anthropic thinking + tools, or explicit consumer choice).
+                return self._count_text(t)
+            case _:
+                # Defensive: new block types added later should be undercounted,
+                # not crash measurement.
+                return 0`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>Accountant 是<strong>纯测量</strong>。它不改 transcript、不剪枝、不调 provider。它只答一个问题：<em>"给你这份 transcript 和这些工具，我在花你 usable 窗口的多少，按用到哪里拆分？"</em></p>
+        </Callout>
+      </Section>
+
+      <Section id="ch7-5" num="7.5" title="把 accountant 接入 loop">
+        <p>Loop 给每个 turn 串一次 accountant。Chapter 5 的中断安全（partial_text + CancelledError）保留——只新增 3 行。</p>
+
+        <CodeBlock filename="src/harness/agent.py（更新）" lang="python">{`from .context.accountant import ContextAccountant, ContextSnapshot
+from .providers.events import StreamEvent
+
+
+async def arun(
+    provider: Provider,
+    registry: ToolRegistry,
+    user_message: str,
+    transcript: Transcript | None = None,
+    system: str | None = None,
+    on_event: Callable[[StreamEvent], None] | None = None,
+    on_tool_call: Callable[[ToolCall], None] | None = None,
+    on_tool_result: Callable[[ToolResult], None] | None = None,
+    on_snapshot: Callable[[ContextSnapshot], None] | None = None,  # NEW
+    accountant: ContextAccountant | None = None,                    # NEW
+) -> str:
+    if transcript is None:
+        transcript = Transcript(system=system)
+    transcript.append(Message.user_text(user_message))
+
+    accountant = accountant or ContextAccountant()                  # NEW
+
+    for _ in range(MAX_ITERATIONS):
+        # NEW — measure before each turn.
+        snapshot = accountant.snapshot(transcript, tools=registry.schemas())
+        if on_snapshot is not None:
+            on_snapshot(snapshot)
+        if snapshot.state == "red":
+            # Chapter 8 drops the compactor in here.
+            # For now: observe only.
+            pass
+
+        # ... rest of the turn — partial_text rescue + dispatch — unchanged from Ch 5`}</CodeBlock>
+
+        <Callout kind="key" title="3 个观察">
+          <ul style={{ margin: 0 }}>
+            <li>标了 <code># NEW</code> 的就是本章加的全部</li>
+            <li><strong>red-state 分支故意是空的</strong>——第 8 章把 compactor 塞进来。留着这个钩子 = 下一章的 patch 大约只要 3 行</li>
+            <li><code>on_snapshot</code> 每回合触发一次——CLI / TUI 显示实时上下文用量；生产 harness 把同一个钩子喂给可观测性 pipeline（第 18 章）</li>
+          </ul>
+        </Callout>
+      </Section>
+
+      <Section id="ch7-6" num="7.6" title="让它可见">
+        <p>看不见你的上下文在涨，你就推理不出该何时压缩。一个小的文字可视化器把抽象百分比变成你能瞥一眼的东西：</p>
+
+        <CodeBlock filename="examples/ch07_context_usage.py" lang="python">{`def display(snap) -> None:
+    bar_width = 40
+    u = snap.utilization
+    filled = int(u * bar_width)
+    bar = "█" * filled + "░" * (bar_width - filled)
+    state_color = {"green":"\\033[92m", "yellow":"\\033[93m", "red":"\\033[91m"}
+    color, reset = state_color[snap.state], "\\033[0m"
+
+    print(f"\\n{color}[{bar}] {u*100:.0f}% ({snap.state}){reset}")
+    for k, v in snap.totals.items():
+        if k == "headroom": continue
+        print(f"  {k:10s} {v:>8,d}")
+    print(f"  {'usable':10s} {snap.budget.usable:>8,d}")
+
+
+async def main():
+    provider = AnthropicProvider()
+    registry = ToolRegistry(tools=[calc, read_file, bash])
+    await arun(
+        provider=provider, registry=registry,
+        user_message=(
+            "Read /etc/hostname, /etc/os-release, /proc/cpuinfo, "
+            "and summarize the machine."
+        ),
+        on_snapshot=display,
+        accountant=ContextAccountant(),
+    )
+
+asyncio.run(main())`}</CodeBlock>
+
+        <Callout kind="key">
+          跑起来，你会看到使用率回合接回合地涨。跳变来自<strong>工具输出</strong>——一份 <code>/proc/cpuinfo</code> 大约 5000 tokens，一次调用就让进度条挪动几个百分点。用一个读三个大文件的 prompt 重复，你能<em>实时看着它走向 yellow</em>。这就是要点：本来看不见的，现在你能盯着了。
+        </Callout>
+      </Section>
+
+      <Section id="ch7-7" num="7.7" title="值得记的观察">
+        <div className="cards cols-3">
+          <Card title="工具输出占大头" kind="">
+            多数 agent 工作负载里，到回合 10，<strong>tool 结果是 transcript 的 70-90%</strong>。System / schemas 都是误差。所以第 11 章一整章给"工具输出设计"——更小、更结构化的输出是<em>上下文里 ROI 最高的干预</em>。
+          </Card>
+          <Card title="用户消息小到可以忽略" kind="">
+            人类每回合写一段文字，模型读几 KB。这种不对称解释了为什么"让窗口更大"的朴素直觉失败——<strong>填窗口的不是用户</strong>。
+          </Card>
+          <Card title="Assistant reasoning 是第 3 个鼓包" kind="">
+            当你跑会"想出声"的 agent（extended thinking、verbose ReAct），<strong>assistant 自己的文字能逼近工具结果的大小</strong>。"记不记 reasoning"是开始记账之后才能做的有意识决定。
+          </Card>
+        </div>
+      </Section>
+
+      <Section id="ch7-8" num="7.8" title="prompt cache 折扣呢？">
+        <Callout kind="note">
+          <p>Anthropic 和 OpenAI 都支持 prompt caching：长且稳定的前缀（system + tool schemas）可以被 cache，后续共享前缀的请求按 ~10% 的 input rate 计费。</p>
+          <p><strong>但 cached 前缀仍占同样的窗口空间</strong>——caching 是计费优化，不是窗口优化。Accountant 不论 cache 状态都数原始 token。要单独追踪 cache 有效成本？第 20 章引入 <code>CostAccountant</code>。</p>
+        </Callout>
+      </Section>
+
+
+      <Section id="ch7-reconcile" num="7.6.b" title="实测对账：accountant 估算 vs provider 真实值">
+        <p>看不见的偏差比看得见的偏差危险。tiktoken 的本地估算和 Anthropic / OpenAI 的真实 <code>input_tokens</code> 偶尔会差 3-8%。开发期跑一段对账是诚实工程：</p>
+        <CodeBlock filename="examples/ch07_reconcile.py" lang="python">{`async def reconcile_run(prompt: str):
+    accountant = ContextAccountant()
+    rows = []
+
+    def on_snapshot(snap):
+        # snapshot 在每个 turn 开始时（调 provider 之前）触发
+        rows.append({"estimated_in": snap.totals["history"] + snap.totals["system"]
+                                     + snap.totals["tools"]})
+
+    result = await arun(
+        provider=AnthropicProvider(), catalog=ToolCatalog(tools=STANDARD_TOOLS),
+        user_message=prompt, accountant=accountant, on_snapshot=on_snapshot,
+    )
+
+    # 把 provider 报告的真实 input_tokens 与同 turn 的估算配对
+    # （从 Ch 18 的 OTel span 拉，或在 arun 里加一个 on_completion 回调）
+    print(f"{'turn':>4} {'estimated':>10} {'actual':>10} {'delta_%':>8}")
+    for i, (est, act) in enumerate(zip(rows, result.actual_input_per_turn)):
+        delta = (act - est) / max(est, 1) * 100
+        print(f"{i:>4} {est:>10,d} {act:>10,d} {delta:>+7.1f}%")`}</CodeBlock>
+        <Callout kind="key" title="预期偏差范围">
+          <ul style={{ margin: 0 }}>
+            <li><strong>OpenAI 模型 + cl100k_base / o200k_base</strong>: ≤ 0.5%（字节精确）</li>
+            <li><strong>Anthropic 模型 + cl100k_base</strong>: 3-8%（不同 tokenizer，纯英文偏差小、中文/代码偏差大）</li>
+            <li><strong>本地模型 + cl100k_base</strong>: 5-15%（要查具体模型的 tokenizer）</li>
+          </ul>
+          <p>偏差 &gt; 15% 时 → 你用错了 encoding；偏差稳定但大 → 接受它，在 budget 阈值上留 15% safety margin。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch7-9" num="7.9" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 测量朴素 loop">
+            把第 2 章 calculator 示例通过 accountant 跑。一个简单算术任务消耗了多少预算？换一个读 3 个中等文件的 prompt 对比——预算去哪了？
+          </Card>
+          <Card title="② 与真实数对账">
+            每次 provider 调用后，把 accountant 估算和 <code>response.input_tokens</code> 比。本地 tiktoken 偏差多少？写个小报告留着——第 20 章成本核算正经化时你会用到。
+          </Card>
+          <Card title="③ 找到你的红线">
+            设计一个 prompt 强迫 agent 拉够多上下文越过 80%。跑起来。<strong>使用率穿过 yellow 到 red 时，模型行为变了吗？</strong>你现在有第 8 章 compaction 的 benchmark。
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch7" questions={[
+        {
+          q: "Chroma 的 Context Rot 研究告诉我们什么？",
+          options: [
+            "1M context window 完全没用",
+            "模型在窗口未填满时性能已开始连续下降，attention 稀释 + distractor 干扰是两种机制",
+            "OpenAI 比 Anthropic 强",
+            "Context 不重要",
+          ],
+          right: 1,
+          explain: "这是第 7-11 章存在的根本动机。窗口大小是上限，不是预算。",
+        },
+        {
+          q: "Loop 在 snapshot.state == 'red' 时执行 pass 是什么意思？",
+          options: [
+            "意思是不需要做任何事",
+            "这是占位符——第 8 章把 compactor 塞进来，本章只做观测",
+            "性能优化",
+            "故意忽略 red 状态",
+          ],
+          right: 1,
+          explain: "第 7 章纯测量，第 8 章纯反应。分两章是因为'看见'和'做'是不同的设计决定。",
+        },
+        {
+          q: "为什么需要 on_snapshot 回调？",
+          options: [
+            "调试用",
+            "让 CLI/TUI 展示实时上下文用量、给可观测性 pipeline 喂数据、第 8 章 compactor 也通过它看",
+            "Python 类型检查器要求",
+            "异步必须用 callback",
+          ],
+          right: 1,
+          explain: "Hook 既给开发者也给生产系统用。第 18 章把它直接接到 OpenTelemetry。",
+        },
+        {
+          q: "为什么 prompt caching 不是 \"窗口优化\"？",
+          options: [
+            "Cache 不工作",
+            "Cached 前缀仍占同样的窗口空间——caching 是计费优化，不是空间优化",
+            "Cache 反而占更多空间",
+            "Cache 只对 OpenAI 有效",
+          ],
+          right: 1,
+          explain: "Cached 内容仍在 context window 里——只是 input tokens 计费打折。要省窗口空间，看第 8-11 章的压缩/scratchpad/检索。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter7 = Chapter7;

@@ -1,0 +1,506 @@
+/* tutorial-chapter24.jsx — Chapter 24 full content */
+
+function Chapter24() {
+  return (
+    <section className="chapter" id="ch24">
+      <h2 className="chapter-title">
+        <span className="ch-num">24</span>
+        文件系统工具完整化
+      </h2>
+      <p className="chapter-meta">Completing the File Tool Suite　·　从 read 到 create/delete/glob/find——让 agent 拥有完整的文件操作能力</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        第 4 章实现了 <code>read_file</code> 和 <code>edit_lines</code>——对一个 coding agent 来说，这是读和写的起点。但一个真正的 coding agent 需要的文件操作远不止这两项：它需要列目录、搜索文件、创建新文件、删除文件、glob 匹配、在文件内容中搜索文本。
+        <br /><br />
+        这一章要把文件工具从"最小可用"扩展到"产品级完整"。每一个新工具都要解决同一个问题：<strong>让模型能像人类开发者一样操作文件系统——但加上安全边界。</strong>
+      </div>
+
+      <Outcomes items={[
+        "掌握 6 个新文件工具的设计与实现：create_file、delete_file、list_directory、glob_pattern、find_text_in_files、get_file_info",
+        "理解 path sandboxing——不让 agent 逃逸到项目目录之外",
+        "设计 permission 门控的差异化策略：读自动放行，写需确认",
+        "理解每个工具的返回大小对上下文预算的影响",
+      ]} />
+
+      <Section id="ch24-1" num="24.1" title="已有的文件工具回顾">
+        <p>第 4 章和第 6 章已经实现了：</p>
+
+        <CmpTable
+          headers={["工具", "描述", "安全等级"]}
+          rows={[
+            ["read_file", "按偏移/范围读文件内容", "读——自动放行"],
+            ["read_file_viewport", "带视口的文件浏览", "读——自动放行"],
+            ["edit_lines", "SEARCH/REPLACE 对文件做精准编辑", "写——需确认"],
+          ]}
+        />
+
+        <p>问题很明显：模型能<strong>读和改</strong>文件，但不能<strong>创建、删除、搜索、列举</strong>。对一个 coding agent 来说，这约等于一个编辑器只能打开已有文件。</p>
+
+        <Callout kind="key">
+          <p>一个有趣的事实：Claude Code 的文件工具集也只有大约 8 个工具。<strong>不是越多越好。</strong> 每多一个工具就增加模型选错的概率（第 12 章的工具悬崖）。关键在于让每个工具覆盖一个模型<strong>确实需要原子操作</strong>的场景。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch24-2" num="24.2" title="Path Sandbox——安全边界">
+        <p>所有文件工具共享同一个安全机制：path sandbox。它的职责很简单——拒绝任何试图访问项目目录之外的路径。</p>
+
+        <CodeBlock filename="src/harness/tools/path-sandbox.ts" lang="typescript">{`import { resolve, relative, sep } from "node:path";
+
+export class PathSandbox {
+  private readonly allowedBase: string;
+
+  constructor(base?: string) {
+    // 默认锚定到进程当前工作目录
+    this.allowedBase = resolve(base || process.cwd());
+  }
+
+  /** 将用户提供的路径解析为绝对路径。
+   *  如果结果在允许范围外则抛出错误。 */
+  resolve(userPath: string): string {
+    // 从工作目录解析相对路径
+    const abs = resolve(this.allowedBase, userPath);
+
+    // 检查是否在 allowedBase 内
+    const rel = relative(this.allowedBase, abs);
+
+    // 如果 rel 以 ".." 开头，说明试图逃逸
+    if (rel.startsWith(".." + sep) || rel === "..") {
+      throw new SandboxEscapeError(userPath, abs, this.allowedBase);
+    }
+
+    return abs;
+  }
+
+  /** 检查路径是否在允许范围内 */
+  contains(testPath: string): boolean {
+    const rel = relative(this.allowedBase, resolve(testPath));
+    return !rel.startsWith(".." + sep) && rel !== "..";
+  }
+}
+
+export class SandboxEscapeError extends Error {
+  constructor(
+    userPath: string,
+    resolvedPath: string,
+    allowedBase: string,
+  ) {
+    super(
+      \`Path "\${userPath}" resolves to "\${resolvedPath}" \` +
+      \`outside allowed base "\${allowedBase}"\`
+    );
+    this.name = "SandboxEscapeError";
+  }
+}`}</CodeBlock>
+
+        <Callout kind="warn" title="符号链接的陷阱">
+          <p>这个实现有一个已知漏洞：如果项目目录里有指向 <code>/etc</code> 的符号链接，<code>resolve()</code> 会跟着符号链接跑出去。<code>realpath.native()</code> 可以展开符号链接，但性能开销大。产品级实现需要决定：是完全禁用符号链接追踪、在 resolve 时展开、还是在 permission 层额外检查？<br />
+          <em>这是一个留给你思考的设计决策——没有正确答案，只有不同的取舍。</em></p>
+        </Callout>
+      </Section>
+
+      <Section id="ch24-3" num="24.3" title="create_file 与 delete_file">
+        <p>文件创建和删除是互补的对称操作。</p>
+
+        <CodeBlock filename="src/harness/tools/files.ts" lang="typescript">{`import { type Tool } from "./types.js";
+import { writeFile, unlink, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+import { PathSandbox } from "./path-sandbox.js";
+
+const sandbox = new PathSandbox();
+
+export const createFileTool: Tool = {
+  name: "create_file",
+  description: "创建一个新文件。如果父目录不存在会自动创建。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "文件路径（相对于项目根目录）",
+      },
+      content: {
+        type: "string",
+        description: "文件内容",
+      },
+    },
+    required: ["path", "content"],
+  },
+  async handler(args: { path: string; content: string }): Promise<string> {
+    const safePath = sandbox.resolve(args.path);
+    await mkdir(dirname(safePath), { recursive: true });
+    await writeFile(safePath, args.content, "utf-8");
+    return \`文件已创建: \${args.path}（\${args.content.length} 字符）\`;
+  },
+};
+
+export const deleteFileTool: Tool = {
+  name: "delete_file",
+  description: "删除一个文件或空目录。注意：此操作不可恢复。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "要删除的文件路径" },
+    },
+    required: ["path"],
+  },
+  async handler(args: { path: string }): Promise<string> {
+    const safePath = sandbox.resolve(args.path);
+    await unlink(safePath);
+    return \`已删除: \${args.path}\`;
+  },
+};`}</CodeBlock>
+
+        <Callout kind="warn" title="delete_file 的设计困境">
+          <p>删除是 irreversable 操作。PermissionManager 应该：① 默认拒绝；② 要求用户显式确认文件名；③ 记录审计日志。即便如此，模型也可能因为被误导而删除错误文件。<strong>可选的改进：</strong>在 delete_file handler 里先做一次"预览"——把内容打印给用户看再确认。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch24-4" num="24.4" title="list_directory 与 glob_pattern">
+        <p>列目录和 glob 是 agent 理解项目结构的两个基本工具。一个精确（list），一个灵活（glob）。</p>
+
+        <CodeBlock filename="src/harness/tools/files.ts" lang="typescript">{`import { readdir, stat } from "node:fs/promises";
+import { join, relative } from "node:path";
+import { glob } from "glob";
+
+export const listDirectoryTool: Tool = {
+  name: "list_directory",
+  description: "列出目录中的文件和子目录。返回带类型标记的条目列表。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "目录路径（相对于项目根目录，默认根目录）",
+      },
+    },
+  },
+  async handler(args: { path?: string }): Promise<string> {
+    const safePath = sandbox.resolve(args.path || ".");
+    const entries = await readdir(safePath, { withFileTypes: true });
+
+    const lines = entries
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(e => {
+        const prefix = e.isDirectory() ? "📁" : e.isSymlink() ? "🔗" : "📄";
+        return \`\${prefix} \${e.name}\`;
+      });
+
+    return lines.join("\n");
+  },
+};
+
+export const globPatternTool: Tool = {
+  name: "glob_pattern",
+  description: "用 glob 模式匹配文件路径。例如 'src/**/*.ts' 匹配所有 src 下的 TypeScript 文件。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      pattern: {
+        type: "string",
+        description: "Glob 模式，支持 **、*、?、{a,b} 等语法",
+      },
+      path: {
+        type: "string",
+        description: "搜索根目录（默认项目根目录）",
+      },
+    },
+    required: ["pattern"],
+  },
+  async handler(args: { pattern: string; path?: string }): Promise<string> {
+    const safePath = sandbox.resolve(args.path || ".");
+
+    const results = await glob(args.pattern, {
+      cwd: safePath,
+      nodir: true,
+      dot: true,
+      ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**"],
+    });
+
+    if (results.length === 0) {
+      return "没有匹配的文件。";
+    }
+
+    // 限制输出大小——防止 2000 个匹配塞爆 context
+    const maxResults = 100;
+    const lines = results.slice(0, maxResults);
+    const summary = results.length > maxResults
+      ? \`\n…以及另外 \${results.length - maxResults} 个匹配文件\`
+      : "";
+
+    return lines.join("\n") + summary;
+  },
+};`}</CodeBlock>
+
+        <Callout kind="tip" title="glob vs 模型直接做文件发现">
+          <p>一个有趣的现象：给模型 <code>list_directory</code> 它会一步步探索，像人类一样"看这个目录→进去→再看"。这需要多回合。给 <code>glob_pattern</code> 它能一步到位。关键是模型需要知道用哪个模式。<br />
+          最佳实践：先让模型试 glob，如果没找到再用 list_directory 确认。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch24-5" num="24.5" title="find_text_in_files 与 get_file_info">
+        <p>文本搜索和文件元信息：agent 版的 grep 和 stat。</p>
+
+        <CodeBlock filename="src/harness/tools/files.ts" lang="typescript">{`import { stat } from "node:fs/promises";
+
+export const findTextInFilesTool: Tool = {
+  name: "find_text_in_files",
+  description: "在文件中搜索文本（类似 grep）。返回匹配的文件路径和行号。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      pattern: {
+        type: "string",
+        description: "搜索文本（支持子串匹配，非正则）",
+      },
+      glob: {
+        type: "string",
+        description: "限定文件模式，例如 '*.ts' 或 'src/**'",
+      },
+      maxResults: {
+        type: "number",
+        description: "最大结果数（默认 30，避免太多结果）",
+      },
+    },
+    required: ["pattern"],
+  },
+  async handler(
+    args: { pattern: string; glob?: string; maxResults?: number },
+  ): Promise<string> {
+    const maxResults = Math.min(args.maxResults ?? 30, 200);
+    const root = sandbox.resolve(".");
+    const results = await grepInDir(root, args.pattern, {
+      glob: args.glob,
+      maxResults,
+      ignore: ["node_modules", ".git", "dist"],
+    });
+
+    if (results.length === 0) {
+      return "没有找到匹配的内容。";
+    }
+
+    return results
+      .map(r => \`\${r.file}:\${r.line}: \${r.text.trim()}\`)
+      .join("\n");
+  },
+};
+
+export const getFileInfoTool: Tool = {
+  name: "get_file_info",
+  description: "获取文件的元信息——大小、修改时间、类型。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "文件或目录路径",
+      },
+    },
+    required: ["path"],
+  },
+  async handler(args: { path: string }): Promise<string> {
+    const safePath = sandbox.resolve(args.path);
+    const info = await stat(safePath);
+
+    const lines = [
+      \`路径: \${args.path}\`,
+      \`类型: \${info.isDirectory() ? "目录" : info.isFile() ? "文件" : "其他"}\`,
+      \`大小: \${formatSize(info.size)}\`,
+      \`修改时间: \${info.mtime.toISOString()}\`,
+    ];
+
+    if (info.isFile()) {
+      // 对于小文件，顺便提示代码预览
+      if (info.size < 100_000) {
+        lines.push("提示: 小文件，可直接用 read_file 查看");
+      } else {
+        lines.push(\`提示: 文件较大 (\${formatSize(info.size)})，建议用 read_file viewport 分段查看\`);
+      }
+    }
+
+    return lines.join("\n");
+  },
+};
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return \`\${bytes} B\`;
+  if (bytes < 1024 * 1024) return \`\${(bytes / 1024).toFixed(1)} KB\`;
+  return \`\${(bytes / (1024 * 1024)).toFixed(1)} MB\`;
+`}</CodeBlock>
+
+        <Callout kind="key" title="搜索工具与模型能力的交互">
+          <p><code>find_text_in_files</code> 返回格式是 <code>file:line: text</code> —— 和 grep 一样。这不是巧合：模型训练数据里有大量这种格式。选择模型熟悉的格式可以减少 parse 错误。<br />
+          同理 <code>get_file_info</code> 返回的是 key:value 对——简单、稳定、模型容易从中提取信息。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch24-6" num="24.6" title="Permission 差异策略">
+        <p>不同文件操作有不同的风险等级。PermissionManager 应该应用差异化的策略：</p>
+
+        <CmpTable
+          headers={["风险等级", "操作", "策略"]}
+          rows={[
+            ["无风险", "read_file, list_directory, get_file_info, glob_pattern", "自动放行，无需确认"],
+            ["低风险", "find_text_in_files", "自动放行，但记录搜索路径"],
+            ["中风险", "create_file, edit_lines", "需要用户确认——显示预览"],
+            ["高风险", "delete_file", "需要用户确认——显示内容预览 + 明确列出文件名"],
+          ]}
+        />
+
+        <CodeBlock filename="src/cli/permissions.ts" lang="typescript">{`// 在 cliPermissionHandler 中补充文件操作策略
+
+const FILE_RISK_MAP: Record<string, "none" | "low" | "medium" | "high"> = {
+  read_file: "none",
+  read_file_viewport: "none",
+  list_directory: "none",
+  get_file_info: "none",
+  glob_pattern: "none",
+  find_text_in_files: "low",
+  create_file: "medium",
+  edit_lines: "medium",
+  delete_file: "high",
+};
+
+export async function cliPermissionHandler(
+  req: PermissionRequest,
+): Promise<PermissionDecision> {
+  const risk = FILE_RISK_MAP[req.action] ?? "medium";
+
+  if (risk === "none") {
+    return { allowed: true, reason: "read-only" };
+  }
+
+  if (risk === "low") {
+    console.log(\`🔍 \${req.action} (\${req.details})\`);
+    return { allowed: true };
+  }
+
+  // medium / high —> 需要交互式确认
+  return await interactiveConfirm(req, risk);
+}`}</CodeBlock>
+
+        <Callout kind="warn" title="一个被低估的安全问题">
+          <p><code>find_text_in_files</code> 可能被用于读取敏感信息——用户在项目里的 .env、密钥文件、token。<strong>建议的改进：</strong>在搜索时忽略 *.env、*credentials*、*secret*、*token*、*.pem 等模式，或在搜索前给用户警告。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch24-7" num="24.7" title="工具返回大小与上下文预算">
+        <p>第 7 章的 ContextAccountant 跟踪每个工具返回的大小。文件工具是上下文消耗的大户——尤其是 <code>find_text_in_files</code> 可能返回数百行匹配。</p>
+
+        <CmpTable
+          headers={["工具", "典型返回大小", "对上下文的影响"]}
+          rows={[
+            ["read_file (viewport)", "1–20 KB", "可控——viewport 限制了范围"],
+            ["read_file (全文)", "最多 100 KB (大文件)", "消耗窗口的 5–50%——需要压缩"],
+            ["list_directory", "0.1–2 KB", "可忽略"],
+            ["glob_pattern", "0.1–10 KB", "可忽略（除非 100 个匹配）"],
+            ["find_text_in_files", "1–30 KB", "取决于 maxResults"],
+            ["get_file_info", "0.1 KB", "可忽略"],
+            ["create_file", "0.05 KB", "可忽略"],
+            ["delete_file", "0.05 KB", "可忽略"],
+          ]}
+        />
+
+        <Callout kind="tip">
+          <p>实现时，在文件工具 handler 中添加对 ContextAccountant 的回调。<code>find_text_in_files</code> 可以接受 <code>contextBudget?: number</code> 参数，由 caller 指定"这次搜索最多占 X tokens"，超出就截断返回。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch24-8" num="24.8" title="注册到 Registry">
+        <p>最后，把所有这些工具注册到 ToolRegistry：</p>
+
+        <CodeBlock filename="src/harness/tools/register.ts" lang="typescript">{`import { type ToolRegistry } from "./registry.js";
+import {
+  createFileTool, deleteFileTool,
+  listDirectoryTool, globPatternTool,
+  findTextInFilesTool, getFileInfoTool,
+} from "./files.js";
+
+export function registerFileTools(registry: ToolRegistry): void {
+  registry.register(createFileTool);
+  registry.register(deleteFileTool);
+  registry.register(listDirectoryTool);
+  registry.register(globPatternTool);
+  registry.register(findTextInFilesTool);
+  registry.register(getFileInfoTool);
+}`}</CodeBlock>
+
+        <p>回到主入口，替换原来那行 <code>registry.registerFileTools()</code> 为完整版本：</p>
+
+        <CodeBlock filename="src/cli/main.ts" lang="typescript">{`import { registerFileTools } from "../harness/tools/register.js";
+
+// 在 runAgentCLI 中:
+const registry = new ToolRegistry();
+registerFileTools(registry);
+// ... 其他工具注册`}</CodeBlock>
+      </Section>
+
+      <Section id="ch24-9" num="24.9" title="比一比：Claude Code 的文件工具">
+        <CmpTable
+          headers={["能力", "本章实现", "Claude Code"]}
+          rows={[
+            ["读文件", "read_file + viewport", "Read 工具组"],
+            ["写文件", "create_file + edit_lines", "Write + Edit"],
+            ["删除", "delete_file", "Bash rm"],
+            ["列目录", "list_directory", "Bash ls"],
+            ["搜索", "glob_pattern + find_text_in_files", "Grep + Glob 专用工具"],
+            ["文件信息", "get_file_info", "Bash stat"],
+          ]}
+        />
+
+        <p>关键差异：Claude Code 把目录列表和搜索交给 Bash 工具（通过 <code>ls</code>、<code>find</code>、<code>grep</code>），而本章选择了独立工具。两种策略各有优劣：独立工具对模型更友好（不需要知道 shell 语法）但增加了工具数量；Bash 更灵活但需要模型同时学会工具 + shell 语法 + 路径处理。</p>
+
+        <p>第 25 章加了终端工具后，你会有两种选择——让模型用专用工具或 shell 命令。这是一个值得跟踪的分析点：模型在什么时候选哪个？</p>
+      </Section>
+
+      <Section id="ch24-10" num="24.10" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 跑通每个新工具">逐一测试文件工具——创建文件、glob 匹配、文本搜索。确认 PathSandbox 正确拒绝了 escape 尝试。</Card>
+          <Card title="② 挑战 PathSandbox">试这些路径：<code>../../../etc/passwd</code>、<code>subdir/../../..</code>、符号链接、绝对路径 <code>/etc</code>。哪些能拦住？哪些不能？</Card>
+          <Card title="③ 设计一个\u201C移动\u201D工具"><code>mv</code> 和 <code>cp</code> 没有实现。它们的参数是什么？风险等级是什么？需要什么 permission 策略？试着写出它们的 handler。</Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch24" questions={[
+        {
+          q: "PathSandbox.resolve() 如何防止路径逃逸？",
+          options: [
+            "检查路径是否包含 '..'",
+            "把路径解析为绝对路径，然后检查相对于 allowedBase 的 relative 是否以 '..' 开头",
+            "拒绝所有包含 '/' 的路径",
+            "只允许预注册的文件名",
+          ],
+          right: 1,
+          explain: "resolve + relative 是可靠的检查方式。仅仅检查字符串中的 '..' 容易被绕过。",
+        },
+        {
+          q: "为什么 find_text_in_files 有 maxResults 参数？",
+          options: [
+            "grep 命令本身就只支持有限结果",
+            "防止搜索结果撑爆上下文窗口——ContextAccountant 会跟踪工具返回大小",
+            "因为模型读不了太多行",
+            "为了性能",
+          ],
+          right: 1,
+          explain: "搜索结果可能巨大（1000+ 匹配）。限制返回数量是上下文工程的一部分——宁可让模型多问一次细化条件，也不能一次性塞爆窗口。",
+        },
+        {
+          q: "delete_file 的 permission 策略为什么应该比 create_file 更严格？",
+          options: [
+            "删除不可恢复",
+            "创建文件可能覆盖已有文件",
+            "两者应该一样严格",
+            "删除更危险",
+          ],
+          right: 0,
+          explain: "删除是不可逆的。即使有 git 可以恢复，也涉及复杂操作。create_file 覆盖文件也是一个风险，但至少旧内容可以保留一次恢复机会。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter24 = Chapter24;

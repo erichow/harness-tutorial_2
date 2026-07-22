@@ -1,0 +1,385 @@
+/* tutorial-chapter32.jsx — Chapter 32 full content */
+
+function Chapter32() {
+  return (
+    <section className="chapter" id="ch32">
+      <h2 className="chapter-title">
+        <span className="ch-num">32</span>
+        你的第一个 Coding Agent
+      </h2>
+      <p className="chapter-meta">Your First Coding Agent　·　收束全程：发布、扩展、给未来的自己</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        第 1 章从一个 40 行的 <code>while</code> 循环开始。到这一章，你已经有了一个能在终端里运行、能读写文件、能执行命令、能操作 Git、能理解代码结构、可以配置和评测的 coding agent。
+        <br /><br />
+        这不是终点——这是起点。这一章做三件事：<strong>回顾架构</strong>（从 ch2 到 ch32 我们走了多远）、<strong>打包发布</strong>（让它能被 <code>npx</code> 一键使用）、<strong>展望扩展</strong>（VS Code 插件、Web 版、团队部署）。
+      </div>
+
+      <Outcomes items={[
+        "回顾完整的架构图——从 40 行 loop 到 30+ 工具的 coding agent",
+        "打包为 npm package，支持 npx 一键运行",
+        "了解三个扩展方向：VS Code 插件、Web 版、团队部署",
+        "理解哪些是可以自定义的热点——工具集、权限策略、UI 渲染器",
+      ]} />
+
+      <Section id="ch32-1" num="32.1" title="架构回顾：一张图看全程">
+        <p>把 ch2 的 40 行 loop 放在左边，ch32 的架构放在右边——差距就是这本书的全部内容。</p>
+
+        <CmpTable
+          headers={["维度", "ch2（朴素版）", "ch32（产品版）"]}
+          rows={[
+            ["Loop", "while True: provider.complete() + dispatch", "arun() — 回合制、流式、中断、预算、checkpoint"],
+            ["Provider", "一个接口（Protocol）", "多厂商 + mock + 配置化选择"],
+            ["消息", "list of dicts（无类型）", "Transcript — 类型化、不可变、chunk-aware"],
+            ["工具", 'dict[str, Callable]（无 schema）', "ToolRegistry — schema 校验、side-effect 声明、dynamic loading"],
+            ["文件", '无（需要自己写 read_file）', "8 个文件工具 + path sandbox + permission 门控"],
+            ["终端", '无', "run_command + background + which + env 隔离"],
+            ["Git", '无', "6 个 Git 工具 + 读/写分离权限"],
+            ["LSP", '无', "completion + definition + references + hover + diagnostics"],
+            ["代码分析", '无', "Project Tree + 依赖图 + 角色分类 + extract_code_context"],
+            ["UI", 'print() + input()', "流式渲染 + 进度条 + 确认框 + diff 视图 + 思考模式"],
+            ["上下文", '最大迭代次数 20', "ContextAccountant + Compactor + 预算分配"],
+            ["安全", '无（工具参数直接 **kwargs）', "PermissionManager + PathSandbox + env 过滤 + 交互确认"],
+            ["可观测性", '无', "OTel + StreamEvent + audit log"],
+            ["可恢复性", '无', "Checkpointer + scratchpad + 幂等"],
+            ["配置", '无', "5 层加载链 + 工具开关 + 权限策略"],
+            ["评测", '无', "EvalRunner + 工作流场景 + 自动评分"],
+          ]}
+        />
+
+        <Callout kind="key">
+          <p>清单里每一项都是在 ch2 的 5 个刻意崩溃中看到的缺失。<strong>架构不是设计出来的——架构是在每一个崩溃让系统不可用时，被逼出来的。</strong></p>
+        </Callout>
+      </Section>
+
+      <Section id="ch32-2" num="32.2" title="打包为 npm package">
+        <p>让全世界（或者你团队）能用 <code>npx your-agent-name</code> 运行它。</p>
+
+        <CodeBlock filename="package.json" lang="json">{`{
+  "name": "@your-username/agent-code",
+  "version": "0.1.0",
+  "description": "A Claude Code alternative built on agent-harness",
+  "type": "module",
+  "bin": {
+    "agent-code": "./dist/cli/bin.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli/bin.js",
+    "dev": "npx tsx src/cli/bin.ts",
+    "test": "vitest run",
+    "test:eval": "npx tsx src/eval/regression.ts",
+    "prepublishOnly": "npm run build && npm run test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "simple-git": "^3.25.0",
+    "glob": "^11.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "tsx": "^4.16.0"
+  },
+  "keywords": ["agent", "coding-agent", "cli", "claude-code"],
+  "license": "MIT"
+}`}</CodeBlock>
+
+        <CodeBlock filename="src/cli/bin.ts" lang="typescript">{`#!/usr/bin/env node
+/**
+ * agent-code — A Claude Code alternative built on agent-harness.
+ *
+ * Usage:
+ *   npx agent-code
+ *   npx agent-code --model claude-sonnet-4 --temperature 0
+ *   npx agent-code --help
+ */
+
+import { runAgentCLI } from "./main.js";
+import { loadConfig } from "../config/config.js";
+
+const config = await loadConfig();
+
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  console.log(\`
+┌─────────────────────────────────────────────┐
+│             agent-code  v0.1.0              │
+│     A Claude Code alternative built on      │
+│            agent-harness                    │
+└─────────────────────────────────────────────┘
+
+用法:
+  npx agent-code                 启动交互式会话
+  npx agent-code --model <型号>  指定模型
+  npx agent-code --help          显示帮助
+
+配置:
+  ~/.agent-code/config.json      全局配置
+  .agent-code.json               项目配置
+  环境变量: PROVIDER, MODEL, TEMPERATURE 等
+
+支持:
+  • 文件读写、搜索、glob
+  • Shell 命令执行（安全沙箱）
+  • Git 操作（status/commit/branch/stash）
+  • 代码分析（符号搜索、项目结构）
+  • LSP 集成（补全、定义、引用）
+  • 可配置的工具集和权限策略
+\`);
+  process.exit(0);
+}
+
+try {
+  await runAgentCLI();
+} catch (err) {
+  console.error("❌ 致命错误:", err);
+  process.exit(1);
+}`}</CodeBlock>
+
+        <Callout kind="tip" title="发布前检查清单">
+          <ul>
+            <li>✅ <code>npm run build</code> 通过（TypeScript 编译无错误）</li>
+            <li>✅ <code>npm run test</code> 通过（vitest）</li>
+            <li>✅ <code>npm run test:eval</code> 通过（回归测试通过率 {">"} 80%）</li>
+            <li>✅ <code>npx .</code> 能启动交互式会话</li>
+            <li>✅ <code>npx . --help</code> 显示帮助</li>
+            <li>✅ <code>README.md</code> 写了安装和使用说明</li>
+            <li>✅ 添加了 <code>LICENSE</code>（MIT 或你选择的）</li>
+          </ul>
+        </Callout>
+      </Section>
+
+      <Section id="ch32-3" num="32.3" title="扩展方向一：VS Code 插件">
+        <p>CLI 版本很好，但嵌入编辑器能获得更好的体验：不需要切换窗口、文件直接在编辑器中打开、LSP 直接复用 VS Code 的语言服务器。</p>
+
+        <CodeBlock filename="src/vscode/extension.ts" lang="typescript">{`// VS Code 插件入口（伪代码——完整实现需要 vscode API 类型）
+import * as vscode from "vscode";
+import { arun } from "agent-harness";
+import { ToolRegistry } from "agent-harness/tools/registry";
+
+export function activate(context: vscode.ExtensionContext) {
+  const disposable = vscode.commands.registerCommand(
+    "agent-code.startChat",
+    async () => {
+      const panel = vscode.window.createWebviewPanel(
+        "agentCodeChat",
+        "Agent Code",
+        vscode.ViewColumn.Beside,
+        { enableScripts: true },
+      );
+
+      // 注册 VS Code 特有的工具
+      const registry = new ToolRegistry();
+      registry.register({
+        name: "vscode_open_file",
+        description: "在 VS Code 中打开文件",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            selection: { type: "string" },
+          },
+          required: ["path"],
+        },
+        async handler(args) {
+          const doc = await vscode.workspace.openTextDocument(args.path);
+          await vscode.window.showTextDocument(doc);
+          return \`打开了 \${args.path}\`;
+        },
+      });
+
+      // 注册标准工具 + VS Code 工具
+      registerFileTools(registry);
+      registerTerminalTools(registry);
+      registerGitTools(registry);
+
+      // 使用 VS Code 的终端而不是独立命令行
+      // 使用 VS Code 的文件系统 API 而不是 node:fs
+      // ... 插件桥接代码
+
+      vscode.window.showInformationMessage("Agent Code 已激活");
+    },
+  );
+
+  context.subscriptions.push(disposable);
+}`}</CodeBlock>
+
+        <p>VS Code 插件的关键差异：</p>
+        <ul>
+          <li><strong>文件系统：</strong>用 VS Code 的 <code>workspace.fs</code> API 而不是直接 node:fs</li>
+          <li><strong>终端：</strong>用 VS Code 的 <code>Terminal</code> API 创建集成终端</li>
+          <li><strong>LSP：</strong>复用 VS Code 已运行的 language server——不需要启动新进程</li>
+          <li><strong>UI：</strong>Webview 面板而不是终端 ANSI 字符</li>
+          <li><strong>权限：</strong>用 VS Code 的 <code>window.showQuickPick()</code> 和 <code>window.showInputBox()</code></li>
+        </ul>
+      </Section>
+
+      <Section id="ch32-4" num="32.4" title="扩展方向二：Web 版本">
+        <p>通过在 harness 和前端之间加一层 WebSocket，可以做成 Web 服务：</p>
+
+        <CodeBlock filename="src/web/server.ts" lang="typescript">{`// Web 版——通过 WebSocket 把 arun() 连接到浏览器前端
+import { createServer } from "node:http";
+import { WebSocketServer } from "ws";
+import { arun } from "../harness/agent.js";
+// ...
+
+const wss = new WebSocketServer({ port: 8080 });
+
+wss.on("connection", (ws) => {
+  let transcript = new Transcript();
+  const registry = createRegistry();
+
+  ws.on("message", async (raw) => {
+    const { type, payload } = JSON.parse(raw.toString());
+
+    if (type === "user_message") {
+      // 流式事件通过 WebSocket 发送给前端
+      const events: StreamEvent[] = [];
+
+      transcript = await arun(
+        provider,
+        registry,
+        payload,
+        transcript,
+        systemPrompt,
+        (event) => {
+          ws.send(JSON.stringify(event));
+          events.push(event);
+        },
+      );
+    }
+  });
+});`}</CodeBlock>
+
+        <p>Web 版的核心挑战是<strong>权限模型</strong>：在终端中，确认对话框弹在用户面前；在 Web 中，用户可能不在浏览器前。Web 版需要：① 异步确认通知（消息推送到前端等待回复）；② 超时自动拒绝；③ 可选的"信任模式"（对特定操作不要求确认）。</p>
+      </Section>
+
+      <Section id="ch32-5" num="32.5" title="扩展方向三：团队部署">
+        <p>一个团队使用的 coding agent 需要考虑更多：</p>
+
+        <CmpTable
+          headers={["维度", "单人版", "团队版"]}
+          rows={[
+            ["配置", ".agent-code.json", "项目仓库中的 .agent-code.yaml + 团队覆盖"],
+            ["权限", "本地确认", "可以配置'需要管理员确认'的敏感操作"],
+            ["审计", "终端日志", "持久化的操作日志 + 谁在什么时候做了什么"],
+            ["模型", "用户自选", "团队统一的模型和参数"],
+            ["成本", "用户自负", "共享的 API key + 成本限额追踪"],
+            ["评测", "本地跑", "CI 中自动跑回归测试"],
+          ]}
+        />
+
+        <p>团队版最简单的实现方式：把配置系统扩展一层的"团队默认值"（从共享的 Git 仓库或 S3 加载），然后把审计日志写入文件而不是 stdout。</p>
+      </Section>
+
+      <Section id="ch32-6" num="32.6" title="自定义的热点地图">
+        <p>不是所有东西都需要自定义。以下是不同自定义项的修改难度和影响范围：</p>
+
+        <CmpTable
+          headers={["自定义项", "难度", "影响范围", "修改方式"]}
+          rows={[
+            ["工具集（增删工具）", "低", "产品功能", "在 register.ts 中增减"],
+            ["权限策略", "低–中", "安全", "修改 cliPermissionHandler"],
+            ["UI 渲染", "低", "用户体验", "修改 cliEventHandler"],
+            ["配置文件格式", "中", "配置系统", "修改 config.ts"],
+            ["新 Provider", "中", "模型支持", "实现 Provider 接口"],
+            ["新工具类别", "中", "产品功能", "新文件 + 注册到 categories.ts"],
+            ["VS Code 插件", "高", "整个新平台", "独立项目"],
+            ["Web 版本", "高", "整个新平台", "独立项目（复用 harness）"],
+          ]}
+        />
+
+        <Callout kind="key">
+          <p><strong>最大的工程杠杆：</strong>如果团队需要定制，优先改 tool handler 和 permission handler——这两个是用户最常交互的层。不要从底层框架开始改。底层框架（arun()、Transcript、ToolRegistry）经过 22 章的迭代已经很稳定了。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch32-7" num="32.7" title="给未来的自己——学习的终点和起点">
+        <p>这本书从"Agent 到底是什么"开始，到"你的第一个 Coding Agent"结束。如果你一路读到这里并一一实践了每章的"试一试"，你的收获不止是一个能跑的产品——</p>
+
+        <div className="cards cols-2">
+          <Card title="你学到的工程原则" kind="">
+            <ul style={{ margin: 0 }}>
+              <li>何时抽象（当痛感出现时），何时具体</li>
+              <li>上下文窗口不是"够大就行"——它是需要精细管理的资源</li>
+              <li>安全不能后加——它从工具协议的第一行就开始设计</li>
+              <li>可观测性不是锦上添花——它是 debug agent 行为的唯一窗口</li>
+              <li>对用户透明的思考过程比黑盒输出更值得信任</li>
+            </ul>
+          </Card>
+          <Card title="三个值得继续的方向" kind="">
+            <ul style={{ margin: 0 }}>
+              <li><strong>Agent-to-Agent 通信：</strong>ch15-17 的子智能体模式可以扩展到多 agent 协作——一个 agent 写代码、另一个 review、第三个跑测试</li>
+              <li><strong>多模态：</strong>ch13 的 MCP 可以接入截图、UI 截图分析工具——让 agent"看到"它正在修改的界面</li>
+              <li><strong>持续学习：</strong>ch8 的压缩 + ch9 的 scratchpad 可以扩展为"agent 从每次对话中学习项目特定模式"</li>
+            </ul>
+          </Card>
+        </div>
+
+        <Callout kind="tip" title="最后一段话">
+          <p><strong>Agent 不是魔术，是工程。</strong><br /><br />
+          第 1 章我们说：Agent 是循环，Harness 是围绕循环的工程。32 章之后，你应该能清晰地看到：每一个看起来"智能"的行为，都可以拆解为 loop + 工具 + 上下文管理 + 权限 + 可观测性的组合。<br /><br />
+          你现在可以构建它们——不只是调用它们。<br /><br />
+          <em>—— 全书完</em></p>
+        </Callout>
+      </Section>
+
+      <Section id="ch32-8" num="32.8" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 发布你的第一个版本">按 32.2 节的 checklist 走一遍，发布一个 v0.1.0 到 npm。即使只有你一个人用——npm publish 的那一刻，它就是一个'产品'了。</Card>
+          <Card title="② 为它写 README">写一份好的 README：一句话说明、安装方式、快速开始、配置说明、贡献指南。让新用户（包括一周后的你自己）能快速上手。</Card>
+          <Card title="③ 回看第 2 章的 5 个 break">回到 ch2-5，重新看那 5 个崩溃。现在你的系统还能被它们打碎吗？如果不能，是哪个章节解决了它？如果能，还缺什么？</Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch32" questions={[
+        {
+          q: "本书的核心论点是？",
+          options: [
+            "Agent 需要大模型",
+            "Agent 是工程问题，不是魔术——可以拆解为 loop + 工具 + 上下文管理 + 安全的组合",
+            "只有 Claude Code 能做 coding agent",
+            "Python 比 TypeScript 更适合写 agent",
+          ],
+          right: 1,
+          explain: "始于第 1 章的定义，贯穿全书：Agent = Loop + 工程。每一个\u201C智能\u201D行为都可以归结为良好的工程组合。",
+        },
+        {
+          q: "VS Code 插件版本和 CLI 版本最大的工程差异是什么？",
+          options: [
+            "编程语言不同",
+            "CLI 用自己的工具实现（read_file），插件可以复用 VS Code 的 API——文件、终端、LSP 都不需要自己启动",
+            "插件不能调终端",
+            "CLI 更快",
+          ],
+          right: 1,
+          explain: "插件不需要自己实现文件操作、终端、LSP——VS Code 已经提供了。这减少了大量重复代码，但也意味着你受限于 VS Code 的 API 设计。",
+        },
+        {
+          q: "ch2-5 的 5 个 break 在第 32 章结束时都被解决了吗？",
+          options: [
+            "是的，每一个 break 都有对应的章节解决它",
+            "没有，Break 5（工具返回 200KB）仍然是一个开放问题",
+            "Break 3（工具异常）没有被解决",
+            "只有 Break 1 和 2 被解决了",
+          ],
+          right: 0,
+          explain: "5 个 break 的解决路径：Break 1（ch4 ToolRegistry）、Break 2（ch6 schema 校验）、Break 3（ch6 异常包装）、Break 4（ch6/18/20 预算+可观测性）、Break 5（ch7-11 上下文工程）。它们定义了这本书的路线图。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter32 = Chapter32;

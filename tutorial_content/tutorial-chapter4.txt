@@ -1,0 +1,543 @@
+/* tutorial-chapter4.jsx — Chapter 4 full content: The Tool Protocol */
+
+/* ─── Local diagrams ─── */
+function ToolPipelineDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 180" preserveAspectRatio="xMidYMid meet">
+        {[
+          { x: 20,  w: 180, label: "model emits", sub: "tool_call",       color: "var(--accent-2)" },
+          { x: 220, w: 200, label: "Registry 校验",  sub: "name + schema",  color: "var(--accent-3)" },
+          { x: 440, w: 180, label: "Tool.run",     sub: "调用 callable",    color: "var(--accent)" },
+          { x: 640, w: 230, label: "structured",   sub: "ToolResult",     color: "var(--green)" },
+        ].map((s, i) => (
+          <g key={i}>
+            <rect x={s.x} y={50} width={s.w} height={80} rx={14}
+                  fill="var(--paper-2)" stroke={s.color} strokeWidth="3"
+                  style={{ filter: "url(#sketchy-edge-soft)" }} />
+            <text x={s.x + s.w/2} y={86} fontFamily="var(--font-h)" fontSize="26"
+                  fill={s.color} textAnchor="middle" fontWeight="700">{s.label}</text>
+            <text x={s.x + s.w/2} y={114} fontFamily="var(--font-mono)" fontSize="17"
+                  fill="var(--ink-soft)" textAnchor="middle">{s.sub}</text>
+            {i < 3 && <SkArrow x1={s.x + s.w} y1={90} x2={s.x + s.w + 20} y2={90} />}
+          </g>
+        ))}
+        <text x={350} y={170} fontFamily="var(--font-hand)" fontSize="17" fill="var(--accent-3)" textAnchor="middle" fontWeight="600">
+          ↑ 这一步是承重的——它在你的代码跑之前就拒绝坏调用
+        </text>
+      </svg>
+      <div className="caption">从模型输出到工具结果的 4 步。Validator（琥珀色）是承重的那一步。</div>
+    </div>
+  );
+}
+
+function SideEffectsDiagram() {
+  const tags = [
+    { tag: "read",    color: "var(--green)",     msg: "只读状态。可重试、可并行、不需要幂等 key。" },
+    { tag: "write",   color: "var(--accent-3)",  msg: "改本地状态（文件、scratchpad）。需要写所有权；通常幂等可重试。" },
+    { tag: "network", color: "var(--accent-2)",  msg: "外部服务。需要 egress 权限；重试需要厂商侧的幂等。" },
+    { tag: "mutate",  color: "var(--red)",       msg: "外部可见的、不可逆副作用（发邮件、扣款、删行）。可能需要人类批准；重试需要真幂等 key。" },
+  ];
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 280" preserveAspectRatio="xMidYMid meet">
+        {tags.map((t, i) => {
+          const y = 30 + i * 60;
+          return (
+            <g key={i}>
+              <rect x={20} y={y} width={140} height={45} rx={22}
+                    fill={t.color} stroke="var(--ink)" strokeWidth="2"
+                    style={{ filter: "url(#sketchy-edge-soft)" }} />
+              <text x={90} y={y + 30} fontFamily="var(--font-mono)" fontSize="20"
+                    fill="var(--paper)" textAnchor="middle" fontWeight="700">{t.tag}</text>
+              <text x={180} y={y + 28} fontFamily="var(--font-hand)" fontSize="18"
+                    fill="var(--ink)">{t.msg}</text>
+            </g>
+          );
+        })}
+      </svg>
+      <div className="caption">4 个副作用标签——现在声明，第 14 章 PermissionManager 和第 21 章 Checkpointer 用它来决定怎么对待这个工具。</div>
+    </div>
+  );
+}
+
+/* ─── Chapter 4 ─── */
+function Chapter4() {
+  return (
+    <section className="chapter" id="ch4">
+      <h2 className="chapter-title">
+        <span className="ch-num">4</span>
+        工具协议
+      </h2>
+      <p className="chapter-meta">The Tool Protocol　·　给工具一份正式契约</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：第 3 章后，loop 不再因 unknown tool 而崩——但那个修复是 ad hoc 的 try/except，挂在 dispatch 里。我们欠自己一个正经的工具抽象。
+        <br /><br />
+        <strong>一个 <Term k="Tool">工具</Term> 是一份契约</strong>：模型能猜到的名字、模型能读懂的描述、模型必须匹配的 schema、命中时我们执行的 callable、决定运行前是否需要权限的副作用画像。
+        你发出去的工具是 agent 触达世界的表面——而这个领域里每一桩有据可查的生产事故（幻觉工具调用、输出截断、tool cliff、prompt injection）都是工具表面的故障。
+      </div>
+
+      <Outcomes items={[
+        "Tool 携带自己的 schema、description、副作用声明",
+        "ToolRegistry 在调用进入你的代码之前就拒绝未知名字",
+        "发给 provider 的 schema 由 Tool 自动派生，不再手工维护两份",
+        "第 2 章 Break 1（unknown tool）和 Break 3（tool 抛异常）的彻底修复",
+      ]} />
+
+      <ToolPipelineDiagram />
+
+      <Section id="ch4-1" num="4.1" title="工具是接口，不是函数">
+        <p>
+          研究脉络很短但值得点名。Schick et al. 2023 的 <em>Toolformer: LM Can Teach Themselves to Use Tools</em> 把工具使用从"prompting trick"提升为"research problem"。
+          Yang et al. 2024 的 <em>SWE-agent</em> 把跟随 Toolformer 而来的设计观点磨锐了：
+          <strong>工具设计 = 给非人类用户做接口设计</strong>，而那个用户有非常特定的认知约束。
+          模型在决定调谁之前会读你的描述，它不会记得你的 README，它没法问澄清问题，它会从名字推断行为。三个后果：
+        </p>
+
+        <div className="cards cols-3">
+          <Card title="① 名字是语义的" kind="">
+            <code>send_message</code> 和 <code>send_email</code> 完全不同。<code>read_file</code> 暗示无破坏；<code>open_file</code> 是歧义的。
+            <strong>如果两个工具会被混淆，它们就一定会被混淆。</strong>
+          </Card>
+          <Card title="② 描述是契约" kind="">
+            "Sends a notification" 没告诉模型这个通知花不花钱、到不到生产用户、有没有限流、要不要标题。
+            <strong>好的描述覆盖：做什么 · 不做什么 · 前置条件 · 副作用。</strong>
+          </Card>
+          <Card title="③ schema 是硬边" kind="">
+            optional 实际必填、应该是 enum 的写成了 string——边越软，被误用得越频繁。
+            <em>每个本该是 enum 的 string，都是模型 creative 一把的机会。</em>
+          </Card>
+        </div>
+
+        <p>三样都作为 Tool 的一等字段。副作用也是一个字段——第 14 章的权限层要用它决定 gate 谁。</p>
+      </Section>
+
+      <Section id="ch4-2" num="4.2" title="Tool 数据类">
+        <CodeBlock filename="src/harness/tools/base.py" lang="python">{`from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Callable, Literal
+
+SideEffect = Literal["read", "write", "network", "mutate"]
+
+
+@dataclass(frozen=True)
+class Tool:
+    """A callable exposed to the model.
+
+    name           -- stable identifier the model calls by.
+    description    -- contract text the model reads. Must state scope,
+                      preconditions, and side effects in plain English.
+    input_schema   -- JSON Schema for the arguments dict.
+    run            -- the callable. Accepts kwargs matching the schema;
+                      returns a string (what the model will see).
+    side_effects   -- declared effect tags. Used by the permission layer.
+    """
+    name: str
+    description: str
+    input_schema: dict
+    run: Callable[..., str]
+    side_effects: frozenset[SideEffect] = field(default_factory=frozenset)
+
+    def schema_for_provider(self) -> dict:
+        """The dict shape providers expect (Anthropic-flavored)."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.input_schema,
+        }`}</CodeBlock>
+
+        <h4 className="sub-title">SideEffect 的 4 个标签</h4>
+        <SideEffectsDiagram />
+
+        <Callout kind="note" title="为什么现在就声明，而不是等到第 14 章？">
+          这些标签<strong>现在还不承重</strong>。但等第 14 章 <code>PermissionManager</code> 决定 gate 什么、第 21 章 <code>Checkpointer</code> 决定哪些工具需要幂等保护——它们就靠这个字段读。<em>现在写好，每个新工具都自带它，将来不必回头打补丁。</em>
+        </Callout>
+      </Section>
+
+      <Section id="ch4-3" num="4.3" title="装饰器（让工具好写）">
+        <p>每次手 new <code>Tool(...)</code> 太啰嗦，且 boilerplate 会盖住每个工具真正特殊的部分。一个装饰器让函数签名、docstring、类型注解去干大部分活：</p>
+
+        <CodeBlock filename="src/harness/tools/decorator.py" lang="python">{`from __future__ import annotations
+import inspect, typing
+from typing import Callable, get_type_hints
+from .base import SideEffect, Tool
+
+
+def tool(
+    name: str | None = None,
+    description: str | None = None,
+    side_effects: set[SideEffect] | frozenset[SideEffect] = frozenset(),
+) -> Callable[[Callable[..., str]], Tool]:
+    """Turn a plain function into a Tool.
+
+    The input schema is inferred from type hints. The function's docstring
+    is used as the description if not provided explicitly.
+    """
+    def wrap(fn: Callable[..., str]) -> Tool:
+        actual_name = name or fn.__name__
+        actual_description = description or (fn.__doc__ or "").strip()
+        if not actual_description:
+            raise ValueError(f"tool {actual_name!r} has no description")
+        schema = _schema_from_signature(fn)
+        return Tool(
+            name=actual_name,
+            description=actual_description,
+            input_schema=schema,
+            run=fn,
+            side_effects=frozenset(side_effects),
+        )
+    return wrap
+
+
+def _schema_from_signature(fn):
+    sig = inspect.signature(fn)
+    hints = get_type_hints(fn)
+    properties, required = {}, []
+    for pname, param in sig.parameters.items():
+        if pname == "self":
+            continue
+        hint = hints.get(pname, str)
+        properties[pname] = _type_to_schema(hint)
+        if param.default is inspect.Parameter.empty:
+            required.append(pname)
+    return {"type": "object", "properties": properties, "required": required}`}</CodeBlock>
+
+        <Callout kind="tip" title="schema 推断的尺度"><p>
+          <code>_schema_from_signature</code> 故意简单：<code>str / int / float / bool / list[T] / Optional[T]</code>——足够本书所有工具。
+          要 enum、嵌套对象、约束（minLength、pattern、minimum）？要么扩展这个函数，要么直接手写 <code>input_schema</code> 调 <code>Tool(...)</code>。
+          <em>多数严肃的生产 harness 用 Pydantic / <code>TypeAdapter</code>——第 6 章 schema 校验开始承重时我们就切过去。</em>
+        </p></Callout>
+
+        <h4 className="sub-title">用起来</h4>
+        <CodeBlock filename="example tool" lang="python">{`from harness.tools.decorator import tool
+
+
+@tool(side_effects={"read"})
+def calc(expression: str) -> str:
+    """Evaluate a Python arithmetic expression.
+
+    Accepts: standard Python syntax with +, -, *, /, **, parentheses.
+    Rejects: imports, function calls, attribute access.
+
+    Side effects: none.
+    """
+    import ast
+    tree = ast.parse(expression, mode="eval")
+    ALLOWED = (ast.Expression, ast.BinOp, ast.UnaryOp,
+               ast.Constant, ast.operator, ast.unaryop, ast.Load)
+    for node in ast.walk(tree):
+        if not isinstance(node, ALLOWED):
+            raise ValueError(f"not allowed: {type(node).__name__}")
+    return str(eval(compile(tree, "<expr>", mode="eval"),
+                    {"__builtins__": {}}))`}</CodeBlock>
+
+        <Callout kind="key" title="docstring 在干真正的工作">
+          模型会读它。<strong>"Accepts / Rejects / Side effects"</strong> 是让工具难以被误用的固定模式。
+          对比 "evaluates math"，你就能看到它对模型选择行为带来的差异。
+        </Callout>
+      </Section>
+
+      <Section id="ch4-4" num="4.4" title="ToolRegistry">
+        <p>Registry 持有工具、给 provider 渲染 schema、按名分发调用。</p>
+
+        <CodeBlock filename="src/harness/tools/registry.py" lang="python">{`from __future__ import annotations
+from dataclasses import dataclass
+from ..messages import ToolResult
+from .base import Tool
+
+
+@dataclass
+class ToolRegistry:
+    tools: dict[str, Tool]
+
+    def __init__(self, tools: list[Tool] | None = None) -> None:
+        self.tools = {}
+        for t in tools or []:
+            self.add(t)
+
+    def add(self, tool: Tool) -> None:
+        if tool.name in self.tools:
+            raise ValueError(f"duplicate tool name: {tool.name}")
+        self.tools[tool.name] = tool
+
+    def schemas(self) -> list[dict]:
+        return [t.schema_for_provider() for t in self.tools.values()]
+
+    def dispatch(self, name: str, args: dict, call_id: str) -> ToolResult:
+        if name not in self.tools:
+            return ToolResult(
+                call_id=call_id,
+                content=(f"unknown tool: {name}. "
+                         f"available: {sorted(self.tools.keys())}"),
+                is_error=True,
+            )
+        tool = self.tools[name]
+        try:
+            content = tool.run(**args)
+        except TypeError as e:
+            return ToolResult(call_id=call_id,
+                              content=f"argument error for {name}: {e}",
+                              is_error=True)
+        except Exception as e:
+            return ToolResult(call_id=call_id,
+                              content=f"{name} raised {type(e).__name__}: {e}",
+                              is_error=True)
+        return ToolResult(call_id=call_id, content=content)`}</CodeBlock>
+
+        <Callout kind="key" title="两个值得名状的设计选择">
+          <p>
+            <strong>dispatch 返回 ToolResult，永不抛异常。</strong> Loop 不应该再为每次调用包 try/except——这是 registry 的职责。
+            未知工具不是异常；它是模型能读懂并恢复的<strong>结构化错误</strong>。这是第 2 章那个 try/except 在尝试做的事，现在做对了。
+          </p>
+          <p>
+            <strong>错误消息会指出可用工具。</strong> 当模型叫 <code>calculator</code> 而我们只有 <code>calc</code>，错误消息会告诉它有哪些工具——这不是装饰，这是<em>模型用来在下一回合纠正自己的免费学习信号</em>。
+          </p>
+        </Callout>
+      </Section>
+
+      <Section id="ch4-5" num="4.5" title="把 loop 接通到 registry">
+        <CodeBlock filename="src/harness/agent.py" lang="python">{`from __future__ import annotations
+from .messages import Message, Transcript, ToolCall
+from .providers.base import Provider
+from .tools.registry import ToolRegistry
+
+MAX_ITERATIONS = 20
+
+
+def run(
+    provider: Provider,
+    registry: ToolRegistry,
+    user_message: str,
+    transcript: Transcript | None = None,
+    system: str | None = None,
+) -> str:
+    if transcript is None:
+        transcript = Transcript(system=system)
+    transcript.append(Message.user_text(user_message))
+
+    for _ in range(MAX_ITERATIONS):
+        response = provider.complete(transcript, registry.schemas())
+
+        if response.is_final:
+            transcript.append(Message.from_assistant_response(response))
+            return response.text or ""
+
+        # One assistant message with every ToolCall block from this turn.
+        transcript.append(Message.from_assistant_response(response))
+
+        # Dispatch each call in arrival order (usually one).
+        for ref in response.tool_calls:
+            result = registry.dispatch(ref.name, ref.args, ref.id)
+            transcript.append(Message.tool_result(result))
+
+    raise RuntimeError(f"agent did not finish in {MAX_ITERATIONS} iterations")`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>Loop <strong>变小</strong>了，不是变大——这就是抽象的意义：复杂度搬进 registry（它该在的地方），loop 保持专注在第 2 章那 3 个决策。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch4-6" num="4.6" title="真实工具集（4 个，每个都有理由）">
+        <CodeBlock filename="src/harness/tools/std.py" lang="python">{`from __future__ import annotations
+import ast, subprocess
+from pathlib import Path
+from .decorator import tool
+
+
+@tool(side_effects={"read"})
+def calc(expression: str) -> str:
+    """Evaluate a Python arithmetic expression.
+
+    Accepts: +, -, *, /, **, parentheses, integer and float literals.
+    Does NOT allow function calls, imports, attribute access, subscripts,
+    comprehensions, names, or anything else not explicitly listed here.
+
+    Side effects: none. Safe to retry.
+    """
+    ALLOWED = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
+               ast.operator, ast.unaryop, ast.Load)
+    tree = ast.parse(expression, mode="eval")
+    for node in ast.walk(tree):
+        if not isinstance(node, ALLOWED):
+            raise ValueError(f"forbidden: {type(node).__name__}")
+    return str(eval(compile(tree, "<expr>", mode="eval"),
+                    {"__builtins__": {}}, {}))
+
+
+@tool(side_effects={"read"})
+def read_file(path: str) -> str:
+    """Read a UTF-8 text file and return its contents.
+
+    path: relative or absolute filesystem path.
+    Side effects: reads the filesystem, no writes.
+
+    Returns the file contents. For very large files, prefer chapter 11's
+    viewport reader.
+    """
+    return Path(path).read_text(encoding="utf-8")
+
+
+@tool(side_effects={"write"})
+def write_file(path: str, content: str) -> str:
+    """Overwrite a file with the given content.
+
+    path: relative or absolute filesystem path. The file will be CREATED
+    or OVERWRITTEN; its previous contents are lost.
+
+    Side effects: writes to the filesystem. NOT safe to call twice with
+    different content expecting either version to survive.
+    """
+    Path(path).write_text(content, encoding="utf-8")
+    return f"wrote {len(content)} bytes to {path}"
+
+
+@tool(side_effects={"read", "network"})
+def bash(command: str, timeout_seconds: int = 30) -> str:
+    """Run a shell command in the current working directory.
+
+    command: a shell command line.
+    timeout_seconds: hard time limit; default 30, cap 300.
+
+    Side effects: MAY read/write files, MAY make network calls — depends
+    on the command. Caller is responsible for the blast radius.
+
+    Returns combined stdout+stderr with the exit code appended.
+    """
+    timeout = min(int(timeout_seconds), 300)
+    result = subprocess.run(
+        command, shell=True, capture_output=True, text=True, timeout=timeout,
+    )
+    return (f"exit={result.returncode}\\n"
+            f"---stdout---\\n{result.stdout}\\n"
+            f"---stderr---\\n{result.stderr}")`}</CodeBlock>
+
+        <div className="cards cols-3">
+          <Card title="calc 现在足够安全" kind="good">
+            AST walk 禁止 calls / attrs / imports / names。<code>eval("__import__('os').system('rm -rf /')")</code> 在校验阶段就死。<em>这不是 sandbox（第 14 章建），但够防意外。</em>
+          </Card>
+          <Card title="bash 标了 read/network" kind="">
+            其实 bash 什么都能干。但我们标我们大多数时候确信的标签——<strong>第 14 章权限层可以再收紧</strong>。
+          </Card>
+          <Card title="docstring 一稿两用" kind="">
+            是模型读的描述，也是人读的文档。每个都声明<strong>前置条件 / 副作用 / 失败模式</strong>——这就是难误用的模式。
+          </Card>
+        </div>
+      </Section>
+
+      <Section id="ch4-7" num="4.7" title="跑通三家 provider">
+        <CodeBlock filename="examples/ch04_tools.py" lang="python">{`import os
+from harness.agent import run
+from harness.providers.anthropic import AnthropicProvider
+from harness.providers.openai import OpenAIProvider
+from harness.providers.local import LocalProvider
+from harness.tools.registry import ToolRegistry
+from harness.tools.std import calc, read_file, write_file, bash
+
+
+provider = {
+    "anthropic": AnthropicProvider,
+    "openai":    OpenAIProvider,
+    "local":     LocalProvider,
+}[os.environ.get("PROVIDER", "anthropic")]()
+
+registry = ToolRegistry(tools=[calc, read_file, write_file, bash])
+
+answer = run(
+    provider=provider, registry=registry,
+    user_message=(
+        "Write the string 'hello world' to /tmp/ch04-test.txt, "
+        "then read it back, then tell me what the file contained."
+    ),
+)
+print(answer)`}</CodeBlock>
+
+        <Callout kind="key">
+          切 provider 仍然是改一个环境变量，工具定义不变——<strong>这就是第 3 章分层在面对真正有意思的工作负载时的回本。</strong>
+        </Callout>
+      </Section>
+
+      <Section id="ch4-8" num="4.8" title="工具数量值得讲讲">
+        <p>
+          我们只写了 4 个工具，<strong>这是刻意的</strong>。Jenova AI 2025 的 <em>AI Tool Overload</em> 分析给了硬数字：
+          模型选工具的准确率在 20-50 个工具之间断崖式下跌——一个 100 工具的 agent 比 10 工具的差很多。
+          这个分析的名字不是巧合——它出现在 Anthropic 2024.11 发布 <Term k="MCP">MCP</Term>（Model Context Protocol）的更大背景下。
+          MCP 让 agent 接入第三方工具服务器变得容易，但这同时让"工具数量"问题更容易被无意触发——一旦从外部 registry 加工具变成"几乎免费"，新工具就开始无限往里塞。
+        </p>
+
+        <Callout kind="warn" title="本书往下走的纪律">
+          <ol style={{ margin: 0 }}>
+            <li>每个新工具都要赚到"值得一章去讨论"的程度</li>
+            <li>两个工具做相似的事——合并掉一个或干掉一个</li>
+            <li>工具 schema 是上下文预算的一部分；第 7 章开始记账</li>
+          </ol>
+          <p>第 12 章建动态工具加载，让真正需要 50+ 工具的系统能越过这道断崖。在那之前，我们守在"一小撮"这条线上。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch4-9" num="4.9" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 写一个 list_tools 工具">
+            返回 registry 中每个工具的名字+描述。当 agent 困惑时它会重新调它来"看选项"。观察这个行为有用还是吵。
+          </Card>
+          <Card title="② 压力测试 schema 推断">
+            写一个签名含 <code>list[dict[str, int]]</code> 的函数，看看 <code>_schema_from_signature</code> 产出什么。不对？写一个对的版本。
+            <em>剧透：你刚发明了 Pydantic <code>TypeAdapter</code> 的一小部分。</em>
+          </Card>
+          <Card title="③ 故意撒谎，观察模型反应">
+            把 <code>write_file</code> 的 docstring 改成"appends to the file"，实现保持不变。提示 agent "add a note to /tmp/note.txt 别丢已有内容"。
+            <strong>它有多信描述？</strong>
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch4" questions={[
+        {
+          q: "Tool 的哪一个字段是给第 14 章 PermissionManager 用的？",
+          options: ["description", "input_schema", "side_effects", "name"],
+          right: 2,
+          explain: "side_effects 现在不承重，但它是未来权限决策、幂等决策的输入。所以每个工具一开始就要标好。",
+        },
+        {
+          q: "ToolRegistry.dispatch 在遇到 unknown tool 时该怎么办？",
+          options: [
+            "抛 UnknownToolError 让 loop 死",
+            "返回一个 is_error=True 的 ToolResult，并在 content 里列出可用工具",
+            "重试 3 次",
+            "什么也不做，静默忽略",
+          ],
+          right: 1,
+          explain: "结构化错误让模型在下回合可以纠正——这是免费的学习信号。loop 不应该再为每次调用包 try/except。",
+        },
+        {
+          q: "为什么模型读的 description 一定要写前置条件 / 副作用 / 失败模式？",
+          options: [
+            "代码可读性",
+            "因为模型在调工具之前只能读这段；它没法问澄清，记不住 README，会从名字推断行为",
+            "为了 SEO",
+            "运行时检查",
+          ],
+          right: 1,
+          explain: "工具设计 = 给非人类用户的接口设计（SWE-agent 2024）。模型的'认知约束'与人类不同，但比人类更需要清晰契约。",
+        },
+        {
+          q: "下面哪条不是 §4.8 守 4 个工具的理由？",
+          options: [
+            "Schema 占上下文预算",
+            "20-50 工具之间存在 tool cliff，准确率非线性下降",
+            "Python 不擅长处理 50+ callable",
+            "MCP 让加工具变得过于容易",
+          ],
+          right: 2,
+          explain: "这是工具数量问题，与 Python 语言能力无关。第 12 章用动态加载来突破这道墙。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter4 = Chapter4;

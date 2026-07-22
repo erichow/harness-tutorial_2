@@ -1,0 +1,457 @@
+/* tutorial-chapter18.jsx — Chapter 18: Observability */
+
+/* ─── Trace tree diagram ─── */
+function TraceTreeDiagram() {
+  // Top-down nested spans: agent.run > agent.turn > gen_ai.completion + tool.call
+  const rows = [
+    { indent: 0, name: "agent.run",         attrs: "session=s_42 · task=t_07 · agent=root", dur: "12.3s",  color: "var(--accent)" },
+    { indent: 1, name: "agent.turn #1",     attrs: "iteration=0",                            dur: "42ms",   color: "var(--accent-2)" },
+    { indent: 1, name: "agent.turn #2",     attrs: "iteration=1",                            dur: "1.8s",   color: "var(--accent-2)" },
+    { indent: 2, name: "gen_ai.completion", attrs: "input=2400 · output=180 · anthropic",     dur: "1.2s",   color: "var(--accent-3)" },
+    { indent: 2, name: "tool.call",         attrs: "read_file_viewport · ok",                 dur: "12ms",   color: "var(--accent-4)" },
+    { indent: 1, name: "agent.turn #3",     attrs: "iteration=2 · final=true",                dur: "0.9s",   color: "var(--accent-2)" },
+  ];
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 1100 270" preserveAspectRatio="xMidYMid meet">
+        <text x={550} y={28} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          一个 trace 树：run → turns → completion + tool calls
+        </text>
+        {rows.map((r, i) => {
+          const x = 50 + r.indent * 50;
+          const y = 64 + i * 32;
+          return (
+            <g key={i}>
+              {/* connector line from parent */}
+              {r.indent > 0 && (
+                <path d={`M ${x - 25} ${y - 32} L ${x - 25} ${y} L ${x - 5} ${y}`}
+                      fill="none" stroke="var(--ink-soft)" strokeWidth="1.5"
+                      strokeDasharray="3 3" />
+              )}
+              <rect x={x} y={y - 13} width={400} height={26} rx={5}
+                    fill={`color-mix(in oklch, ${r.color} 14%, var(--paper-2))`}
+                    stroke={r.color} strokeWidth="1.5" />
+              <text x={x + 8} y={y + 4} fontFamily="var(--font-mono)" fontSize="13"
+                    fill={r.color} fontWeight="700">{r.name}</text>
+              <text x={580} y={y + 4} fontFamily="var(--font-hand)" fontSize="13"
+                    fill="var(--ink-soft)">{r.attrs}</text>
+              <text x={1080} y={y + 4} fontFamily="var(--font-mono)" fontSize="13"
+                    fill="var(--ink)" textAnchor="end" fontWeight="600">{r.dur}</text>
+            </g>
+          );
+        })}
+      </svg>
+      <div className="caption">Span 自然嵌套——flame chart 一眼能看出哪个 turn 占时间、哪次 tool call 慢、哪次迭代触发压缩。每条 span 都带 session_id / task_id / agent_id。</div>
+    </div>
+  );
+}
+
+/* ─── Cost attribution dashboard mockup ─── */
+function CostAttributionDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 260" preserveAspectRatio="xMidYMid meet">
+        <text x={450} y={30} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          GROUP BY harness.agent_id —— 谁烧 token 一眼看见
+        </text>
+        {[
+          { id: "sub-researcher",   tokens: 142000, color: "var(--red)" },
+          { id: "sub-summarizer",   tokens: 28000,  color: "var(--accent-2)" },
+          { id: "root",             tokens: 18000,  color: "var(--accent-3)" },
+          { id: "sub-validator",    tokens: 11000,  color: "var(--accent-2)" },
+          { id: "sub-formatter",    tokens: 6000,   color: "var(--accent-2)" },
+        ].map((r, i) => {
+          const y = 60 + i * 38;
+          const maxW = 600;
+          const w = (r.tokens / 142000) * maxW;
+          return (
+            <g key={i}>
+              <text x={210} y={y + 18} fontFamily="var(--font-mono)" fontSize="15"
+                    fill="var(--ink)" textAnchor="end">{r.id}</text>
+              <rect x={220} y={y} width={w} height={28} rx={5}
+                    fill={r.color} opacity={0.7} stroke="var(--ink)" strokeWidth="1" />
+              <text x={230 + w} y={y + 19} fontFamily="var(--font-mono)" fontSize="14"
+                    fill="var(--ink)" fontWeight="700">
+                {r.tokens.toLocaleString()} tok
+              </text>
+            </g>
+          );
+        })}
+        <text x={450} y={236} fontFamily="var(--font-hand)" fontSize="17"
+              fill="var(--red)" textAnchor="middle" fontWeight="700">
+          ↑ sub-researcher 烧了其它所有 agent 之和的 5× —— 立即可见
+        </text>
+      </svg>
+      <div className="caption">这就是回答 "Your AI Agent Spent $500 Overnight" 那篇博文里"哪个 agent 跑飞了"的工具。</div>
+    </div>
+  );
+}
+
+/* ─── Chapter 18 ─── */
+function Chapter18() {
+  return (
+    <section className="chapter" id="ch18">
+      <h2 className="chapter-title">
+        <span className="ch-num">18</span>
+        可观测性
+      </h2>
+      <p className="chapter-meta">Observability　·　Agent 失败需要时间线，不是单一 metric</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：并行 sub-agent、leases、grounded verification。Harness 能力强但<strong>不透明</strong>——失败的一次跑只告诉你最终 error，<em>不告诉你</em>是哪个 sub-agent 烧了 token、哪次 tool call 耗了 12 秒、哪次 compaction 丢了最终需要的事实。
+        <br /><br />
+        <strong>Agent 的可观测性形状和典型 web 服务的不一样</strong>。请求/响应延迟仍然重要，但<em>整个轨迹</em>更重要：哪些工具按什么顺序触发、各花多少、何时压缩、哪些 sub-agent 派生、模型每回合输出了什么。
+      </div>
+
+      <TraceTreeDiagram />
+
+      <Outcomes items={[
+        "用 OpenTelemetry 给每次 LLM 调用、工具调用、压缩事件、sub-agent 派生加 span",
+        "Span 携带 OTel GenAI 语义约定（gen_ai.system、gen_ai.usage.input_tokens 等）",
+        "每条 span 都标 session_id / task_id / agent_id —— per-agent 成本归因变得可能",
+        "Exporter 可插拔：开发用 console、本地用 Jaeger、生产用 Langfuse/Datadog/Honeycomb",
+      ]} />
+
+      <Section id="ch18-1" num="18.1" title="为什么用 OTel，不用 ad-hoc log">
+        <p>分布式 trace 这门学科生自 Sigelman et al. 2010 的 <em>Dapper, a Large-Scale Distributed Systems Tracing Infrastructure</em>——Google 内部把每天数十亿 RPC 在数千微服务间关联起来的系统。<strong>每个现代追踪系统——Zipkin、Jaeger、OpenTelemetry 本身——都是 Dapper 的后代</strong>。本章用的 GenAI 语义约定，是同一套 trace-and-span 模型上叠的 agent 专属属性。</p>
+
+        <div className="cards cols-3">
+          <Card title="Traces，不是 log 行" kind="good">
+            带 span 的 trace<strong>保留操作之间的父-子关系</strong>。你看到"这次 LLM 调用发生在这个 turn 里，这个 turn 发生在这个 sub-agent 里，这个 sub-agent 发生在 parent task 里"。
+            <br /><br />扁平 log 你得 grep 重建；trace 免费给你。
+          </Card>
+          <Card title="标准化属性" kind="good">
+            一致地标 <code>gen_ai.usage.input_tokens</code>，每个可观测性平台<strong>都知道它什么意思</strong>。Dashboard、告警、下游成本分析<em>不必懂你的本地词汇</em>。
+          </Card>
+          <Card title="Exporter 可插拔" kind="good">
+            开发：Console。本地 dev：Jaeger。生产：Langfuse / Datadog / Honeycomb。<strong>harness 代码不变，exporter 变</strong>。
+          </Card>
+        </div>
+
+        <CodeBlock filename="shell" lang="shell">{`uv add 'opentelemetry-api>=1.27' \\
+       'opentelemetry-sdk>=1.27' \\
+       'opentelemetry-exporter-otlp>=1.27'`}</CodeBlock>
+
+        <Callout kind="note">
+          GenAI 语义约定截至 2026.4 仍标记为 OTel 的 experimental，但<strong>稳到可以建之上</strong>——主要可观测性平台（Datadog、Langfuse、Braintrust）已接入。
+        </Callout>
+      </Section>
+
+      <Section id="ch18-2" num="18.2" title="Instrumentation 层">
+        <p>一个薄 wrapper 给 harness 其余部分一个稳定接口。<strong>我们不把 <code>tracer.start_as_current_span(...)</code> 散落到每个模块</strong>，把它放在一个小 API 后面：</p>
+
+        <CodeBlock filename="src/harness/observability/tracing.py" lang="python">{`from __future__ import annotations
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Iterator
+from uuid import uuid4
+
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor, ConsoleSpanExporter, SpanProcessor,
+)
+from opentelemetry.trace import Tracer, Status, StatusCode
+
+
+_provider: TracerProvider | None = None
+
+
+def setup_tracing(
+    service_name: str = "agent-harness",
+    exporter: SpanProcessor | None = None,
+) -> None:
+    """Initialize OTel once per process."""
+    global _provider
+    if _provider is not None:
+        return                                            # idempotent
+
+    resource = Resource.create({"service.name": service_name})
+    _provider = TracerProvider(resource=resource)
+    _provider.add_span_processor(
+        exporter or BatchSpanProcessor(ConsoleSpanExporter())
+    )
+    trace.set_tracer_provider(_provider)
+
+
+@dataclass
+class SessionContext:
+    session_id: str = field(default_factory=lambda: str(uuid4()))
+    task_id: str = field(default_factory=lambda: str(uuid4()))
+    agent_id: str = "root"
+
+    def subagent(self, agent_id: str) -> "SessionContext":
+        return SessionContext(
+            session_id=self.session_id,
+            task_id=self.task_id,
+            agent_id=agent_id,
+        )
+
+
+def tracer() -> Tracer:
+    return trace.get_tracer("harness")
+
+
+@contextmanager
+def span(name: str, ctx: SessionContext, **attrs) -> Iterator[trace.Span]:
+    t = tracer()
+    with t.start_as_current_span(name) as s:
+        s.set_attribute("harness.session_id", ctx.session_id)
+        s.set_attribute("harness.task_id", ctx.task_id)
+        s.set_attribute("harness.agent_id", ctx.agent_id)
+        for k, v in attrs.items():
+            s.set_attribute(k, v)
+        try:
+            yield s
+        except Exception as e:
+            s.set_status(Status(StatusCode.ERROR, str(e)))
+            s.record_exception(e)
+            raise`}</CodeBlock>
+
+        <Callout kind="key" title="3 个设计点">
+          <div className="cards cols-3">
+            <Card title="SessionContext 是关联锚">
+              一个 session 里的每条 span 都共享 <code>session_id</code> + <code>task_id</code>。Sub-agent 有不同 <code>agent_id</code>，但<em>继承</em> session 和 task。<strong>这就是怎么得到"per-agent 成本归因"</strong>——下游按 <code>agent_id</code> 分组、<code>session_id</code> 固定。
+            </Card>
+            <Card title="span() 是 context manager">
+              <code>with span("name", ctx): ...</code>。<strong>一致处理错误传播、属性设置、OTel 生命周期</strong>。每个 instrumented 操作都这么写。
+            </Card>
+            <Card title="一次性 setup">
+              <code>setup_tracing()</code> 幂等；重复调是 no-op。<em>当 harness 跑在已 instrumented 的进程里（CI runner、web 服务）时这点很关键</em>。
+            </Card>
+          </div>
+        </Callout>
+      </Section>
+
+      <Section id="ch18-3" num="18.3" title="给 Loop 装上 instrumentation">
+        <p>Loop 拿到 3 类 span，对应 3 件事情：整个 run、每个 turn、每次工具调用。</p>
+
+        <CodeBlock filename="src/harness/agent.py（观测版）" lang="python">{`from .observability.tracing import SessionContext, span
+
+
+async def arun(
+    # ... 既有参数（含 Ch 5 chat-continuity 升级里的 transcript=None）
+    session_context: SessionContext | None = None,
+) -> str:
+    ctx = session_context or SessionContext()
+
+    with span("agent.run", ctx,
+              **{"harness.initial_user_message_len": len(user_message)}) as s:
+
+        if transcript is None:
+            transcript = Transcript(system=system)
+        transcript.append(Message.user_text(user_message))
+
+        for iteration in range(MAX_ITERATIONS):
+            with span("agent.turn", ctx,
+                      **{"harness.iteration": iteration}) as turn_span:
+
+                # compaction span
+                snapshot = accountant.snapshot(transcript, tools=registry.schemas())
+                turn_span.set_attribute("harness.context_utilization", snapshot.utilization)
+                if snapshot.state == "red":
+                    with span("agent.compact", ctx):
+                        await compactor.compact_if_needed(transcript, registry.schemas())
+
+                # LLM call span — GenAI semantic conventions
+                with span("gen_ai.completion", ctx,
+                          **{"gen_ai.system": provider.name}) as llm_span:
+                    response = await _one_turn(provider, registry, transcript, on_event)
+                    llm_span.set_attribute("gen_ai.usage.input_tokens", response.input_tokens)
+                    llm_span.set_attribute("gen_ai.usage.output_tokens", response.output_tokens)
+
+                if response.is_final:
+                    s.set_attribute("harness.final_iteration", iteration)
+                    transcript.append(Message.from_assistant_response(response))
+                    return response.text or ""
+
+                transcript.append(Message.from_assistant_response(response))
+
+                # 一条 tool.call span / dispatched 调用（batch turn 得 N 条）
+                for ref in response.tool_calls:
+                    with span("tool.call", ctx,
+                              **{"tool.name": ref.name}) as tool_span:
+                        result = await registry.adispatch(ref.name, ref.args, ref.id)
+                        tool_span.set_attribute("tool.is_error", result.is_error)
+                        tool_span.set_attribute("tool.result_chars", len(result.content))
+                        transcript.append(Message.tool_result(result))`}</CodeBlock>
+
+        <Callout kind="key">
+          Span 自然嵌套：<code>agent.run</code> 含 <code>agent.turn</code> 含 <code>gen_ai.completion</code> + <code>tool.call</code>。<strong>trace 可视化器把它画成 flame chart</strong>——一眼看哪个 turn 占时间、哪个 tool call 慢、哪次迭代触发了压缩。
+        </Callout>
+      </Section>
+
+      <Section id="ch18-4" num="18.4" title="Sub-agent 的 instrumentation">
+        <p>Sub-agent 拿自己的 <code>SessionContext</code>，<em>但共享 parent 的 session_id 和 task_id</em>：</p>
+
+        <CodeBlock filename="src/harness/subagents/spawner.py（观测版）" lang="python">{`async def spawn(self, spec: SubagentSpec, ...) -> SubagentResult:
+    parent_ctx = get_current_session_context()    # from a context var
+    sub_ctx = parent_ctx.subagent(agent_id=f"sub-{uuid4().hex[:8]}")
+
+    with span("subagent.spawn", sub_ctx,
+              **{"subagent.objective_preview": spec.objective[:200],
+                 "subagent.tools_allowed": ",".join(spec.tools_allowed)}):
+        # ... 用 sub_ctx 传到 arun 里跑 sub-agent`}</CodeBlock>
+
+        <Callout kind="note">
+          底层用 Python 的 <code>contextvars</code> 在调用栈中传播 context——<code>trace.get_current_span()</code> 给我们 OTel parent，但我们还要 harness 专属的 <code>SessionContext</code>。<em>用 contextvar 让 loop 在开始时 set、sub-agent 启动时 re-set</em>。
+        </Callout>
+      </Section>
+
+      <Section id="ch18-5" num="18.5" title="Traces 长什么样">
+        <p>任何例子前面加 console exporter：</p>
+        <CodeBlock filename="prepend to main()" lang="python">{`from harness.observability.tracing import setup_tracing
+setup_tracing()`}</CodeBlock>
+
+        <CodeBlock filename="console 输出" lang="json">{`{
+  "name": "agent.run",
+  "trace_id": "...",
+  "span_id": "a1b2c3d4",
+  "attributes": {
+    "service.name": "agent-harness",
+    "harness.session_id": "s-xyz",
+    "harness.task_id": "t-abc",
+    "harness.agent_id": "root",
+    "harness.final_iteration": 7
+  },
+  "duration_ms": 12340
+}
+{ "name": "agent.turn", "parent_id": "a1b2c3d4", ... }
+{ "name": "gen_ai.completion", "parent_id": "...",
+  "attributes": {
+    "gen_ai.system": "anthropic",
+    "gen_ai.usage.input_tokens": 3421,
+    "gen_ai.usage.output_tokens": 188
+  },
+  "duration_ms": 1230 }`}</CodeBlock>
+
+        <p>把 exporter 指向真后端：</p>
+        <CodeBlock filename="OTLP exporter" lang="python">{`# Langfuse / Braintrust / Datadog / Honeycomb / Jaeger 都接受 OTLP
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+setup_tracing(
+    exporter=BatchSpanProcessor(OTLPSpanExporter(
+        endpoint="https://your-backend/v1/traces",
+        headers={"Authorization": "Bearer ..."},
+    ))
+)`}</CodeBlock>
+
+        <Callout kind="key">
+          Harness 现在每次跑都产出<strong>结构化 traces</strong>——可视化、过滤、对比。回归调查长这样：找慢的 trace、展开 span 树、看到那次 12 秒的 tool call、看它的参数。
+        </Callout>
+      </Section>
+
+      <Section id="ch18-6" num="18.6" title="生产 dashboard 上重要的 metric">
+        <div className="cards cols-2">
+          <Card title="Per-agent token 成本随时间" kind="">
+            <code>gen_ai.usage.*</code> tokens 按 <code>harness.agent_id</code> 分组。<strong>某个 sub-agent 飙升会立刻显眼</strong>。
+          </Card>
+          <Card title="Tool call 错误率" kind="">
+            <code>tool.is_error = true</code> 的 <code>tool.call</code> span 百分比。<strong>持续上升 = 回归信号</strong>。
+          </Card>
+          <Card title="压缩频率" kind="">
+            每 session 的 <code>agent.compact</code> span 计数。<em>每回合都压缩 → 工具输出 size 或预算阈值有问题</em>。
+          </Card>
+          <Card title="Sub-agent 成败混合" kind="">
+            <code>subagent.spawn</code> span 的 error vs success 计数。<strong>特定目标的 sub-agent 开始失败更多 = 看到 prompt 漂移或模型漂移</strong>。
+          </Card>
+          <Card title="Trace 时长 p50/p99" kind="">
+            标准 latency SLO。Agent 工作平均很慢；<em>你关心 tail 和 trend</em>。
+          </Card>
+          <Card title="（这些都不是新代码）" kind="">
+            <strong>都是后端的 query，不是 harness 里自定义代码</strong>。Harness 发射，平台聚合。
+          </Card>
+        </div>
+      </Section>
+
+      <Section id="ch18-7" num="18.7" title="成本归因，具体来说">
+        <p>DEV Community 2025 那篇 <em>Your AI Agent Spent $500 Overnight and Nobody Noticed</em>——一个团队收到账单告警但<strong>没有任何诊断信号</strong>。没有 per-agent 归因；他们说不出哪个 agent 跑飞了。</p>
+
+        <p>我们的 instrumentation 回答这个。每条 <code>gen_ai.completion</code> span 带 <code>harness.agent_id</code>。生产 dashboard：</p>
+
+        <CodeBlock filename="一行 SQL" lang="sql">{`SELECT harness_agent_id, SUM(input_tokens + output_tokens) AS total_tokens
+FROM spans
+WHERE span_name = 'gen_ai.completion'
+  AND timestamp > NOW() - INTERVAL '1 hour'
+GROUP BY harness_agent_id
+ORDER BY total_tokens DESC`}</CodeBlock>
+
+        <CostAttributionDiagram />
+
+        <Callout kind="key">
+          <strong>一个跑飞的 agent 立刻显出来</strong>——一个 <code>agent_id</code> 是其它任何 agent 的 10×。在它上面告警；手动 kill session。<em>第 20 章自动化这个 kill。</em>
+        </Callout>
+      </Section>
+
+      <Section id="ch18-8" num="18.8" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 本地跑 Jaeger 可视化">
+            容器里起 Jaeger：<code>docker run -p 16686:16686 jaegertracing/all-in-one</code>。把 harness OTLP exporter 指过去。跑个多 agent 场景。打开 <code>http://localhost:16686</code> 浏览 trace 树。
+          </Card>
+          <Card title="② 找最慢的 span">
+            instrument 一个真实任务。看 trace。<strong>最长的 span 是什么</strong>？是你预期的吗？不是的话——它告诉了你什么？
+          </Card>
+          <Card title="③ 加一个对你重要的自定义属性">
+            选一个对你 use case 特定的 metric——检索命中数、计划完成的 step、retry 次数。<strong>挂到对的 span 上</strong>。建一个用它的 dashboard query。
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch18" questions={[
+        {
+          q: "为什么用 OTel trace 而不是 ad-hoc log？",
+          options: [
+            "性能更好",
+            "Trace 保留操作之间的父-子关系（嵌套 span 自然反映 run > turn > LLM/tool）+ 标准化属性 + 可插拔 exporter（dev console / prod Datadog 不改代码）",
+            "JSON 更易读",
+            "Python 标准库",
+          ],
+          right: 1,
+          explain: "Dapper 是分布式 trace 的奠基论文。每个现代追踪系统都是它的后代。GenAI 语义约定是在它之上叠的 agent 专属层。",
+        },
+        {
+          q: "SessionContext 里 sub-agent 跟 parent 共享什么？",
+          options: [
+            "什么都不共享",
+            "共享 session_id 和 task_id，但有不同 agent_id —— 这就是 per-agent 成本归因怎么实现的",
+            "全部共享",
+            "只共享 agent_id",
+          ],
+          right: 1,
+          explain: "下游按 agent_id 分组、session_id 固定，立刻得到每个 sub-agent 的成本。",
+        },
+        {
+          q: "为什么 setup_tracing() 必须幂等？",
+          options: [
+            "Python 习惯",
+            "Harness 可能跑在已 instrumented 的进程里（CI runner、web 服务）——重复初始化会覆盖既有 provider",
+            "性能优化",
+            "OTel 强制要求",
+          ],
+          right: 1,
+          explain: "幂等让 harness 库可以被嵌入而不冲突。第 22 章跑 multi-provider 演示时这一点显现。",
+        },
+        {
+          q: "$500 Overnight 那篇文章的具体痛点是什么？",
+          options: [
+            "GPU 故障",
+            "团队收到账单告警但没有诊断信号——'哪个 agent 跑飞了'答不出来。本章的 harness.agent_id 标签正面回答它",
+            "Provider 限流",
+            "code bug",
+          ],
+          right: 1,
+          explain: "Per-agent 成本归因 + 一行 SQL = 立刻看见跑飞的 agent。第 20 章把'告警'升级成'自动 kill'。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter18 = Chapter18;

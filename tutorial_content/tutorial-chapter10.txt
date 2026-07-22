@@ -1,0 +1,476 @@
+/* tutorial-chapter10.jsx — Chapter 10 full content: Retrieval */
+
+/* ─── Lost-in-the-Middle U-curve diagram ─── */
+function LostInMiddleDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 280" preserveAspectRatio="xMidYMid meet">
+        <text x={450} y={32} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          Lost-in-the-Middle：注意力在中间塌陷
+        </text>
+
+        {/* Axes */}
+        <line x1={80} y1={220} x2={820} y2={220} stroke="var(--ink)" strokeWidth="2" />
+        <line x1={80} y1={70} x2={80} y2={220} stroke="var(--ink)" strokeWidth="2" />
+
+        {/* U-curve */}
+        <path d="M 100 78 Q 200 100 290 165 T 470 175 T 650 90 Q 720 70 820 78"
+              fill="none" stroke="var(--accent-4)" strokeWidth="4"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+
+        {/* Annotated zones */}
+        <text x={150} y={62} fontFamily="var(--font-h)" fontSize="20" fill="var(--green)" textAnchor="middle" fontWeight="700">~90%</text>
+        <text x={150} y={246} fontFamily="var(--font-hand)" fontSize="16" fill="var(--ink-soft)" textAnchor="middle">start · 开头</text>
+        <text x={150} y={263} fontFamily="var(--font-hand)" fontSize="14" fill="var(--ink-faint)" textAnchor="middle">system prompt</text>
+
+        <text x={450} y={195} fontFamily="var(--font-h)" fontSize="20" fill="var(--red)" textAnchor="middle" fontWeight="700">~55%</text>
+        <text x={450} y={246} fontFamily="var(--font-hand)" fontSize="16" fill="var(--ink-soft)" textAnchor="middle">middle · 中间</text>
+        <text x={450} y={263} fontFamily="var(--font-hand)" fontSize="14" fill="var(--ink-faint)" textAnchor="middle">history（旧 turn）</text>
+
+        <text x={750} y={62} fontFamily="var(--font-h)" fontSize="20" fill="var(--green)" textAnchor="middle" fontWeight="700">~90%</text>
+        <text x={750} y={246} fontFamily="var(--font-hand)" fontSize="16" fill="var(--ink-soft)" textAnchor="middle">end · 结尾</text>
+        <text x={750} y={263} fontFamily="var(--font-hand)" fontSize="14" fill="var(--ink-faint)" textAnchor="middle">current turn</text>
+
+        <text x={55} y={150} fontFamily="var(--font-hand)" fontSize="14"
+              fill="var(--ink)" textAnchor="middle" transform="rotate(-90 55 150)">检索准确率</text>
+      </svg>
+      <div className="caption">把关键检索结果放在<strong>窗口两端</strong>——尾端优先。塞中间等于浪费 token。</div>
+    </div>
+  );
+}
+
+/* ─── Naive vs Agent-driven RAG ─── */
+function NaiveVsAgentRAGDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 290" preserveAspectRatio="xMidYMid meet">
+        {/* Naive */}
+        <text x={225} y={32} fontFamily="var(--font-h)" fontSize="20"
+              fill="var(--red)" textAnchor="middle" fontWeight="700">❌ 朴素 RAG：每回合自动检索</text>
+        {[
+          { x: 80,  label: "user 消息" },
+          { x: 200, label: "embed + 搜" },
+          { x: 320, label: "top-K 注入" },
+          { x: 440, label: "LLM 回答" },
+        ].map((s, i) => (
+          <g key={i}>
+            <rect x={s.x - 50} y={60} width={100} height={42} rx={8}
+                  fill="var(--paper-2)" stroke="var(--red)" strokeWidth="2"
+                  style={{ filter: "url(#sketchy-edge-soft)" }} />
+            <text x={s.x} y={85} fontFamily="var(--font-hand)" fontSize="15"
+                  fill="var(--ink)" textAnchor="middle">{s.label}</text>
+            {i < 3 && <SkArrow x1={s.x + 50} y1={81} x2={s.x + 70} y2={81} />}
+          </g>
+        ))}
+        <text x={225} y={130} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--ink-soft)" textAnchor="middle">
+            就算用户问"2+2"也会检索 · 拿到无关结果污染 context · 模型不知道发生了什么
+        </text>
+
+        {/* Agent-driven */}
+        <text x={680} y={32} fontFamily="var(--font-h)" fontSize="20"
+              fill="var(--green)" textAnchor="middle" fontWeight="700">✓ Agent 驱动：模型自己决定</text>
+        {[
+          { x: 530, label: "user 消息" },
+          { x: 650, label: "模型决定调 search_docs" },
+          { x: 800, label: "看结果 · 再 query 或答" },
+        ].map((s, i) => (
+          <g key={i}>
+            <rect x={s.x - 60} y={60} width={120} height={42} rx={8}
+                  fill="var(--paper-2)" stroke="var(--green)" strokeWidth="2"
+                  style={{ filter: "url(#sketchy-edge-soft)" }} />
+            <text x={s.x} y={77} fontFamily="var(--font-hand)" fontSize="13"
+                  fill="var(--ink)" textAnchor="middle">{s.label.split(' · ')[0]}</text>
+            {s.label.includes(" · ") && (
+              <text x={s.x} y={94} fontFamily="var(--font-hand)" fontSize="13"
+                    fill="var(--ink)" textAnchor="middle">{s.label.split(' · ')[1]}</text>
+            )}
+            {i < 2 && <SkArrow x1={s.x + 60} y1={81} x2={s.x + 80} y2={81} />}
+          </g>
+        ))}
+        <text x={680} y={130} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--ink-soft)" textAnchor="middle">
+            按需触发 · 看见 score · 失败可重 query · 也可以放弃说"找不到"
+        </text>
+
+        <line x1={50} y1={170} x2={850} y2={170} stroke="var(--rule)" strokeDasharray="4 3" />
+
+        <text x={450} y={200} fontFamily="var(--font-h)" fontSize="20"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          3 条纪律
+        </text>
+        <text x={150} y={232} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--ink)" textAnchor="middle" fontWeight="600">① Agent 驱动</text>
+        <text x={150} y={258} fontFamily="var(--font-hand)" fontSize="13"
+              fill="var(--ink-soft)" textAnchor="middle">由模型选何时检索</text>
+
+        <text x={450} y={232} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--ink)" textAnchor="middle" fontWeight="600">② Edge-placed</text>
+        <text x={450} y={258} fontFamily="var(--font-hand)" fontSize="13"
+              fill="var(--ink-soft)" textAnchor="middle">放窗口末端，注意力最高处</text>
+
+        <text x={750} y={232} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--ink)" textAnchor="middle" fontWeight="600">③ 显式成本</text>
+        <text x={750} y={258} fontFamily="var(--font-hand)" fontSize="13"
+              fill="var(--ink-soft)" textAnchor="middle">每次声明会加多少 token</text>
+      </svg>
+    </div>
+  );
+}
+
+/* ─── Chapter 10 ─── */
+function Chapter10() {
+  return (
+    <section className="chapter" id="ch10">
+      <h2 className="chapter-title">
+        <span className="ch-num">10</span>
+        检索
+      </h2>
+      <p className="chapter-meta">Retrieval　·　Agent 驱动的、放在窗口末端的、显式成本的 RAG</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：scratchpad 给了 agent 它<strong>自己产出</strong>的内容的 durable state。它没覆盖的是<em>agent 要读但不是它写的</em>：探索中的代码库、文档、一份比窗口本身还大的知识库。
+        <br /><br />
+        <strong>Retrieval 是 agent 在一个比 context 大的语料库上工作的方式</strong>。这个想法不新——Lewis et al. 2020 NeurIPS 那篇 <em>RAG</em> 就建立了"检索相关段落、注入 prompt、基于两者生成"的模式，所有生产检索系统都是它的后代。
+        <br /><br />
+        但多数实现错过了 2020 之后的研究让它无可回避的一个微妙点：<em>检索不只是"拿到对的内容"，还是"把对的内容放在对的位置"</em>。Lost-in-the-Middle 是经过量化的——<strong>一篇相关文档塞到 100K context 中间，得到的注意力比一份相关性更低但放在末尾的还少</strong>。<em>召回率完美、答案还是糟糕</em>，是可能的。
+      </div>
+
+      <Outcomes items={[
+        "BM25 索引：不要 vector DB、不要 embedding 模型——5000 文档秒级索引、毫秒级搜索",
+        "search_docs 工具：模型驱动、k 上限 10、结果含 doc_id + chunk_id + score",
+        "Edge placement 纪律：让 agent 把检索内容引用进自己的下一回合，自动落在窗口末端",
+        "显式成本字符串（'5 hits, ~3125 tokens'）——让模型感觉到检索的代价",
+      ]} />
+
+      <LostInMiddleDiagram />
+
+      <Section id="ch10-1" num="10.1" title="朴素 RAG 错在哪">
+        <p>经典模式：每个 user turn 都 embed 用户消息、搜 vector store、拿 top-K、prepend 到 prompt。<strong>多数教程到这里就停</strong>。</p>
+
+        <NaiveVsAgentRAGDiagram />
+
+        <div className="cards cols-3">
+          <Card title="① 不分需要不需要都检索" kind="bad">
+            一个简单算术 prompt 也触发 vector search；top-K 结果无关；模型现在 context 里有<strong>无关内容</strong>——按 context rot，这<em>降低</em>而不是提升输出。
+          </Card>
+          <Card title="② 位置错" kind="bad">
+            Prepend 到 system prompt 是最糟的位置——<strong>历史一累积就是窗口中间</strong>。U 形曲线咬人。
+          </Card>
+          <Card title="③ Agent 看不见" kind="bad">
+            搜得不好，模型不知道；它只知道 context 里有"奇怪的东西"。<strong>Agent 驱动的检索工具意味着 agent 决定、看见结果、可以用更好的词重 query</strong>。
+          </Card>
+        </div>
+      </Section>
+
+      <Section id="ch10-2" num="10.2" title="索引：BM25 而不是 vector">
+        <p>本书场景<strong>不需要 vector 数据库</strong>。一个 BM25 索引在文本文档目录上——足够准、足够快，并且<em>跑起来不需要网络调用、不需要 embedding 模型</em>。</p>
+
+        <Callout kind="key" title="BM25 不是简化版">
+          <p>BM25 评分函数追溯到 Robertson & Zaragoza 2009 的综述 <em>The Probabilistic Relevance Framework: BM25 and Beyond</em>，是数十年信息检索工作的浓缩。<strong>它不是 stopgap，是经典 IR 在关键词相关性上收敛到的算法</strong>，也是每个 embedding 检索器仍在 benchmark 的基准。</p>
+          <p>第 22 章讨论何时升级到 embedding 或 hybrid 检索；<em>1 万文档以下的多数 harness 不用它也 OK</em>。</p>
+        </Callout>
+
+        <CodeBlock filename="shell" lang="shell">{`uv add 'rank-bm25>=0.2.2'`}</CodeBlock>
+
+        <CodeBlock filename="src/harness/retrieval/index.py" lang="python">{`from __future__ import annotations
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from rank_bm25 import BM25Okapi
+
+
+def _tokenize(text: str) -> list[str]:
+    return re.findall(r"\\w+", text.lower())
+
+
+@dataclass
+class Chunk:
+    doc_id: str
+    chunk_id: int
+    text: str
+
+
+@dataclass
+class SearchHit:
+    chunk: Chunk
+    score: float
+
+
+class DocumentIndex:
+    """A BM25 index over text files in a directory.
+
+    Chunks files into ~500-token pieces with 50-token overlap.
+    """
+
+    def __init__(self, root: Path | str,
+                 chunk_tokens: int = 500, overlap: int = 50) -> None:
+        self.root = Path(root)
+        self.chunks: list[Chunk] = []
+        self._build(chunk_tokens, overlap)
+        tokenized = [_tokenize(c.text) for c in self.chunks]
+        self._bm25 = BM25Okapi(tokenized)
+
+    def _build(self, chunk_tokens: int, overlap: int) -> None:
+        for path in sorted(self.root.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, PermissionError):
+                continue
+            words = text.split()
+            for i, start in enumerate(range(0, len(words), chunk_tokens - overlap)):
+                chunk_text = " ".join(words[start:start + chunk_tokens])
+                if chunk_text.strip():
+                    self.chunks.append(Chunk(
+                        doc_id=str(path.relative_to(self.root)),
+                        chunk_id=i,
+                        text=chunk_text,
+                    ))
+
+    def search(self, query: str, k: int = 5) -> list[SearchHit]:
+        tokenized_query = _tokenize(query)
+        scores = self._bm25.get_scores(tokenized_query)
+        indexed = sorted(enumerate(scores), key=lambda x: -x[1])[:k]
+        return [SearchHit(chunk=self.chunks[i], score=s)
+                for i, s in indexed if s > 0]`}</CodeBlock>
+
+        <Callout kind="key" title="4 个设计选择">
+          <div className="cards cols-2">
+            <Card title="① 词级 chunk，~500 tokens，50 overlap">
+              本书场景够用。生产系统用 semantic chunking / sentence-aware splitters / 结构感知递归切。我们优化可读性而非 SOTA。<strong>Overlap 防止切边丢信息</strong>。
+            </Card>
+            <Card title="② BM25 不是 embedding">
+              BM25 是"加强版 TF-IDF"。<strong>在技术文档、代码、任何关键词富集的语料上效果惊人地好</strong>。Embedding 在语义相似（释义查询）上更好，但需要模型、向量库、网络。<em>本书索引 5K 文档秒级、查询毫秒级</em>——这才是这里该有的工程预算。
+            </Card>
+            <Card title="③ 过滤 0 分命中">
+              BM25 给每个 chunk 一个分，很多接近 0。返回它们会用"假装相关"的噪音污染 agent 的 context。我们 cap 在 k 并要求<strong>正分</strong>；query 匹配不到就<em>返回空</em>。
+            </Card>
+            <Card title="④ Chunk 携带 doc_id + chunk_id">
+              Agent 看见每条命中来自哪。它可以在推理里回引"<code>config.yaml</code> 的第三 chunk"；第 13 章的 viewport reader 也能把整段渲染出来。
+            </Card>
+          </div>
+        </Callout>
+      </Section>
+
+      <Section id="ch10-3" num="10.3" title="search_docs 工具">
+        <CodeBlock filename="src/harness/tools/retrieval.py" lang="python">{`from __future__ import annotations
+
+from ..retrieval.index import DocumentIndex
+from .base import Tool
+from .decorator import tool
+
+
+class RetrievalInterface:
+    def __init__(self, index: DocumentIndex) -> None:
+        self.index = index
+
+    def as_tools(self) -> list[Tool]:
+        idx = self.index
+
+        @tool(side_effects={"read"})
+        def search_docs(query: str, k: int = 5) -> str:
+            """Search the document corpus for chunks matching a query.
+
+            query: keywords or a short sentence describing what you're
+                   looking for.
+            k: number of hits to return (default 5, max 10).
+
+            Returns up to k hits, each with: doc_id, chunk_id, score, and
+            the chunk text. Chunks are ~500 tokens each; plan your context
+            budget before calling with k > 3.
+
+            Side effects: reads the in-memory index.
+            """
+            k = min(max(1, k), 10)
+            hits = idx.search(query, k=k)
+            if not hits:
+                return "(no results)"
+
+            lines: list[str] = []
+            total_chars = 0
+            for hit in hits:
+                c = hit.chunk
+                lines.append(
+                    f"\\n--- {c.doc_id}#{c.chunk_id} "
+                    f"(score={hit.score:.2f}) ---"
+                )
+                lines.append(c.text)
+                total_chars += len(c.text)
+
+            lines.append(
+                f"\\n[{len(hits)} hits, ~{total_chars} chars "
+                f"(~{total_chars // 4} tokens)]"
+            )
+            return "\\n".join(lines)
+
+        return [search_docs]`}</CodeBlock>
+
+        <Callout kind="key" title="工具描述里 3 条显式指令">
+          <ul style={{ margin: 0 }}>
+            <li><strong>点名成本</strong>："chunks are ~500 tokens each"</li>
+            <li><strong>上限 k</strong>：max 10</li>
+            <li><strong>结果最后一行带 token 估算</strong>：<code>[5 hits, ~12500 chars (~3125 tokens)]</code></li>
+          </ul>
+          <p>最后这行是<strong>刻意的</strong>。没有它，agent 没法<em>感觉到</em>检索的成本。有了它，模型学会：<em>"这次 query 我花了 3K token；下次该综合，而不是再检索"</em>。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch10-4" num="10.4" title="Edge placement——放在窗口末端">
+        <p>检索结果作为 <code>ToolResult</code> 回来，进 transcript 跟其它工具结果一样。<strong>到下一回合，它已经在 history 里某个位置</strong>。session 一长，它就在中间——最糟的位置。</p>
+
+        <h4 className="sub-title">解决方案：两条路</h4>
+
+        <CmpTable
+          headers={["谁来放", "做法", "代价"]}
+          rows={[
+            ["Agent 自己",        "Agent 在下一回合的推理里把命中<em>引用进自己的话</em>：「我找到：....基于此，我会...」。检索内容现在占据新鲜的 assistant-message 位置——窗口末端。",   "需要 agent 有这个纪律——靠 system prompt 教"],
+            ["Harness 自动",      "Harness 拦截检索结果，把它们作为'合成的最近消息'重新插入在下个 user turn 之前。",                                                                  "更侵入；可能让模型对'发生了什么'产生困惑"],
+          ]}
+        />
+
+        <Callout kind="key">
+          <p>本书选<strong>第一条</strong>，加一点辅助：工具结果<em>结构化好</em>，方便 agent 原封不动 lift 出来。</p>
+          <p>第 16 章的 structured plan 是同一模式的延伸——<strong>plan 是 agent 每回合都读的东西，它在末端是按构造保证的</strong>。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch10-5" num="10.5" title="一个场景">
+        <CodeBlock filename="examples/ch10_corpus.py" lang="python">{`SYSTEM = """\\
+You have a tool \`search_docs(query, k)\` that searches a corpus of
+documentation. Use it when the user asks questions that likely have answers
+in the docs, rather than guessing. Each result is ~500 tokens; prefer k=3
+or k=5 over k=10 unless you need breadth. After getting results, quote the
+relevant passages in your reasoning — do not rely on memory of them across
+many turns. If the first query is not useful, refine the query; do not
+give up after one search.
+"""
+
+
+async def main() -> None:
+    provider = AnthropicProvider()
+    index = DocumentIndex(root=Path("./docs-corpus"))
+    retriever = RetrievalInterface(index)
+    registry = ToolRegistry(
+        tools=[calc, read_file, write_file, *retriever.as_tools()]
+    )
+
+    await arun(
+        provider=provider, registry=registry, system=SYSTEM,
+        accountant=ContextAccountant(),
+        compactor=Compactor(ContextAccountant(), provider),
+        user_message=(
+            "Look through the docs and explain how retry budgets are "
+            "configured. Quote the relevant passage. If retry budgets "
+            "aren't documented, say so explicitly."
+        ),
+    )`}</CodeBlock>
+
+        <Callout kind="key">
+          指向任何含文档的目录跑。Agent 现在<em>query 索引</em>而不是凭空猜；query 弱时它用更好的词重试；语料里没有答案时它<strong>说没有</strong>——因为检索 chunk 里没提到 retry budget，而 agent 知道不该编造。
+        </Callout>
+      </Section>
+
+      <Section id="ch10-6" num="10.6" title="检索什么时候伤害你">
+        <div className="cards cols-3">
+          <Card title="Distractor 干扰" kind="bad">
+            Query 返回看起来相关但其实不相关的 chunk。模型抓住它们自信地<strong>错答</strong>。
+            <br /><br /><strong>缓解</strong>：抬高 score 阈值（本书过滤 score &gt; 0，可以抬到 0.5 或 1.0）；缩小 k；更好的 chunk 边界。<em>第 19 章的 eval 是你发现"自己语料应该用什么阈值"的方式</em>。
+          </Card>
+          <Card title="Query/文档错配" kind="bad">
+            用户问 "rate limiting"；文档写 "throttling"；BM25 不知道它们同义。
+            <br /><br /><strong>缓解</strong>：Embedding 索引能处理；BM25 要 agent 用更广的词重 query。<em>好的工具描述（"refine queries"）在这里帮上大忙</em>。
+          </Card>
+          <Card title="Top-K 内部冗余" kind="bad">
+            5 个命中里有 2 个是<em>重叠 chunk 的相同内容</em>。模型烧 token 在重复上。
+            <br /><br /><strong>缓解</strong>：retriever 内按 doc/chunk 邻近度去重，或加大 chunk size 减小 K。
+          </Card>
+        </div>
+      </Section>
+
+      <Section id="ch10-7" num="10.7" title="混合检索（为何不建）">
+        <p>生产检索系统通常把 BM25（关键词精度）和 embedding（语义召回）通过 reciprocal rank fusion 结合。harness 直接支持——把 <code>DocumentIndex</code> 换成 hybrid 实现、保留同样的 search 方法——<strong>但本书不需要</strong>。我们跑的场景是关键词富集的（技术文档、代码、配置），BM25 在那些上面占优。</p>
+
+        <h4 className="sub-title">什么时候应该切换</h4>
+        <CmpTable
+          headers={["场景", "为什么 BM25 不够"]}
+          rows={[
+            ["释义重度查询",  "用户问 'how do I make my agent remember things?'，文档写 'context persistence'"],
+            ["跨语言",        "查询一种语言、文档另一种语言"],
+            ["超短文档",      "推文、SMS、短 FAQ——BM25 在短文本上饿死，TF 分量没东西可用"],
+          ]}
+        />
+      </Section>
+
+      <Section id="ch10-8" num="10.8" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 索引这本书自己">
+            把 <code>DocumentIndex</code> 指向本书的 <code>chapters/</code>，问 agent："这个 harness 里 compaction 怎么工作？" 检索找到第 8 章了吗？<strong>没有的话——chunking 还是 query 错了？</strong>
+          </Card>
+          <Card title="② 压力测试">
+            索引 10000+ 文件的目录（克隆的开源项目）。计时索引构建和查询。可以接受吗？<strong>不行的话——你会先 profile 哪一段？</strong>
+          </Card>
+          <Card title="③ 建一个 distractor 测试">
+            索引两个目录——一个是 topic-A，一个是<em>无关</em> topic-B。问一个答案在 A 的问题。统计 B 的 chunk 出现在 top-5 的频率。<strong>这就是你的 distractor rate</strong>——告诉你要不要抬阈值或重写 chunk。
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch10" questions={[
+        {
+          q: "为什么本书用 BM25 而不是 vector embedding？",
+          options: [
+            "BM25 更新",
+            "1 万文档以下、关键词富集场景 BM25 性能/简洁度更好——无需 embedding 模型、网络、向量库；BM25 仍是所有 embedding 检索器的 benchmark",
+            "Anthropic 不支持 embedding",
+            "Python 难装",
+          ],
+          right: 1,
+          explain: "BM25 是经典 IR 收敛到的算法，不是简化版。Chapter 22 列出何时升级到 embedding/hybrid。",
+        },
+        {
+          q: "为什么不每回合自动检索（朴素 RAG）？",
+          options: [
+            "性能问题",
+            "① 不需要检索时也检索 → 无关内容污染 context（context rot）② 位置错（中间）③ agent 看不见——本书改成 agent 驱动、模型自己决定何时检索",
+            "Provider 不支持",
+            "字符串编码问题",
+          ],
+          right: 1,
+          explain: "朴素 RAG 的 3 个问题都源自'强加给系统'，agent 驱动把决策权还给模型。",
+        },
+        {
+          q: "为什么工具结果末尾要带 token 估算字符串？",
+          options: [
+            "用户喜欢看",
+            "让模型感觉到检索的代价——下次它会选'综合'而非'再检索'",
+            "Logging 需要",
+            "OpenAI 要求",
+          ],
+          right: 1,
+          explain: "好工具设计在结果里露出成本。Chapter 11 的 envelope 原则会把这一模式推广到所有可能大的工具结果。",
+        },
+        {
+          q: "Edge placement 的含义？",
+          options: [
+            "把工具放在文件末尾",
+            "让 agent 在自己下一回合的推理里把命中引用进自己的话——检索内容自动占据'最新 assistant message'位置（窗口末端）",
+            "把 system prompt 放最后",
+            "把 user message 移到末尾",
+          ],
+          right: 1,
+          explain: "这正是为什么 system prompt 要教模型 'After getting results, quote the relevant passages in your reasoning'。Plan 模式（Ch 16）是同一思想的延伸。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter10 = Chapter10;

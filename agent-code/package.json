@@ -1,0 +1,27 @@
+{
+  "name": "agent-code",
+  "version": "0.1.0",
+  "description": "A tutorial-built coding agent CLI",
+  "type": "module",
+  "bin": {
+    "agent-code": "./dist/cli/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

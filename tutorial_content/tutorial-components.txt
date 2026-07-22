@@ -1,0 +1,360 @@
+/* tutorial-components.jsx — Reusable bits: Term tooltip, CodeBlock, Quiz, Callout */
+
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+/* ───────────────────────────── Term tooltip ───────────────────────────── */
+function Term({ k, children }) {
+  const [open, setOpen] = useState(false);
+  const def = (window.GLOSSARY || {})[k];
+  if (!def) return <span>{children}</span>;
+
+  const onJumpToChapter = (num) => (e) => {
+    e.stopPropagation();
+    const el = document.getElementById("ch" + num);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  return (
+    <span
+      className="term"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onClick={() => setOpen(o => !o)}
+    >
+      {children}
+      {open && (
+        <span className="term-tooltip">
+          <b>{def.en}</b>
+          <br />
+          {def.body}
+          {def.chapters && def.chapters.length > 0 && (
+            <span className="term-chapters">
+              <span className="term-chapters-label">出现在：</span>
+              {def.chapters.map((n, i) => (
+                <span key={n}>
+                  <a className="term-chapter-pill" onClick={onJumpToChapter(n)}>第 {n} 章</a>
+                  {i < def.chapters.length - 1 ? " " : ""}
+                </span>
+              ))}
+            </span>
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/* ───────────────────────────── Prereqs banner ─────────────────────────────
+   Auto-detects the surrounding chapter from the DOM and shows its
+   prerequisite chapters as clickable pills.  Render once per chapter
+   near the top — typically right after <h2 class="chapter-title">. */
+function Prereqs() {
+  const ref = useRef(null);
+  const [chId, setChId] = useState(null);
+
+  useEffect(() => {
+    let el = ref.current;
+    while (el && !(el.classList && el.classList.contains("chapter"))) {
+      el = el.parentElement;
+    }
+    if (el) setChId(el.id);
+  }, []);
+
+  const prereqs = (window.PREREQUISITES || {})[chId];
+  if (!prereqs || !prereqs.recommended || prereqs.recommended.length === 0) {
+    return <div ref={ref} style={{ display: "none" }} />;
+  }
+  const list = window.CHAPTERS || [];
+
+  const jump = (n) => (e) => {
+    e.preventDefault();
+    const el = document.getElementById("ch" + n);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  return (
+    <div ref={ref} className="prereqs">
+      <span className="prereqs-label">📚 建议先读</span>
+      {prereqs.recommended.map(n => {
+        const c = list.find(x => x.num === n);
+        if (!c) return null;
+        return (
+          <a key={n} className="prereqs-pill" onClick={jump(n)} href={"#ch" + n}>
+            <span className="prereqs-num">{n}</span>
+            <span className="prereqs-title">{c.title}</span>
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ───────────────────────────── Code block ────────────────────────────── */
+/* Very lightweight Python-ish syntax highlighter */
+function highlight(src, lang = "python") {
+  const KW = new Set(["def","class","return","import","from","if","elif","else","for","while","try","except","raise","with","as","in","not","and","or","is","None","True","False","async","await","lambda","yield","pass","break","continue","self","match","case","__future__","annotations"]);
+  const BUILTIN = new Set(["str","int","dict","list","tuple","set","bool","print","len","range","dataclass","frozen","field","Protocol","Literal","Optional","Callable","Any"]);
+  // Tokenize a very loose way; output array of {t, v}
+  const out = [];
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    // comment
+    if (c === "#") {
+      let j = i; while (j < src.length && src[j] !== "\n") j++;
+      out.push({ t: "c", v: src.slice(i, j) }); i = j; continue;
+    }
+    // triple string
+    if (src.startsWith('"""', i)) {
+      let j = i + 3; while (j < src.length && !src.startsWith('"""', j)) j++;
+      j = Math.min(src.length, j + 3);
+      out.push({ t: "s", v: src.slice(i, j) }); i = j; continue;
+    }
+    // string
+    if (c === '"' || c === "'") {
+      const q = c; let j = i + 1;
+      while (j < src.length && src[j] !== q) { if (src[j] === "\\") j++; j++; }
+      j = Math.min(src.length, j + 1);
+      out.push({ t: "s", v: src.slice(i, j) }); i = j; continue;
+    }
+    // number
+    if (/[0-9]/.test(c)) {
+      let j = i; while (j < src.length && /[0-9._]/.test(src[j])) j++;
+      out.push({ t: "n", v: src.slice(i, j) }); i = j; continue;
+    }
+    // identifier / keyword
+    if (/[A-Za-z_]/.test(c)) {
+      let j = i; while (j < src.length && /[A-Za-z0-9_]/.test(src[j])) j++;
+      const word = src.slice(i, j);
+      const after = src[j];
+      if (KW.has(word)) out.push({ t: "k", v: word });
+      else if (after === "(") out.push({ t: "f", v: word });
+      else if (BUILTIN.has(word)) out.push({ t: "d", v: word });
+      else if (/^[A-Z]/.test(word)) out.push({ t: "d", v: word });
+      else out.push({ t: "", v: word });
+      i = j; continue;
+    }
+    // whitespace/punctuation
+    out.push({ t: "", v: c });
+    i++;
+  }
+  return out;
+}
+function CodeBlock({ filename, lang = "python", children, collapsible = true }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // Recursively pull text out of any React children — string, number, array,
+  // React element with .props.children. Without this, a stray React element
+  // (e.g. <code> inside a passed template) becomes "[object Object]" via
+  // String(element).
+  function extractText(node) {
+    if (node == null || node === false || node === true) return "";
+    if (typeof node === "string" || typeof node === "number") return String(node);
+    if (Array.isArray(node)) return node.map(extractText).join("");
+    if (typeof node === "object" && node.props && node.props.children !== undefined) {
+      return extractText(node.props.children);
+    }
+    return "";
+  }
+
+  const raw = extractText(children);
+  const src = raw.replace(/^\n+|\n+$/g, "");
+  const tokens = useMemo(() => highlight(src, lang), [src, lang]);
+  const copy = () => {
+    navigator.clipboard?.writeText(src).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    });
+  };
+  return (
+    <div className={"code-wrap" + (collapsed ? " collapsed" : "")}>
+      <div className="code-head">
+        <span className="filename">{filename || lang}</span>
+        <span className="actions">
+          {collapsible && (
+            <button onClick={() => setCollapsed(c => !c)}>
+              {collapsed ? "展开 ▾" : "收起 ▴"}
+            </button>
+          )}
+          <button onClick={copy}>{copied ? "已复制 ✓" : "复制"}</button>
+        </span>
+      </div>
+      <pre>
+        {tokens.map((tk, i) =>
+          tk.t ? <span key={i} className={"tok-" + tk.t}>{tk.v}</span> : tk.v
+        )}
+      </pre>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Callout ────────────────────────────── */
+function Callout({ kind = "note", icon, title, children }) {
+  const defaultIcon = { warn: "⚠", tip: "💡", key: "🔑", note: "✎" }[kind] || "✎";
+  return (
+    <div className={"callout " + kind}>
+      <div className="icon">{icon || defaultIcon}</div>
+      {title && <p><strong>{title}</strong></p>}
+      {children}
+    </div>
+  );
+}
+
+/* ─────────────────────────── Quiz ───────────────────────────────── */
+function Quiz({ chapter, questions }) {
+  const storeKey = "quiz:" + chapter;
+  const [answers, setAnswers] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(storeKey) || "{}"); }
+    catch { return {}; }
+  });
+  useEffect(() => {
+    localStorage.setItem(storeKey, JSON.stringify(answers));
+  }, [answers, storeKey]);
+
+  const pick = (qi, oi) => setAnswers(a => ({ ...a, [qi]: oi }));
+
+  const correctCount = questions.reduce((n, q, qi) => n + (answers[qi] === q.right ? 1 : 0), 0);
+
+  return (
+    <div className="quiz">
+      <h4>📝 章末自测  <span style={{ fontFamily: "var(--font-hand)", fontSize: 16, opacity: 0.7 }}>
+        {correctCount}/{questions.length}
+      </span></h4>
+      {questions.map((q, qi) => (
+        <div className="quiz-q" key={qi}>
+          <div className="q-text">{qi + 1}. {q.q}</div>
+          <div className="options">
+            {q.options.map((o, oi) => {
+              const picked = answers[qi] === oi;
+              let cls = "opt";
+              if (picked) cls += oi === q.right ? " right" : " wrong";
+              return (
+                <button key={oi} className={cls} onClick={() => pick(qi, oi)}>
+                  {String.fromCharCode(65 + oi)}. {o}
+                </button>
+              );
+            })}
+          </div>
+          {answers[qi] !== undefined && q.explain && (
+            <div className="explain">💭 {q.explain}</div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ─────────────────────────── Cards ──────────────────────────────── */
+function Card({ title, kind = "", children }) {
+  return (
+    <div className={"card " + kind}>
+      {title && <h5>{title}</h5>}
+      <div className="small">{children}</div>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Outcomes ───────────────────────────── */
+function Outcomes({ items }) {
+  return (
+    <div className="outcomes">
+      <ol>
+        {items.map((it, i) => <li key={i}>{it}</li>)}
+      </ol>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Section heading ────────────────────── */
+function Section({ id, num, title, children }) {
+  return (
+    <section className="section" id={id}>
+      <h3 className="section-title">
+        {num && <span className="section-anchor">§{num}</span>}{title}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+/* ─────────────────────────── Comparison table ───────────────────── */
+function CmpTable({ headers, rows }) {
+  return (
+    <table className="cmp-table">
+      <thead>
+        <tr>{headers.map((h, i) => <th key={i}>{h}</th>)}</tr>
+      </thead>
+      <tbody>
+        {rows.map((r, i) => (
+          <tr key={i}>{r.map((c, j) => <td key={j}>{c}</td>)}</tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/* ─────────────────────────── Divider ────────────────────────────── */
+function Divider() { return <div className="divider" />; }
+
+/* ─────────────────────────── ChapterNav ───────────────────────────
+   Auto-detects which chapter we're in by walking up the DOM, then
+   renders prev / next chapter links. Replaces a bare <Divider /> at
+   the end of every chapter — call as <ChapterNav /> with no props.
+*/
+function ChapterNav() {
+  const ref = React.useRef(null);
+  const [chId, setChId] = React.useState(null);
+
+  React.useEffect(() => {
+    let el = ref.current;
+    while (el && !(el.classList && el.classList.contains("chapter"))) {
+      el = el.parentElement;
+    }
+    if (el) setChId(el.id);
+  }, []);
+
+  const list = window.CHAPTERS || [];
+  const idx = list.findIndex(c => c.id === chId);
+  if (idx < 0) return <div ref={ref} className="divider" />;
+
+  const prev = idx > 0 ? list[idx - 1] : null;
+  const next = idx < list.length - 1 ? list[idx + 1] : null;
+
+  const onJump = (id) => (e) => {
+    e.preventDefault();
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  return (
+    <div ref={ref}>
+      <div className="divider" />
+      <nav className="chapter-nav">
+        {prev ? (
+          <a className="cnav cnav-prev" href={"#" + prev.id} onClick={onJump(prev.id)}>
+            <span className="cnav-arrow">←</span>
+            <span className="cnav-meta">
+              <span className="cnav-label">上一章</span>
+              <span className="cnav-title">第 {prev.num} 章 · {prev.title}</span>
+            </span>
+          </a>
+        ) : <span />}
+        {next ? (
+          <a className="cnav cnav-next" href={"#" + next.id} onClick={onJump(next.id)}>
+            <span className="cnav-meta">
+              <span className="cnav-label">下一章</span>
+              <span className="cnav-title">第 {next.num} 章 · {next.title}</span>
+            </span>
+            <span className="cnav-arrow">→</span>
+          </a>
+        ) : <span />}
+      </nav>
+    </div>
+  );
+}
+
+/* Export to window */
+Object.assign(window, {
+  Term, CodeBlock, Callout, Quiz, Card, Outcomes, Section, CmpTable, Divider, ChapterNav, Prereqs,
+});

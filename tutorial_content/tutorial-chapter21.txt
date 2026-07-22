@@ -1,0 +1,481 @@
+/* tutorial-chapter21.jsx — Chapter 21: Resumability and Durable State */
+
+/* ─── Crash-resume timeline diagram ─── */
+function CrashResumeTimelineDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 250" preserveAspectRatio="xMidYMid meet">
+        <text x={450} y={28} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          Crash-Resume 时间线
+        </text>
+
+        {/* Turns */}
+        {[
+          { x: 80,  label: "Turn 1",     state: "persisted",   color: "var(--green)" },
+          { x: 240, label: "Turn 2",     state: "persisted",   color: "var(--green)" },
+          { x: 400, label: "Turn 3",     state: "[CRASH]",     color: "var(--red)" },
+          { x: 580, label: "(同 turn)",   state: "resume",      color: "var(--accent-2)" },
+          { x: 740, label: "Turn 4",     state: "继续",        color: "var(--green)" },
+        ].map((t, i) => (
+          <g key={i}>
+            <rect x={t.x} y={70} width={120} height={64} rx={10}
+                  fill={`color-mix(in oklch, ${t.color} 14%, var(--paper-2))`}
+                  stroke={t.color} strokeWidth={t.state === "[CRASH]" ? 3 : 2}
+                  style={{ filter: "url(#sketchy-edge-soft)" }} />
+            <text x={t.x + 60} y={95} fontFamily="var(--font-h)" fontSize="17"
+                  fill={t.color} textAnchor="middle" fontWeight="700">{t.label}</text>
+            <text x={t.x + 60} y={117} fontFamily="var(--font-mono)" fontSize="13"
+                  fill={t.color} textAnchor="middle">{t.state}</text>
+            {i < 4 && <SkArrow x1={t.x + 120} y1={102} x2={t.x + 160} y2={102} />}
+          </g>
+        ))}
+
+        {/* Checkpoint layer */}
+        <text x={20} y={170} fontFamily="var(--font-h)" fontSize="14"
+              fill="var(--ink-soft)">checkpoint:</text>
+        <text x={140} y={170} fontFamily="var(--font-mono)" fontSize="12" fill="var(--accent-3)">v1</text>
+        <text x={300} y={170} fontFamily="var(--font-mono)" fontSize="12" fill="var(--accent-3)">v2</text>
+        <text x={460} y={170} fontFamily="var(--font-mono)" fontSize="12" fill="var(--red)">—</text>
+        <text x={640} y={170} fontFamily="var(--font-mono)" fontSize="12" fill="var(--accent-2)">load v2</text>
+        <text x={800} y={170} fontFamily="var(--font-mono)" fontSize="12" fill="var(--accent-3)">v3</text>
+
+        {/* Bottom: idempotency check */}
+        <rect x={400} y={195} width={400} height={36} rx={8}
+              fill="rgba(212,160,23,0.18)" stroke="var(--accent-3)" strokeWidth="2"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={600} y={218} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+            幂等 key 检查：跳过已完成的 side-effecting tool calls
+        </text>
+      </svg>
+      <div className="caption">每个 turn checkpoint transcript + plan + budget。Crash 后 idempotency key 防止重跑已 succeed 的 mutating 工具。</div>
+    </div>
+  );
+}
+
+/* ─── Chapter 21 ─── */
+function Chapter21() {
+  return (
+    <section className="chapter" id="ch21">
+      <h2 className="chapter-title">
+        <span className="ch-num">21</span>
+        可恢复与持久化
+      </h2>
+      <p className="chapter-meta">Resumability and Durable State　·　崩了不重跑、明天回来接着干</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：成本控制。Budget-enforced harness 不会跑飞。它<em>还做不到</em>的——<strong>从 crash 里活下来</strong>。机器重启、进程被 kill、笔记本合盖——session 没了。
+        <br /><br />
+        Agent harness 的 durability 有<strong>特定形状</strong>，跟数据库或 web 服务不同。3 个问题：
+      </div>
+
+      <div className="cards cols-3">
+        <Card title="① Turn 中 crash" kind="bad">
+          Harness 在 LLM 调用中或 tool 执行中死掉。<strong>restart 时我们要知道走到哪了，<em>而不重复 side-effecting 工作</em></strong>。
+        </Card>
+        <Card title="② 跨进程 restart" kind="bad">
+          用户明天回来。Harness 起新进程、读 checkpoint、接着干。<strong>完整 transcript、plan、scratchpad，全部 restore</strong>。
+        </Card>
+        <Card title="③ Side effect 幂等" kind="bad">
+          Crash 前 succeed 的 tool call 在 resume 时<strong>必须不重跑</strong>。收过一次的款，<em>不能再收一次</em>。
+        </Card>
+      </div>
+
+      <Callout kind="key" title="奠基论文：Pat Helland 2012">
+        <p>"Idempotence Is Not a Medical Condition" (ACM Queue) 仍是分布式系统幂等的经典论述。
+        Helland 的核心论点——<strong>任何要从 restart 活下来的系统都必须把每个 side-effecting 操作视为<em>可能被 replay</em>，并设计协议让 replay 是安全的</strong>——正是本章 <code>Checkpointer</code> 针对 agent tool dispatch 具体实现的原则。</p>
+        <p>LangGraph 的 <code>AsyncPostgresSaver</code> 是同模式的生产参考。<em>我们建 SQLite 版，因为它更易读，并且接口能不改代码端口到 Postgres——当你需要跨机器规模化时</em>。</p>
+      </Callout>
+
+      <CrashResumeTimelineDiagram />
+
+      <Outcomes items={[
+        "SQLite 后端 Checkpointer：sessions 表 + checkpoints 表（版本化）+ tool_calls 表",
+        "Write-before-execute：mutating 工具运行前先记意图、完成后记结果",
+        "幂等 key 模式：sha256(session_id + tool + args) → 同 session 同调用返回缓存结果",
+        "Verify-before-retry：resume 时检查 issued 但未 completed 的调用，按工具类型决定",
+        "Serde 模块：Block 的 kind 判别字段让反序列化变成 dispatch 表，不是猜测",
+      ]} />
+
+      <Section id="ch21-1" num="21.1" title="必须 checkpoint 什么">
+        <p>一个 session 的 durable 状态：</p>
+        <ol style={{ fontFamily: "var(--font-hand)", fontSize: "1.05em", lineHeight: 1.65 }}>
+          <li><strong>Transcript</strong>——每条 message、每个 block，带 ID 和时间戳</li>
+          <li><strong>Plan</strong>——当前 steps、postconditions、evidence 字符串</li>
+          <li><strong>Scratchpad</strong>——<em>已经</em>在磁盘上（§9.2），checkpointer 不记<em>关于</em>它的任何东西。<em>scratchpad 目录自己跨进程死亡</em>。如果你按 session 变 scratchpad root（一个 session_id 一个目录），在 session 元数据里记录这个 root；否则共享 root 也 OK，checkpointer 留在外面</li>
+          <li><strong>Budget</strong>——这个 session 到目前花了多少</li>
+          <li><strong>Tool-call log</strong>——发起了哪些 tool call、哪些完成了、哪些有 pending 结果</li>
+        </ol>
+
+        <Callout kind="key">
+          最后一条是新东西。Chapter 6 的 registry 持有 in-memory <code>_call_history</code> 做 loop 检测。<strong>为 resumability 我们需要<em>每个 side-effecting tool call 的持久记录</em>，带它的幂等状态</strong>。
+        </Callout>
+      </Section>
+
+      <Section id="ch21-2" num="21.2" title="Checkpointer schema">
+        <CodeBlock filename="src/harness/checkpoint/store.py（schema）" lang="python">{`SCHEMA = """
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    status TEXT NOT NULL    -- 'active', 'completed', 'failed', 'cancelled'
+);
+
+CREATE TABLE IF NOT EXISTS checkpoints (
+    session_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    transcript_json TEXT NOT NULL,
+    plan_json TEXT,
+    budget_spent_usd REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (session_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS tool_calls (
+    session_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    args_json TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    status TEXT NOT NULL,   -- 'issued', 'completed', 'failed'
+    result_text TEXT,
+    started_at TIMESTAMP NOT NULL,
+    completed_at TIMESTAMP,
+    PRIMARY KEY (session_id, call_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_calls_idempotency
+    ON tool_calls(idempotency_key);
+"""`}</CodeBlock>
+
+        <Callout kind="key" title="3 个值得名状的决定">
+          <div className="cards cols-3">
+            <Card title="版本化 checkpoint，不原地更新">
+              每次 <code>save_checkpoint</code> insert 一行新版本号。<strong>磁盘便宜；调试无价</strong>——session 最终答案错了时，加载任何更早的 checkpoint 看当时状态。
+            </Card>
+            <Card title="Tool-call log 独立表">
+              不在 checkpoint 里——<em>checkpoint 是对话快照，tool-call log 是 side-effect 记录</em>。<strong>更新频率不同、查询模式不同</strong>。
+            </Card>
+            <Card title="sessions 是身份，checkpoints 是内容">
+              第一个 user message 和 system prompt <em>不</em>在 sessions 上——它们是 <code>checkpoints[version=1].transcript_json</code> 的一部分。<strong>一个 session 是多轮对话——存"原始 user message"要选哪个？</strong>
+            </Card>
+          </div>
+        </Callout>
+      </Section>
+
+      <Section id="ch21-3" num="21.3" title="Write-Before-Execute for Side Effects">
+        <p><strong>幂等纪律</strong>。Mutating 工具运行<em>前</em>，记"我们要跑它了"。完成时，记结果。Resume 时查 log：<em>issued 但未 completed → 不知道到底执行了没</em>；<em>completed → 知道结果，<strong>不重跑</strong>，返回它</em>。</p>
+
+        <CodeBlock filename="src/harness/tools/registry.py（checkpoint-aware）" lang="python">{`@dataclass
+class ToolRegistry:
+    # ... existing fields
+    checkpointer: "Checkpointer | None" = None
+    session_id: str | None = None
+
+    async def adispatch(self, name: str, args: dict, call_id: str) -> ToolResult:
+        # ... existing validation, permission, loop checks
+
+        tool = self.tools[name]
+        is_mutating = "mutate" in tool.side_effects or "write" in tool.side_effects
+
+        idempotency_key = None
+        if is_mutating and self.checkpointer and self.session_id:
+            idempotency_key = self._compute_idempotency_key(name, args)
+
+            # 查同 key 的之前完成
+            prior = await self.checkpointer.find_completed_call(idempotency_key)
+            if prior is not None:
+                return ToolResult(
+                    call_id=call_id,
+                    content=(f"[idempotent replay of {prior['call_id']}]: "
+                             f"{prior['result_text']}"),
+                )
+
+            # 执行**之前**记录意图
+            await self.checkpointer.record_tool_call_issued(
+                self.session_id, call_id, name, args, idempotency_key
+            )
+
+        try:
+            content = tool.run(**args)
+            result = ToolResult(call_id=call_id, content=content)
+        except Exception as e:
+            result = ToolResult(
+                call_id=call_id,
+                content=f"{name} raised {type(e).__name__}: {e}",
+                is_error=True,
+            )
+
+        if is_mutating and self.checkpointer and self.session_id:
+            await self.checkpointer.record_tool_call_result(
+                self.session_id, call_id, result.content, not result.is_error
+            )
+
+        return result
+
+    def _compute_idempotency_key(self, name: str, args: dict) -> str:
+        import hashlib
+        payload = f"{self.session_id}:{name}:{json.dumps(args, sort_keys=True)}"
+        return hashlib.sha256(payload.encode()).hexdigest()`}</CodeBlock>
+
+        <Callout kind="key" title="Key 构造的设计">
+          <p>默认幂等 key = <code>sha256(session_id + tool_name + args)</code> 的 hash。
+          <em>同 session 内，<code>write_file(/tmp/plan.txt, "v1")</code> 调两次被视为一次操作</em>（第二次返回缓存结果）。
+          <strong>不同 session 之间不 dedup</strong>——两个 session 合法地都能写同一文件。</p>
+          <p>这是保守的。严格的 key 不含 session——"带这个 subject body 的 email，永远算一次操作"。<em>对真正幂等性在 vendor 侧的 email-like 工具，把 vendor 的幂等 key 作为 args 一部分传进来，让它进 hash</em>。</p>
+        </Callout>
+
+        <h4 className="sub-title">Verify-before-retry：resume 时怎么处理"未完成"调用</h4>
+
+        <CodeBlock filename="src/harness/checkpoint/resume.py" lang="python">{`async def check_pending_tool_calls(
+    checkpointer: Checkpointer, session_id: str,
+) -> list[dict]:
+    """返回 issued 但未 completed 的 tool calls —— 需要 verify。"""
+    async with checkpointer._lock:
+        rows = checkpointer._conn.execute("""
+            SELECT call_id, tool_name, args_json, started_at
+            FROM tool_calls
+            WHERE session_id = ? AND status = 'issued'
+        """, (session_id,)).fetchall()
+        return [dict(r) for r in rows]`}</CodeBlock>
+
+        <p>Resume 时根据工具的 side effect 处理：</p>
+
+        <CmpTable
+          headers={["工具类型", "Resume 怎么办"]}
+          rows={[
+            ["Read-only",   "<strong>丢弃</strong>——它没改任何东西；agent 需要时会重跑"],
+            ["Write / mutate", "harness 三选一：(a) 标记为 failed 让 agent 决定；(b) 调工具提供的 <code>verify</code> hook 检查 side effect 是否落地；(c) 上报用户手动 resolve"],
+          ]}
+        />
+
+        <Callout kind="note">
+          <strong>(b) 是工具支持时的最佳选项</strong>。给 <code>Tool</code> 数据类加一个可选 <code>verify</code> callable；resume 时 harness 调它、记录结果。
+        </Callout>
+      </Section>
+
+      <Section id="ch21-4" num="21.4" title="把 checkpoint 接入 loop">
+        <CodeBlock filename="src/harness/agent.py（checkpoint-aware sketch）" lang="python">{`async def arun(
+    # ... existing parameters
+    checkpointer: "Checkpointer | None" = None,
+    session_id: str | None = None,
+) -> str:
+    # ... setup
+
+    if checkpointer and session_id:
+        await checkpointer.start_session(session_id, user_message, system)
+
+    for iteration in range(MAX_ITERATIONS):
+        # ... turn 执行
+
+        if checkpointer and session_id:
+            await checkpointer.save_checkpoint(
+                session_id=session_id,
+                transcript=_serialize_transcript(transcript),
+                plan=_serialize_plan(plan_holder.plan) if plan_holder else None,
+                budget_spent_usd=budget_enforcer.spent_usd if budget_enforcer else 0.0,
+            )`}</CodeBlock>
+
+        <h4 className="sub-title">Serde —— 序列化和反序列化是 round-trip 的两侧</h4>
+
+        <CodeBlock filename="src/harness/checkpoint/serde.py" lang="python">{`from dataclasses import asdict
+from datetime import datetime
+from ..messages import (
+    Message, Transcript,
+    TextBlock, ReasoningBlock, ToolCall, ToolResult,
+)
+from ..plans.tools import Plan
+
+
+def _serialize_transcript(transcript: Transcript) -> list[dict]:
+    out: list[dict] = []
+    for msg in transcript.messages:
+        out.append({
+            "id": msg.id,
+            "role": msg.role,
+            "created_at": msg.created_at.isoformat(),
+            "blocks": [asdict(b) for b in msg.blocks],
+        })
+    return out
+
+
+def _deserialize_transcript(data: list[dict]) -> Transcript:
+    messages: list[Message] = []
+    for m in data:
+        blocks = [_deserialize_block(b) for b in m["blocks"]]
+        messages.append(Message(
+            id=m["id"],
+            role=m["role"],
+            created_at=datetime.fromisoformat(m["created_at"]),
+            blocks=blocks,
+        ))
+    return Transcript(messages=messages)
+
+
+def _deserialize_block(d: dict):
+    """**§3.2 的 kind 判别字段**把反序列化变成 dispatch 表，不是猜测。"""
+    kind = d["kind"]
+    if kind == "text":
+        return TextBlock(text=d["text"])
+    if kind == "reasoning":
+        return ReasoningBlock(text=d["text"], metadata=d.get("metadata", {}))
+    if kind == "tool_call":
+        return ToolCall(id=d["id"], name=d["name"], args=d["args"])
+    if kind == "tool_result":
+        return ToolResult(
+            call_id=d["call_id"],
+            content=d["content"],
+            is_error=d.get("is_error", False),
+        )
+    raise ValueError(f"unknown block kind: {kind!r}")
+
+
+def _serialize_plan(plan): return asdict(plan) if plan else None
+def _deserialize_plan(data): return Plan(**data) if data else None`}</CodeBlock>
+
+        <Callout kind="key">
+          没有什么聪明的——<strong>§3.2 的 block 判别字段为你买到的东西</strong>。每个 block 上的 <code>kind</code> 字段让反序列化是 dispatch 表、不是猜测。<code>dataclasses.asdict</code> 出门时帮我们 walk 嵌套 dataclass；<code>Plan(**data)</code> 回门时重建。
+          <br /><br />一个微妙点：<strong><code>created_at</code></strong>——<code>datetime</code> 默认不 JSON-round-trip，所以出门用 <code>.isoformat()</code>，回门用 <code>datetime.fromisoformat(...)</code>。
+        </Callout>
+
+        <h4 className="sub-title">Resume 例子</h4>
+
+        <CodeBlock filename="examples/ch21_resume.py" lang="python">{`async def main():
+    checkpointer = Checkpointer(".harness/sessions.db")
+    session_id = "session-alpha"
+
+    # 1. Side-effect verification —— 表面任何 mid-call 被中断的
+    pending = await check_pending_tool_calls(checkpointer, session_id)
+    if pending:
+        print(f"WARNING: {len(pending)} tool calls were interrupted mid-execution.")
+        for p in pending:
+            print(f"  - {p['call_id']} {p['tool_name']} {p['args_json']}")
+        # 生产里：跑验证工具或问用户后再继续
+
+    # 2. 从最新 checkpoint rehydrate 内存状态（如果有）
+    transcript: Transcript | None = None
+    plan_holder = PlanHolder()
+
+    latest = await checkpointer.load_latest(session_id)
+    if latest is not None:
+        print(f"Resuming session-alpha from checkpoint v{latest['version']}")
+        transcript = _deserialize_transcript(latest["transcript"])
+        if latest["plan"] is not None:
+            plan_holder.plan = _deserialize_plan(latest["plan"])
+    else:
+        print("Starting new session-alpha")
+
+    # 3. 通过 §5.5.1 的 transcript= 参数把 rehydrated 状态传进 arun
+    #    它**继续**对话，**不替换**用户的新 message
+    result = await arun(
+        provider=provider, catalog=catalog,
+        user_message="continue from where we left off",
+        transcript=transcript,         # ← rehydrated 或 None
+        plan_holder=plan_holder,        # ← rehydrated plan（可能空）
+        checkpointer=checkpointer,
+        session_id=session_id,
+    )
+    print(result.summary)`}</CodeBlock>
+
+        <Callout kind="key">
+          3 步，各自工作：<em>verify 中断的 side effects (§21.3)</em> · <em>用 deserializer rehydrate 内存对象</em> · <em>通过 arun 既有参数传入</em>。<strong>不需要新 arun 参数</strong>——<code>transcript=</code>（Ch 5）和 <code>plan_holder=</code>（Ch 16）已经是 resume 的缝，<em>这就是为什么书里早早把它们做成可选注入点</em>。
+          <br /><br />Harness 现在有跨进程死的<strong>记忆</strong>。配合 Ch 9 的 scratchpad（已经在磁盘 durable），你拥有<em>完整连续性</em>：对话状态从 SQLite 重建、plan 状态从 SQLite 重建、durable findings 已经在磁盘、in-flight side effects 幂等 replay。
+        </Callout>
+      </Section>
+
+      <Section id="ch21-5" num="21.5" title="选择你的 checkpoint cadence">
+        <p>我们每 turn 后 save。<strong>对多数 harness 是 defensible 的</strong>——turn 是自然的进度单位，几 KB 的 SQLite 写是微秒级。但对很短的 turn，每 turn checkpoint 开始<em>是 latency 的可测量比例</em>。</p>
+
+        <CmpTable
+          headers={["Cadence", "做法", "适合"]}
+          rows={[
+            ["Per turn（我们的默认）",   "每回合保存",                       "最大 durability；turn 100ms–几秒的 human-facing agent"],
+            ["Per tool call",            "更细——单个 long-running tool 之间也保存",  "希望 mid-turn resume 时；每 session 写更多"],
+            ["Periodic",                 "每 N turn 或 N 秒（LangGraph checkpointer 默认）",  "高吞吐 batch、可接受 partial-loss"],
+          ]}
+        />
+
+        <Callout kind="note">
+          接口（<code>save_checkpoint</code>）<strong>一样</strong>；caller 决定何时调。
+        </Callout>
+      </Section>
+
+      <Section id="ch21-6" num="21.6" title="准备好上 Postgres 时">
+        <p>Checkpointer 接口匹配 LangGraph 的。<strong>当你撑不住 SQLite 时（多机、高写入率），把 <code>Checkpointer</code> 换成 Postgres 后端实现</strong>。schema 几乎不变；connection handling 不同；<em>你传给 arun 的接口不变</em>。</p>
+
+        <Callout kind="key">
+          Postgres 实际给你什么：<strong>跨进程并发访问、跨机器网络访问、point-in-time restore、replication</strong>。
+          <br /><br /><em>day 1 都不需要；day 400 可能都需要</em>。
+        </Callout>
+      </Section>
+
+      <Section id="ch21-7" num="21.7" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① Crash and resume">
+            跑长 session，turn 4 后 kill 进程、重启 resume。<strong>确认新 session 加载了 previous transcript</strong>。确认所有 pending side-effecting tool 调用<em>要么 verified、要么安全重跑、要么上报</em>。
+          </Card>
+          <Card title="② 重复写测试">
+            写一个工具发"mock email"（打印一行到文件）。让 agent 发一封。<strong>用<em>相同参数</em>在同 session 再跑一遍——确认第二次返回缓存结果而不是第二封 email</strong>。
+          </Card>
+          <Card title="③ Corruption 审计">
+            session 完成后看 <code>checkpoints</code> 表。<strong>有多少版本？能从它们重建 session 演化吗？</strong>删掉中间一版——后续 resume 还 work 吗？（答：work，因为 resume 用 latest——但这告诉你恢复选项。）
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch21" questions={[
+        {
+          q: "为什么 sessions 表只存身份、checkpoints 表存内容（包含第 1 个 user message）？",
+          options: [
+            "性能",
+            "一个 session 是多轮对话——存'原始 user message'要选哪个？身份（session_id、status、timing）和内容（transcript、plan、budget）分表是干净的设计",
+            "schema 限制",
+            "SQLite 偏好",
+          ],
+          right: 1,
+          explain: "Sessions 是身份，checkpoints 是内容——多轮对话的 N 个 user message 都在 checkpoints[v_i].transcript_json 里。",
+        },
+        {
+          q: "幂等 key 的默认配方是什么？",
+          options: [
+            "随机 UUID",
+            "sha256(session_id + tool_name + json(args, sort_keys=True))——同 session 内同调用 dedup；不同 session 之间不",
+            "时间戳",
+            "tool_name 哈希",
+          ],
+          right: 1,
+          explain: "保守选择。要严格的（'同 subject body 永远算一次'），把 vendor 的幂等 key 当 args 传进 hash。",
+        },
+        {
+          q: "Resume 时如果 tool call 是 'issued' 但未 'completed'，怎么处理？",
+          options: [
+            "总是重跑",
+            "看 side effect：read-only 丢弃；write/mutate 三选一（标 failed 让 agent 决定 / 调工具的 verify hook / 上报用户）",
+            "总是跳过",
+            "拒绝 resume",
+          ],
+          right: 1,
+          explain: "Verify-before-retry 是协议。verify hook 是工具支持时的最佳选项——避免猜测。",
+        },
+        {
+          q: "为什么 Block 的 kind 判别字段对 resume 关键？",
+          options: [
+            "性能优化",
+            "让反序列化变成 dispatch 表（switch on kind）而不是猜测——§3.2 的 kind 字段在这里第二次回本",
+            "类型系统要求",
+            "Pythonic",
+          ],
+          right: 1,
+          explain: "整本书 'kind 判别' 是承重设计——adapter 翻译、压缩、observability、现在 serde 都靠它。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter21 = Chapter21;

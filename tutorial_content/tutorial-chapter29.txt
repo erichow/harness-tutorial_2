@@ -1,0 +1,508 @@
+/* tutorial-chapter29.jsx — Chapter 29 full content */
+
+function Chapter29() {
+  return (
+    <section className="chapter" id="ch29">
+      <h2 className="chapter-title">
+        <span className="ch-num">29</span>
+        用户界面与交互层
+      </h2>
+      <p className="chapter-meta">UI & Interaction　·　进度条、确认对话框、diff 视图、输入面板——让 agent 会"好好跟人说话"</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        到目前为止，agent 和用户的交互只有一个通道：终端里的流式文本输出。这够用，但远不够好。
+        <br /><br />
+        一个产品级的 coding agent 需要更丰富的交互原语：长时间操作时的进度反馈、文件变更前后的 diff 视图、需要用户输入的对话框、"总是允许"的记忆。这些不是"UI 层装饰"——它们是<strong>安全模型和安全体验的核心组成部分</strong>。
+      </div>
+
+      <Outcomes items={[
+        "理解 StreamEvent 通道如何承载 UI 事件——不是轮询，而是事件驱动",
+        "实现进度条、确认对话框、输入面板三个交互原语——作为模型可调用的工具",
+        "理解交互式 diff 视图的实现原理和上下文消耗",
+        "设计\u201C会话内记忆\u201D——用户的\u201C总是允许\u201D决策如何在 session 内保持",
+      ]} />
+
+      <Section id="ch29-1" num="29.1" title="交互不是 UI 层——它是工具的一部分">
+        <p>回顾 ch5 的 StreamEvent，我们再读一遍它的类型：</p>
+
+        <CmpTable
+          headers={["Event 类型", "生产者", "消费者"]}
+          rows={[
+            ["text", "Provider（模型流式输出）", "终端渲染"],
+            ["tool_call", "Agent Loop（dispatch 时）", "终端显示正在调用的工具"],
+            ["tool_result", "Tool handler（返回后）", "终端显示工具输出片段"],
+            ["error", "任何层", "终端错误显示"],
+            ["progress", "Tool handler（长任务时）", "进度条渲染"],
+            ["compaction", "Compactor", "终端显示压缩事件"],
+          ]}
+        />
+
+        <Callout kind="key">
+          <p><strong>重要的设计洞察：</strong>所有这些事件都是从<strong>模型/框架 → 用户</strong>的通道。但有些交互需要<strong>用户 → 模型/框架</strong>的通道——比如用户拒绝一个工具调用、编辑一个 commit message、回答 agent 的问题。<br />
+          双向交互需要两种不同的机制：StreamEvent（下行的框架→用户）和 UI 工具（上行的模型→框架→用户→框架）。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch29-2" num="29.2" title="进度条——让用户知道系统在工作">
+        <p>长时间操作时（编译、测试、大型文件搜索），用户需要知道"它在工作"而不是"它卡住了"。</p>
+
+        <CodeBlock filename="src/harness/tools/ui.ts" lang="typescript">{`import { type Tool } from "./types.js";
+import { type StreamEventEmitter } from "../stream/types.js";
+
+let eventEmitter: StreamEventEmitter | null = null;
+
+export function setUIEventEmitter(emitter: StreamEventEmitter): void {
+  eventEmitter = emitter;
+}
+
+export const showProgressTool: Tool = {
+  name: "show_progress",
+  description: "显示一个进度指示器。用于长时间运行的操作让用户知道进度。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      message: { type: "string", description: "进度描述" },
+      progress: {
+        type: "number",
+        description: "进度百分比 0–100",
+        minimum: 0,
+        maximum: 100,
+      },
+      status: {
+        type: "string",
+        enum: ["running", "completed", "failed"],
+        description: "状态（默认 running）",
+      },
+    },
+    required: ["message"],
+  },
+  handler(args: { message: string; progress?: number; status?: string }): string {
+    if (eventEmitter) {
+      eventEmitter.emit({
+        type: "progress",
+        message: args.message,
+        progress: args.progress ?? 0,
+        status: args.status ?? "running",
+        timestamp: Date.now(),
+      });
+    }
+
+    const symbol = args.status === "completed" ? "✅" :
+                   args.status === "failed" ? "❌" : "⏳";
+    return \`\${symbol} \${args.message}\${args.progress !== undefined ? \` (\${args.progress}%)\` : ""}\`;
+  },
+};`}</CodeBlock>
+
+        <p>对应的终端渲染器：</p>
+
+        <CodeBlock filename="src/cli/events.ts" lang="typescript">{`// 在 cliEventHandler 中添加:
+let progressLine = "";
+
+case "progress":
+  // 清除上一行进度条
+  if (progressLine) {
+    process.stdout.write("\\r" + " ".repeat(progressLine.length) + "\\r");
+  }
+  const bar = renderProgressBar(event.progress ?? 0);
+  progressLine = \`\${bar} \${event.message}\`;
+  if (event.status === "completed") {
+    console.log(\`\\n✅ \${event.message}\`);
+    progressLine = "";
+  } else {
+    process.stdout.write(progressLine);
+  }
+  break;
+
+function renderProgressBar(percent: number, width: number = 20): string {
+  const filled = Math.round((percent / 100) * width);
+  const empty = width - filled;
+  return \`[\${"█".repeat(filled)}\${"░".repeat(empty)}] \${percent}%\`;
+}`}</CodeBlock>
+
+        <Callout kind="tip" title="进度条的设计细节">
+          <p><strong>不要信任模型发的 progress 数值的准确性。</strong>模型可能发出"progress: 50"然后又"progress: 30"（倒退）或者"progress: 100"然后工具继续跑 10 秒。终端的渲染器应该单调递增进度并忽略倒退值，以及在进度到 100 后不立即消失（等 completed 事件）。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch29-3" num="29.3" title="确认对话框——安全门控的用户面">
+        <p>ch23 的 cliPermissionHandler 已经实现了基础的 y/n 确认。现在把它升级为模型也可触发的通用工具。</p>
+
+        <CodeBlock filename="src/harness/tools/ui.ts" lang="typescript">{`import { createInterface } from "node:readline/promises";
+
+export const confirmDialogTool: Tool = {
+  name: "confirm_dialog",
+  description: "向用户显示一个确认对话框，等待用户响应。适用于重要的操作前获取用户同意。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      message: {
+        type: "string",
+        description: "向用户展示的确认问题",
+      },
+      options: {
+        type: "array",
+        items: { type: "string" },
+        description: "可选选项（默认 ['y', 'n']）",
+      },
+      defaultResponse: {
+        type: "string",
+        description: "默认响应（按 Enter 时的选择）",
+      },
+    },
+    required: ["message"],
+  },
+  async handler(args: { message: string; options?: string[]; defaultResponse?: string }): Promise<string> {
+    const opts = args.options ?? ["y", "n"];
+    const defaultResp = args.defaultResponse ?? opts[0];
+    const prompt = \`\n\${args.message} (\${opts.join("/")}) [\${defaultResp}]: \`;
+
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    try {
+      const answer = await rl.question(prompt);
+      const trimmed = answer.trim().toLowerCase();
+      if (trimmed === "") return defaultResp;
+      return trimmed;
+    } finally {
+      rl.close();
+    }
+  },
+};
+
+export const inputDialogTool: Tool = {
+  name: "input_dialog",
+  description: "向用户显示一个输入框，获取自由文本输入。用于需要用户提供额外信息时。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      message: {
+        type: "string",
+        description: "向用户展示的输入提示",
+      },
+      defaultValue: {
+        type: "string",
+        description: "可选的默认值",
+      },
+      multiline: {
+        type: "boolean",
+        description: "是否允许多行输入（默认 false）",
+      },
+    },
+    required: ["message"],
+  },
+  async handler(
+    args: { message: string; defaultValue?: string; multiline?: boolean },
+  ): Promise<string> {
+    const prompt = \`\n✏️ \${args.message}\${args.defaultValue ? \` [\${args.defaultValue}]\` : ""}: \`;
+
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    try {
+      if (args.multiline) {
+        console.log(\`\n✏️ \${args.message}（输入空行结束）:\`);
+        const lines: string[] = [];
+        while (true) {
+          const line = await rl.question("");
+          if (line === "") break;
+          lines.push(line);
+        }
+        return lines.join("\n") || args.defaultValue || "";
+      }
+
+      const answer = await rl.question(prompt);
+      return answer.trim() || args.defaultValue || "";
+    } finally {
+      rl.close();
+    }
+  },
+};`}</CodeBlock>
+
+        <Callout kind="warn" title="对话框工具的滥用风险">
+          <p>模型可能会滥用 <code>confirm_dialog</code> 来骚扰用户（每步都问"可以吗？"）。<strong>建议的安全策略：</strong>每一回合最多允许一次 <code>confirm_dialog</code> 调用。更激进的版本：只允许在 <code>PermissionManager</code> 触发的确认流程中使用，不让模型自由调用。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch29-4" num="29.4" title="Diff 视图——让用户看到即将发生的变化">
+        <p>文件编辑是 coding agent 最核心也最危险的操作。一个好的 diff 视图让用户在变更执行前看到改动——能显著提升信任度。</p>
+
+        <CodeBlock filename="src/harness/tools/ui.ts" lang="typescript">{`export const showDiffViewTool: Tool = {
+  name: "show_diff_view",
+  description: "显示文件变更的差异对比。在文件编辑前调用，让用户预览即将发生的变化。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      filePath: {
+        type: "string",
+        description: "要展示 diff 的文件路径",
+      },
+      originalSnippet: {
+        type: "string",
+        description: "原始内容片段",
+      },
+      modifiedSnippet: {
+        type: "string",
+        description: "修改后的内容片段",
+      },
+      description: {
+        type: "string",
+        description: "变更的简要说明",
+      },
+    },
+    required: ["filePath", "originalSnippet", "modifiedSnippet"],
+  },
+  handler(args: {
+    filePath: string;
+    originalSnippet: string;
+    modifiedSnippet: string;
+    description?: string;
+  }): string {
+    const origLines = args.originalSnippet.split("\n");
+    const modLines = args.modifiedSnippet.split("\n");
+
+    // 生成一个简化的 unified diff 格式
+    const diffLines: string[] = [
+      \`\n--- 变更: \${args.filePath}\`,
+      args.description ? \`    说明: \${args.description}\` : "",
+      "┌─ 变更对比 ─────────────────────────────",
+    ];
+
+    const maxLines = Math.max(origLines.length, modLines.length);
+    for (let i = 0; i < maxLines; i++) {
+      const orig = i < origLines.length ? origLines[i] : "";
+      const mod = i < modLines.length ? modLines[i] : "";
+
+      if (orig === mod) {
+        diffLines.push(\`│  \${orig}\`);
+      } else {
+        if (orig) diffLines.push(\`│ -\${orig}\`);
+        if (mod) diffLines.push(\`│ +\${mod}\`);
+      }
+    }
+
+    diffLines.push("└───────────────────────────────────");
+
+    // 也通过 event emitter 发送，给前端渲染器处理
+    if (eventEmitter) {
+      eventEmitter.emit({
+        type: "ui_diff",
+        filePath: args.filePath,
+        original: args.originalSnippet,
+        modified: args.modifiedSnippet,
+        timestamp: Date.now(),
+      });
+    }
+
+    return diffLines.join("\n");
+  },
+};`}</CodeBlock>
+
+        <Callout kind="note" title="终端 diff 的局限性">
+          <p>终端的 diff 视图只能是纯文本。如果项目有 Web UI，可以考虑用 <code>diff2html</code> 库把 diff 渲染为 HTML，通过 event emitter 发送给前端。第 29 章只关注终端版本——Web UI 在 ch32 的扩展方向里提及。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch29-5" num="29.5" title="会话内记忆——\u201C总是允许\u201D的持久化">
+        <p>用户确认操作的"总是在本次会话中允许"决策需要在客户端持久化。实现很简单——一个 Map。</p>
+
+        <CodeBlock filename="src/cli/permissions.ts" lang="typescript">{`// 会话内"总是允许"缓存
+class SessionPermissionCache {
+  private cache = new Map<string, boolean>();
+
+  /** 检查是否已记忆 */
+  isRemembered(action: string, details?: string): boolean {
+    const key = this.buildKey(action, details);
+    return this.cache.has(key);
+  }
+
+  /** 记忆一个决策 */
+  remember(action: string, details: string | undefined, allowed: boolean): void {
+    const key = this.buildKey(action, details);
+    this.cache.set(key, allowed);
+  }
+
+  /** 获取缓存的决策 */
+  get(action: string, details?: string): boolean | undefined {
+    const key = this.buildKey(action, details);
+    return this.cache.get(key);
+  }
+
+  /** 重置所有记忆 */
+  reset(): void {
+    this.cache.clear();
+  }
+
+  private buildKey(action: string, details?: string): string {
+    // 对于工具调用，key 是 action + 截断的参数
+    // 只缓存同一类操作，不缓存具体参数
+    return \`\${action}::\${details?.slice(0, 100) ?? ""}\`;
+  }
+}
+
+const sessionCache = new SessionPermissionCache();
+
+export async function cliPermissionHandler(
+  req: PermissionRequest,
+): Promise<PermissionDecision> {
+  // 检查是否已记忆
+  const remembered = sessionCache.get(req.action, req.details);
+  if (remembered !== undefined) {
+    return { allowed: remembered, reason: "session-cached" };
+  }
+
+  const decision = await interactiveConfirm(req);
+
+  if (decision.remember) {
+    sessionCache.remember(req.action, req.details, decision.allowed);
+  }
+
+  return decision;
+}
+
+// 重置缓存——绑定到"不安全"命令或用户显式请求
+export function resetPermissionCache(): void {
+  sessionCache.reset();
+  console.log("🔄 权限记忆已重置。后续所有操作将重新确认。");
+}`}</CodeBlock>
+
+        <Callout kind="key" title="\u201C总是允许\u201D的范围很重要">
+          <p>"总是允许"应该绑定到<strong>操作类</strong>而不是具体命令。例如，用户允许 <code>run_command: ls -la</code>，不应该自动允许 <code>run_command: rm -rf /</code>。<br />
+          但 <code>run_command: ls src/</code> 和 <code>run_command: ls tests/</code> 应该共享同一个"总是允许"决策吗？这取决于你的安全策略。本章的实现以 action + 前 100 字符摘要作为 key，是一个合理的平衡点。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch29-6" num="29.6" title="思考模式——让思考可见">
+        <p>Claude Code 有一个"思考模式"——模型在给出答案前先展示推理过程。这可以通过 StreamEvent 实现：</p>
+
+        <CodeBlock filename="src/cli/events.ts" lang="typescript">{`// 在 cliEventHandler 中添加思考模式渲染
+let inThinkingBlock = false;
+
+case "thinking":
+  if (!inThinkingBlock) {
+    process.stdout.write("\n🤔 ");
+    inThinkingBlock = true;
+  }
+  process.stdout.write(event.delta);
+  break;
+
+case "thinking_end":
+  if (inThinkingBlock) {
+    process.stdout.write("\n\n");
+    inThinkingBlock = false;
+  }
+  break;
+
+case "text":
+  // 如果刚退出思考模式，加一个分隔
+  if (inThinkingBlock) {
+    process.stdout.write("\n\n");
+    inThinkingBlock = false;
+  }
+  process.stdout.write(event.delta);
+  break;`}</CodeBlock>
+
+        <Callout kind="tip" title="思考模式的双刃剑">
+          <p>思考模式让用户信任 agent（"我看到了它是怎么推理的"），但也可能让用户对简单的任务失去耐心。最佳实践：<strong>让思考模式可切换</strong>——默认显示简短思考，用户可以通过参数或对话命令切换详细/简洁模式。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch29-7" num="29.7" title="注册 UI 工具">
+        <CodeBlock filename="src/harness/tools/register.ts" lang="typescript">{`export function registerUITools(registry: ToolRegistry): void {
+  registry.register(showProgressTool);
+  registry.register(confirmDialogTool);
+  registry.register(inputDialogTool);
+  registry.register(showDiffViewTool);
+}`}</CodeBlock>
+
+        <p>在 main.ts 中连接事件发射器：</p>
+
+        <CodeBlock filename="src/cli/main.ts" lang="typescript">{`import { setUIEventEmitter } from "../harness/tools/ui.js";
+
+// 在 runAgentCLI 中:
+setUIEventEmitter({
+  emit(event) {
+    cliEventHandler(event);
+  },
+});`}</CodeBlock>
+      </Section>
+
+      <Section id="ch29-8" num="29.8" title="一个完整的交互流程">
+        <p>看看所有 UI 工具在真实场景中如何协同：</p>
+
+        <CodeBlock filename="terminal" lang="shell">{`Agent 已就绪。
+> 把 src/config.ts 中的 timeout 从 5000 改为 10000
+
+🤔 让我先找到 config.ts 文件，定位 timeout 配置…
+📖 读文件: src/config.ts — lines 15-20
+
+🔧 正在使用工具: show_diff_view
+┌─ 变更: src/config.ts ─────────────────────
+│  timeout: 5000,
+│ +timeout: 10000,
+└─────────────────────────────────────────
+
+✏️ 确认修改 config.ts? (y/n/a) [y]: y
+📝 应用编辑: src/config.ts
+
+✅ 已更新。需要我更新相关的测试文件吗？`}</CodeBlock>
+
+        <p>用户体验是平滑的——每个交互原语在恰当的时机出现：思考模式（🤔）展示推理过程；diff view 让用户预览变更；确认对话框让用户决策；进度条（如果编译）让用户知道系统在工作。</p>
+      </Section>
+
+      <Section id="ch29-9" num="29.9" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 手工触发所有 UI 工具">写出测试用例，分别调用 show_progress（三个阶段：running→50%→completed）、confirm_dialog、input_dialog、show_diff_view，观察终端输出。</Card>
+          <Card title="② 实验\u201C总是允许\u201D的边界">连续两次执行同一类操作，第一次选"a（总是允许）"，第二次观察是否自动通过。然后尝试一个不同参数的同类操作——应该通过还是被拦截？</Card>
+          <Card title="③ 设计一个\u201C紧凑模式\u201D">默认输出信息太多。设计一个 <code>--quiet</code> 模式——不显示 diff 对比，只显示"✅ 已修改 config.ts"这种一句话摘要。</Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch29" questions={[
+        {
+          q: "UI 工具（confirm_dialog, input_dialog）和普通工具（read_file, git_status）有什么本质区别？",
+          options: [
+            "UI 工具不需要 permission 检查",
+            "UI 工具需要用户输入——它们改变了交互方向：不是模型执行操作，而是模型请求用户提供信息",
+            "UI 工具只能在终端上运行",
+            "没有区别",
+          ],
+          right: 1,
+          explain: "普通工具是模型→外部系统（读文件、执行命令）。UI 工具是模型→用户→模型——模型需要用户输入才能继续。这种双向交互是 agent 产品最微妙的设计挑战。",
+        },
+        {
+          q: "为什么 show_progress 的渲染器应该单调递增进度值？",
+          options: [
+            "为了美观",
+            "因为模型输出的 token 可能被打乱，跳变的进度值会让用户困惑",
+            "因为进度不能倒退",
+            "因为渲染器处理不了递减",
+          ],
+          right: 1,
+          explain: "模型可能在思考过程中发出 progress: 50，然后继续思考后发出 progress: 30。渲染器应该展示实际进展，而不是模型的中间思考。终端渲染器应取值 max(当前值, 新值)。",
+        },
+        {
+          q: "\u201C总是允许\u201D的缓存在什么时候应该被清除？",
+          options: [
+            "从不",
+            "每个新回合",
+            "当用户显式请求、或执行了高风险操作（如 run_command 中的危险命令）",
+            "当文件发生变化时",
+          ],
+          right: 2,
+          explain: "”总是允许”让同一会话中的重复操作更流畅，但如果操作范围突然变化（从 ls 变为 rm -rf），之前的信任不应自动继承。需要用户显式重置才能清除已建立的安全信任。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter29 = Chapter29;

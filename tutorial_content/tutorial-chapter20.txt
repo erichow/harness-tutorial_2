@@ -1,0 +1,430 @@
+/* tutorial-chapter20.jsx — Chapter 20: Cost Control */
+
+/* ─── Cost-control stack diagram ─── */
+function CostStackDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 340" preserveAspectRatio="xMidYMid meet">
+        <text x={450} y={28} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          三件事按影响排序：缓存 · 路由 · 硬预算
+        </text>
+
+        {/* Caching */}
+        <text x={50} y={66} fontFamily="var(--font-h)" fontSize="18"
+              fill="var(--accent-3)" fontWeight="700">① 缓存</text>
+        <rect x={50} y={76} width={620} height={36} rx={8}
+              fill="rgba(212,160,23,0.25)" stroke="var(--accent-3)" strokeWidth="2"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={360} y={100} fontFamily="var(--font-mono)" fontSize="14"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          cached prefix · system + tool schemas + anchors
+        </text>
+        <rect x={670} y={76} width={150} height={36} rx={8}
+              fill="var(--paper-2)" stroke="var(--ink-soft)" strokeWidth="2"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={745} y={100} fontFamily="var(--font-mono)" fontSize="14"
+              fill="var(--ink)" textAnchor="middle">fresh suffix</text>
+        <text x={50} y={134} fontFamily="var(--font-hand)" fontSize="14"
+              fill="var(--ink-soft)">写：1.25× base · 读：0.1× base · 节省 ~80-90% 在 prefix 部分</text>
+
+        {/* Routing */}
+        <text x={50} y={172} fontFamily="var(--font-h)" fontSize="18"
+              fill="var(--accent-2)" fontWeight="700">② 模型路由</text>
+        {[
+          { x: 50,  label: "简单 → Haiku",   color: "var(--green)" },
+          { x: 280, label: "复杂 → Sonnet",  color: "var(--accent-3)" },
+          { x: 510, label: "硬 → Opus",      color: "var(--red)" },
+        ].map((r, i) => (
+          <g key={i}>
+            <rect x={r.x} y={186} width={210} height={36} rx={8}
+                  fill={`color-mix(in oklch, ${r.color} 18%, var(--paper-2))`}
+                  stroke={r.color} strokeWidth="2"
+                  style={{ filter: "url(#sketchy-edge-soft)" }} />
+            <text x={r.x + 105} y={210} fontFamily="var(--font-h)" fontSize="16"
+                  fill={r.color} textAnchor="middle" fontWeight="700">{r.label}</text>
+          </g>
+        ))}
+        <text x={50} y={244} fontFamily="var(--font-hand)" fontSize="14"
+              fill="var(--ink-soft)">measure-then-route：实测能恢复 40-60% 成本，不损质量</text>
+
+        {/* Hard budget */}
+        <text x={50} y={278} fontFamily="var(--font-h)" fontSize="18"
+              fill="var(--red)" fontWeight="700">③ 硬预算</text>
+        <rect x={50} y={290} width={770} height={36} rx={8}
+              fill="rgba(185,50,47,0.10)" stroke="var(--red)" strokeWidth="2"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={435} y={314} fontFamily="var(--font-mono)" fontSize="15"
+              fill="var(--red)" textAnchor="middle" fontWeight="700">
+          spent &gt;= cap → cancel task + raise BudgetExceeded
+        </text>
+      </svg>
+      <div className="caption">告警 ≠ 强制。<strong>$47K agent-loop 事故里告警一直在响——没人停它</strong>。这章里 BudgetEnforcer 在独立线程里 enforce。</div>
+    </div>
+  );
+}
+
+/* ─── Chapter 20 ─── */
+function Chapter20() {
+  return (
+    <section className="chapter" id="ch20">
+      <h2 className="chapter-title">
+        <span className="ch-num">20</span>
+        成本控制
+      </h2>
+      <p className="chapter-meta">Cost Control　·　告警是"已经超了"，强制是"现在停"</p>
+
+      <Prereqs />
+
+      <Callout kind="warn" title="📦 这一章会动 arun() 的签名和 AnthropicProvider——按这里迁移">
+        <p>本章给 <code>AnthropicProvider.__init__</code> 加了 <code>cache_enabled=True</code>（默认开），所以 Ch 3-19 的所有 <code>AnthropicProvider()</code> 实例化<strong>不需要改</strong>。但本章给 <code>arun()</code> 新加了可选参数 <code>budget_enforcer</code>。<em>不传依旧 work</em>；传了才启用本章的 BudgetEnforcer 保护。</p>
+        <p>如果你想给 Ch 7 的 ContextAccountant 演示加上预算上限，只需在 arun 调用里加 <code>budget_enforcer=BudgetEnforcer(max_usd=0.10)</code> 一行——其他全部不动。</p>
+      </Callout>
+
+      <div className="lead">
+        前情：evals 测正确性。<strong>Harness 里没东西封顶花费</strong>。
+        <br /><br />
+        DEV Community 2025.11 的 <strong>$47K agent-loop 事故</strong>：两个 agent 互相 ping-pong 请求 11 天；<em>告警一直在响，没人停它们</em>。告警不是 enforcement。
+        <br /><br />
+        本章按影响顺序解决 3 个成本问题：<strong>缓存 · 模型路由 · 硬预算</strong>。
+      </div>
+
+      <CostStackDiagram />
+
+      <Outcomes items={[
+        "Anthropic 显式 cache_control 标记：稳定 prefix 写 1.25× / 读 0.1× —— 一段 session 内 80-90% 节省",
+        "ModelRouter：按任务类型 / 输入长度 / 不确定性把 turn 路由到 Haiku/Sonnet/Opus",
+        "BudgetEnforcer：在一个独立 watchdog 任务里强制硬上限（不是告警）——超了就 cancel + raise",
+        "为什么 record() 既 raise 也 cancel —— 同时止住本 session 栈和 sibling 的 gather",
+      ]} />
+
+      <Section id="ch20-1" num="20.1" title="Anthropic 缓存，具体怎么做">
+        <p>Anthropic 显式 <code>cache_control</code> 标记是强力情况：你告诉 Anthropic 在哪里缓存，<strong>后续共享该 prefix 的调用按 0.1× input 成本读取</strong>（5 分钟 TTL）或 0.1× 配 2× 写成本（1 小时 TTL）。</p>
+
+        <Callout kind="warn" title="坑：1024 token 最小">
+          每个 cache breakpoint 至少 1024 tokens。<strong>低于这个 <code>cache_control</code> 被静默忽略</strong>——Anthropic prompt-caching 文档里最常被引的 gotcha 之一。
+          <br /><br />我们的稳定 prefix（system prompt + tool schemas）在本 harness 里常 1500-3000 tokens，<em>舒舒服服超过最小</em>。
+        </Callout>
+
+        <CodeBlock filename="src/harness/providers/anthropic.py（cache-aware 添加）" lang="python">{`def _to_anthropic_system(system: str | None, use_cache: bool):
+    if system is None:        return None
+    if not use_cache:         return system
+
+    # 结构化 system，最后一块带 cache_control
+    return [{
+        "type": "text",
+        "text": system,
+        "cache_control": {"type": "ephemeral"},   # 默认 TTL：5 分钟
+    }]
+
+
+class AnthropicProvider:
+    def __init__(self, model="claude-sonnet-4-6", client=None,
+                 cache_enabled=True) -> None:
+        self.model = model
+        self.cache_enabled = cache_enabled
+        # ... 其它不变
+
+    async def astream(self, transcript, tools):
+        kwargs = {
+            "model": self.model, "max_tokens": 4096,
+            "messages": [_to_anthropic(m) for m in transcript.messages],
+            "tools": _tools_with_cache(tools, self.cache_enabled),
+            "system": _to_anthropic_system(transcript.system, self.cache_enabled),
+        }
+        # ... 其余不变
+
+
+def _tools_with_cache(tools, enabled):
+    if not enabled or not tools:
+        return tools
+    # 最后一个 tool 标 cache_control：把到此为止的整个 tools 数组当一个 breakpoint cache
+    result = list(tools)
+    result[-1] = {**result[-1], "cache_control": {"type": "ephemeral"}}
+    return result`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>一个 breakpoint 在 tool schemas、一个在 system prompt。<strong>messages 列表本身——user turn、tool result——不被缓存，因为它每回合都变</strong>。被缓存的是<em>稳定 prefix</em>。</p>
+          <p>你的第一次调用<em>写</em> cache（略贵）；后续 5 分钟内共享同 prefix 的调用<em>从 cache 读</em>（便宜 10×）。一个跑 15 轮的 session = 14 次 cache 读 + 1 次写——<strong>prefix 部分约 80-90% 净成本下降</strong>。</p>
+        </Callout>
+
+        <Callout kind="warn" title="预算 cache miss——别假设">
+          <p>2026.3 Anthropic <em>静默</em>把默认 cache TTL 从 1 小时回退到 5 分钟（GitHub issue anthropics/claude-code#46829；见 byteiota 的事故 cache-TTL 分析）。预期 turn 间 cache 命中的 session 每回合都 miss，因为 TTL 已经掉到回合间隔之下；<strong>Claude Code Max quota 在 19 分钟内被耗光而不是几小时，观察到 17-32% 成本膨胀</strong>。</p>
+          <p><strong>教训：在生产里测 cache 命中率，不要假设</strong>。OTel 属性 <code>anthropic.cache_read_tokens</code>（如果 SDK 暴露）就是你追踪的东西。</p>
+        </Callout>
+
+        <Callout kind="note" title="构造函数的向后兼容">
+          这给 <code>AnthropicProvider.__init__</code> 加了一个参数（<code>cache_enabled=True</code>）。<em>从 Ch 5 起每个例子里的 <code>AnthropicProvider()</code> 和 <code>AnthropicProvider(model=..., client=...)</code> 调用继续不变 work，因为默认是开</em>——只有想关掉做 A/B 对比的 caller 才传 <code>cache_enabled=False</code>。
+        </Callout>
+      </Section>
+
+      <Section id="ch20-2" num="20.2" title="模型路由">
+        <p>某些 turn 比其它容易。一个 classifier turn——"这是什么类型的问题？"——不需要 Opus。一个 tool result summarization——"压缩这 50K-token 输出"——能跑 Haiku。<strong>路由降低 per-turn 平均成本，代价是每次调用前一个决策</strong>。</p>
+
+        <h4 className="sub-title">3 个路由信号（按回报大小）</h4>
+        <CmpTable
+          headers={["信号", "怎么用", "为什么先用它"]}
+          rows={[
+            ["任务类型",    "Classification / extraction / 简单查找 → 最便宜可用模型；代码生成 / 多步推理 → 旗舰",  "按 volume 60/40 是常见划分"],
+            ["输入长度",    "很长 context（&gt;100K tokens）经常需要 premium 模型——小模型在长 context 上掉准确率",   "反直觉但<strong>不是成本 gap 而是能力 gap</strong>"],
+            ["不确定性",    "便宜模型答案低置信 → 升级到 premium 二次意见",                                     "Self-Refine 的 evaluator-optimizer 模式，挪到成本"],
+          ]}
+        />
+
+        <CodeBlock filename="src/harness/cost/router.py" lang="python">{`Tier = Literal["economy", "mid", "premium"]
+
+
+@dataclass
+class ModelRouter:
+    economy: Provider
+    mid: Provider
+    premium: Provider
+
+    def choose(self, transcript: Transcript, task_hint: str | None = None) -> Provider:
+        """根据下一回合大概需要什么挑 provider。"""
+
+        # 启发式 1：长 context 走 premium
+        approx_tokens = sum(
+            len(m.blocks[0].__dict__.get("text", "") or "")
+            for m in transcript.messages if m.blocks
+        ) // 4
+        if approx_tokens > 50_000:
+            return self.premium
+
+        # 启发式 2：任务类型 hint
+        if task_hint in ("classify", "extract", "summarize"):
+            return self.economy
+        if task_hint in ("code", "plan", "reason"):
+            return self.premium
+
+        # 默认：中档
+        return self.mid`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>这是规则版 router——简单显式。生产 router 会更复杂（学习分类器、不确定性估计）但<em>原则一样</em>。</p>
+          <p>Router 自己<strong>不</strong>是 <code>Provider</code>；它在 provider 之间挑。Loop 调 <code>router.choose(transcript).astream(...)</code> 而非 <code>provider.astream(...)</code>。</p>
+        </Callout>
+
+        <Callout kind="warn" title="什么时候路由反而伤你">
+          Gitar 2025 <em>We switched to a 5× cheaper LLM and our costs went up</em> 把陷阱说清：<strong>便宜模型产出更差的 tool JSON 可能需要更多 retry、更多 turn，最终比直接用贵的还贵</strong>。
+          <br /><br />Fix 是<em>测量</em>：你的 evals 应该带着 router 跑。<strong>每个 passing case 的 cost 上升了 → 路由错了</strong>。
+        </Callout>
+
+        <h4 className="sub-title">先调"思考力度"再升级模型</h4>
+        <p>Reasoning effort 是比换模型<em>更便宜</em>的旋钮。从 Sonnet 升 Opus 之前先试 Sonnet + <code>enable_thinking=True</code>（Anthropic）或 GPT-5 + <code>reasoning_effort="high"</code>（OpenAI Responses）。Reasoning tokens 按 output 计费，所以<strong>成本提升被 thinking_budget_tokens 或 effort 等级 bound 住</strong>，并且你保持便宜模型。<em>好的 router 在考虑 tier 之前先考虑 effort</em>。</p>
+      </Section>
+
+      <Section id="ch20-3" num="20.3" title="BudgetEnforcer（三件里最难、不可缺）">
+        <p>三件里最难的，<strong>少了它另外两件都是装饰</strong>。一个跑飞的 loop 在<em>内层</em>生成成本，不是 turn 边界——在 turn 起点的 enforcement 检查不能停掉正在跑的 turn。</p>
+
+        <Callout kind="key" title="能 work 的模式：在独立任务里强制">
+          <p>主 loop 跑 agent。一个 watchdog 跟踪 session 成本；上限被达到时，它 cancel 主任务。</p>
+        </Callout>
+
+        <CodeBlock filename="src/harness/cost/enforcer.py" lang="python">{`class BudgetExceeded(Exception):
+    pass
+
+
+@dataclass
+class BudgetEnforcer:
+    max_usd: float                    # 硬性 session 上限
+    alert_thresholds: list[float] = field(default_factory=lambda: [0.5, 0.8])
+    spent_usd: float = field(default=0.0, init=False)
+    alerted: set[float] = field(default_factory=set, init=False)
+    _cancelled_task: "asyncio.Task | None" = field(default=None, init=False)
+
+    def attach_task(self, task: asyncio.Task) -> None:
+        self._cancelled_task = task
+
+    def record(self, input_tokens: int, output_tokens: int, model: str) -> None:
+        cost = self._price(model, input_tokens, output_tokens)
+        self.spent_usd += cost
+
+        for t in self.alert_thresholds:
+            if t not in self.alerted and self.spent_usd / self.max_usd >= t:
+                self.alerted.add(t)
+                print(f"[BUDGET WARNING] {self.spent_usd:.2f} / {self.max_usd:.2f} "
+                      f"({t*100:.0f}% reached)")
+
+        if self.spent_usd >= self.max_usd:
+            self._halt()
+
+    def _halt(self) -> None:
+        if self._cancelled_task and not self._cancelled_task.done():
+            print(f"[BUDGET HALT] {self.spent_usd:.2f} exceeds {self.max_usd:.2f}; cancelling session")
+            self._cancelled_task.cancel()
+        raise BudgetExceeded(
+            f"session budget budget {self.max_usd} exceeded: {self.spent_usd:.2f}"
+        )
+
+    def _price(self, model: str, in_toks: int, out_toks: int) -> float:
+        # 2026.4 价格。把它移到带日期的 appendix 或配置文件，
+        # 不要让它在 harness 代码里腐烂。
+        prices = {
+            "claude-sonnet-4-6": (3.0,  15.0),
+            "claude-opus-4-6":   (5.0,  25.0),
+            "claude-haiku":      (0.8,   4.0),
+            "gpt-5":             (1.25, 10.0),
+            "gpt-5.2":           (1.75, 14.0),
+            # local / free providers —— 零价让 Ch 7-17 的 LocalProvider demo
+            # 不要日志成虚假的 Opus 价
+            "local":             (0.0,  0.0),
+            "stub":              (0.0,  0.0),
+        }
+        # 未知模型 fallback：Opus tier，刻意的。**未知 provider 高报成本好过低报**。
+        in_rate, out_rate = prices.get(model, (5.0, 25.0))
+        return (in_toks * in_rate + out_toks * out_rate) / 1_000_000`}</CodeBlock>
+
+        <Callout kind="key" title="为什么同时 cancel() 和 raise">
+          <p><strong>raise</strong>：<code>record()</code> 同步跑在 loop 自己的栈里——<code>raise BudgetExceeded</code> 是真正停掉本 session 的东西：它沿 <code>record()</code> → arun loop → caller 的 <code>await arun(...)</code> 上传。</p>
+          <p><strong>cancel()</strong>：是为<em>另一个场景</em>留的——当 parent coroutine 在 <code>await asyncio.gather(...)</code> 多个 agent 时（§17.4 的并行 spawner）。<code>raise</code> 停掉这条栈，但<strong>sibling session 跑在其它任务上会继续烧 token</strong>直到它们自己的 turn 结束。<code>cancel()</code> 把 <code>asyncio.CancelledError</code> 传播到 sibling，让它们也停。</p>
+          <p>Caller 把 <code>await arun(...)</code> 包在 try/except 里同时抓 <code>BudgetExceeded</code>（本 session 撞 cap）和 <code>asyncio.CancelledError</code>（sibling 撞 cap 把我们也带下来）。</p>
+        </Callout>
+
+        <Callout kind="warn" title="未知模型 fallback 的副作用">
+          <p><code>prices.get(model, (5.0, 25.0))</code> 把不在表里的全当 Opus tier。这是<strong>刻意的安全选择</strong>——对未知 provider 低报成本比高报危险——但意味着<em>adapter 名字不在表里时（一个用户加的 <code>GroqProvider.name == "groq"</code>）会日志成虚高成本，直到你加一行</em>。</p>
+          <p><strong><code>provider.name = "something"</code> 出现 bewildering bill 时，第一个嫌疑人是表里缺行，不是真的 overrun</strong>。<code>"local"</code> 和 <code>"stub"</code> 预设为零正是为了让本书自己的 LocalProvider demo（Ch 7、8、12、17）不产生误导成本数字。</p>
+        </Callout>
+
+        <CodeBlock filename="src/harness/agent.py（budget-aware sketch）" lang="python">{`async def arun(..., budget_enforcer: "BudgetEnforcer | None" = None) -> str:
+    current = asyncio.current_task()
+    if budget_enforcer and current:
+        budget_enforcer.attach_task(current)
+
+    # ... 既有 setup
+    for _ in range(MAX_ITERATIONS):
+        # ... turn 执行
+        response = await _one_turn(...)
+        if budget_enforcer:
+            budget_enforcer.record(
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                model=provider.name,
+            )
+        # ... continue`}</CodeBlock>
+
+        <Callout kind="note">
+          一个微妙处：<code>record()</code> 在每 turn 之后同步触发。一个本身 10 秒、产 100K output token 的 turn <em>在 record 跑之前就已经贵了</em>。对多数情况没问题——下个 turn 被 halt。对一个 turn 单独就破预算的病理情况，你要加流式 enforce 看 output token 到达时的状态。<em>本书不建；turn 边界硬 cap 接住 95% 的真实 runaway 模式</em>。
+        </Callout>
+      </Section>
+
+      <Section id="ch20-4" num="20.4" title="拼一起">
+        <CodeBlock filename="examples/ch20_cost_controlled.py" lang="python">{`async def main() -> None:
+    # 真实部署中 router 在 Haiku / Sonnet / Opus 之间挑。
+    # 这里用一个 provider 简化，但演示 enforcer。
+    provider = AnthropicProvider(cache_enabled=True)
+    catalog = ToolCatalog(tools=STANDARD_TOOLS)
+
+    enforcer = BudgetEnforcer(max_usd=0.50)
+
+    try:
+        await arun(
+            provider=provider, catalog=catalog,
+            user_message="Investigate the machine: OS, CPU, memory, disk.",
+            budget_enforcer=enforcer,
+        )
+    except BudgetExceeded as e:
+        # 本 session 撞 cap；record() 在我们自己栈上 raise
+        print(f"Session terminated: {e}")
+    except asyncio.CancelledError:
+        # Sibling session（gather-based 并行 spawn 里）撞 cap，
+        # enforcer 把我们也 cancel 了。见 §20.3 的"为什么同时 cancel + raise"
+        print(f"Session cancelled by budget enforcer at \${enforcer.spent_usd:.2f}")
+
+    print(f"Total spent: \${enforcer.spent_usd:.4f}")`}</CodeBlock>
+
+        <Callout kind="key">
+          50 美分 cap。<strong>典型跑远低于；degenerate 情况（agent 进入 loop）cap 触发</strong>——你拿到 traceback 含已花金额，并且<em>不再继续花</em>。
+        </Callout>
+      </Section>
+
+      <Section id="ch20-5" num="20.5" title="生产 cost dashboard 长什么样">
+        <p>有 Ch 18 的 per-agent 归因 + 本章的成本追踪，<strong>生产 dashboard 显示</strong>：</p>
+
+        <div className="cards cols-2">
+          <Card title="Per-session 总成本，直方图">
+            多数 session 聚集；<strong>outlier 要么病理要么合法贵</strong>。调查 tail。
+          </Card>
+          <Card title="按 task type 的成本">
+            路由评估：<strong>你在'classify' 任务上付的比应该的多吗？</strong>路由规则错了。
+          </Card>
+          <Card title="Cache hit 率随时间">
+            <strong>突然下降是 provider 侧回归</strong>——2026.3 Anthropic 事故几小时内就会在这里显出来。
+          </Card>
+          <Card title="Budget-halt 事件">
+            每次 <code>_halt()</code> 触发，log 它。<strong>Halt 数飙升 = 要么预算太紧、要么 harness 有回归</strong>。
+          </Card>
+        </div>
+
+        <Callout kind="key">
+          这些都不需要新代码——<strong>都是 OTel trace 上的 query 加 enforcer 日志的事件</strong>。
+        </Callout>
+      </Section>
+
+      <Section id="ch20-6" num="20.6" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 测量 cache 有效性">
+            5 分钟内跑同一个任务 3 次，<em>cache 开/关各跑</em>。对比 input-token 成本。<strong>差额就是 cache 命中率</strong>。
+          </Card>
+          <Card title="② 强制 runaway">
+            给 agent 一个会循环的 prompt（永远不能满足 plan 的坏工具）。设小预算（$0.05）。<strong>确认 enforcer halt session</strong>。超预算了多少——halt 多晚？
+          </Card>
+          <Card title="③ A/B router">
+            带 router 跑 eval suite，再用 premium-only provider 跑。对比 cost per passing case、correctness、latency。<strong>路由没在三方面都赢 → 你的启发式要调</strong>。
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch20" questions={[
+        {
+          q: "Anthropic 显式 cache 的 1024-token 最小有什么意义？",
+          options: [
+            "性能优化",
+            "<1024 token 的 cache_control 被静默忽略——这是最常被引的 gotcha。本书的稳定 prefix（system + tool schemas）通常 1500-3000，舒服超过",
+            "API 限制",
+            "Python 字符串长度",
+          ],
+          right: 1,
+          explain: "静默忽略意味着你以为在用 cache 实际在付全价。生产里通过 anthropic.cache_read_tokens span 属性监控真实命中率。",
+        },
+        {
+          q: "为什么 BudgetEnforcer.record() 既 cancel 又 raise？",
+          options: [
+            "防御性编程习惯",
+            "raise 停掉本 session 的栈（同步），cancel() 把 CancelledError 传到 sibling 的 gather 让它们也停——只 raise 时 sibling 会继续烧 token",
+            "Python 异步必须这样",
+            "向后兼容",
+          ],
+          right: 1,
+          explain: "并行 spawn（§17.4）的关键场景：一个 sibling 撞 cap，其它必须立刻停。两个机制不是冗余。",
+        },
+        {
+          q: "为什么未知模型 fallback 是 Opus tier（5.0, 25.0）？",
+          options: [
+            "默认最强",
+            "刻意的安全选择——未知 provider 高报成本好过低报。代价：新加的 provider 名字不在表里时会显虚高成本，要加一行",
+            "随机选",
+            "Python 字典默认值",
+          ],
+          right: 1,
+          explain: "这是 fail-safe 设计哲学。同理 'local'/'stub' 预设为零，免得本地 demo 显示虚假 Opus 价。",
+        },
+        {
+          q: "Gitar 2025 的'换 5× 便宜 LLM 反而总成本上升'怎么解释？",
+          options: [
+            "API 涨价",
+            "便宜模型产出更差的 tool JSON → 更多 retry、更多 turn → 总成本超过用贵模型；fix 是把 router 也放进 eval 测每 passing case 的成本",
+            "缓存失效",
+            "网络延迟",
+          ],
+          right: 1,
+          explain: "永远 measure-then-route。Router 的胜利不是 per-token 而是 per-passing-case。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter20 = Chapter20;

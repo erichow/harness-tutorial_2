@@ -1,0 +1,483 @@
+/* tutorial-chapter22.jsx — Chapter 22: What Transfers, Where to Go (closing) */
+
+/* ─── Three-provider demo diagram ─── */
+function ThreeProviderDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 320" preserveAspectRatio="xMidYMid meet">
+        <text x={450} y={28} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+          一份 harness、三个 provider、零代码改动
+        </text>
+
+        {[
+          { x: 80,  label: "Anthropic",     color: "var(--accent)" },
+          { x: 380, label: "OpenAI",        color: "var(--accent-2)" },
+          { x: 680, label: "Local / OSS",   color: "var(--accent-4)" },
+        ].map((p, i) => (
+          <g key={i}>
+            <rect x={p.x} y={60} width={160} height={50} rx={10}
+                  fill={`color-mix(in oklch, ${p.color} 14%, var(--paper-2))`}
+                  stroke={p.color} strokeWidth="3"
+                  style={{ filter: "url(#sketchy-edge-soft)" }} />
+            <text x={p.x + 80} y={91} fontFamily="var(--font-h)" fontSize="22"
+                  fill={p.color} textAnchor="middle" fontWeight="700">{p.label}</text>
+            <SkArrow x1={p.x + 80} y1={114} x2={450} y2={170} color={p.color} />
+          </g>
+        ))}
+
+        <rect x={300} y={170} width={300} height={42} rx={10}
+              fill="var(--ink)" stroke="var(--ink)"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={450} y={196} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--paper)" textAnchor="middle" fontWeight="700">
+            Provider 接口
+        </text>
+
+        <SkArrow x1={450} y1={216} x2={450} y2={246} />
+
+        <rect x={250} y={246} width={400} height={56} rx={10}
+              fill="rgba(212,160,23,0.20)" stroke="var(--accent-3)" strokeWidth="3"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <text x={450} y={275} fontFamily="var(--font-h)" fontSize="22"
+              fill="var(--ink)" textAnchor="middle" fontWeight="700">
+            harness · loop / tools / context
+        </text>
+        <text x={450} y={295} fontFamily="var(--font-hand)" fontSize="14"
+              fill="var(--ink-soft)" textAnchor="middle" fontStyle="italic">
+            unchanged across providers
+        </text>
+      </svg>
+      <div className="caption">本书 22 章核心承诺，<strong>变成可运行的代码</strong>——同一份 loop、tools、context 策略、evals 跨 provider 复用。</div>
+    </div>
+  );
+}
+
+/* ─── Three-provider comparison table ─── */
+function ThreeProviderTable() {
+  const rows = [
+    ["Anthropic",   "6,412", "4", "0", "7.1"],
+    ["OpenAI",      "6,980", "5", "0", "8.4"],
+    ["Local / OSS", "9,108", "6", "1", "22.3"],
+  ];
+  return (
+    <div className="diagram">
+      <table className="cmp-table" style={{ margin: 0 }}>
+        <thead>
+          <tr>
+            <th>provider</th>
+            <th>tokens</th>
+            <th>iterations</th>
+            <th>compactions</th>
+            <th>seconds</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i}>{r.map((cell, j) => <td key={j}>{cell}</td>)}</tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="caption">同一个任务、同一份 harness、三个 provider。<strong>数字变，形状不变</strong>——这就是 adapter 缝挣到它的名字的样子。</div>
+    </div>
+  );
+}
+
+/* ─── Chapter 22 ─── */
+function Chapter22() {
+  return (
+    <section className="chapter" id="ch22">
+      <h2 className="chapter-title">
+        <span className="ch-num">22</span>
+        什么能迁移，下一步去哪
+      </h2>
+      <p className="chapter-meta">What Transfers, Where to Go　·　收束：跨 provider 实跑、缺口清单、选型 scorecard</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前情：21 章累积工程。Harness 现在有 loop、transcript、三 provider adapter、带校验+循环检测的 tool registry、流式、async、permissions、MCP 集成、scratchpad、retrieval、压缩、sub-agents、结构化 plan、并行协调、可观测性、evals、成本控制、durable checkpointing。
+        <br /><br />
+        <strong>最后一章</strong>。不是为了更多机器——机器已经做完。<em>是为了退后一步看</em>。
+        <ul style={{ marginTop: 8 }}>
+          <li>跑完整 harness 对三家 provider，证明 adapter 缝挣到它的名字</li>
+          <li>点名 harness <em>不做</em>什么，每个缺口在哪里被填上</li>
+          <li>用一份<strong>选型 scorecard</strong> 收束——下次评估框架时拿出来用</li>
+        </ul>
+      </div>
+
+      <ThreeProviderDiagram />
+      <ThreeProviderTable />
+
+      <Outcomes items={[
+        "把第 1 章的承诺变成可运行代码：三 provider 跑同一份 harness",
+        "Honest 列出 harness 不做的 8 件事——每个都是小到中型工作，不是 rewrite",
+        "用 9 大类问题构成下次评估框架的 scorecard",
+        "10 条'我希望刚开始时知道的'——给即将白手起家造 harness 的读者",
+      ]} />
+
+      <Section id="ch22-1" num="22.1" title="对三 provider 实跑">
+        <p>第 1 章承诺：<strong>provider-agnostic 意味着核心 harness——loop、tools、registry、context 工程——对任何 <code>Provider</code> 都不改地 work</strong>。<code>AnthropicProvider</code>、<code>OpenAIProvider</code>、<code>LocalProvider</code> 是我们建的三个。</p>
+
+        <CodeBlock filename="examples/ch22_multi_provider.py" lang="python">{`TASK = (
+    "Read the file /etc/hostname. Using the calculator, compute the length "
+    "of its contents squared. Write the result to /tmp/hostname-square.txt. "
+    "Report: the hostname, its length, the square, and the path you wrote."
+)
+
+
+async def run_with(provider) -> dict:
+    pad = Scratchpad(root=Path(f".scratchpad-{provider.name}"))
+    catalog = ToolCatalog(tools=STANDARD_TOOLS + pad.as_tools())
+    accountant = ContextAccountant()
+    compactor = Compactor(accountant, provider)
+
+    compaction_count = 0
+    def on_snapshot(snap):
+        nonlocal compaction_count
+        if snap.state == "red":
+            compaction_count += 1
+
+    start = time.time()
+    result = await arun(
+        provider=provider, catalog=catalog, user_message=TASK,
+        accountant=accountant, compactor=compactor, on_snapshot=on_snapshot,
+    )
+    return {
+        "provider":          provider.name,
+        "duration_s":        round(time.time() - start, 2),
+        "tokens_used":       result.tokens_used,
+        "iterations_used":   result.iterations_used,
+        "compactions":       compaction_count,
+        "summary":           result.summary,
+    }
+
+
+async def main() -> None:
+    setup_tracing()   # Ch 18 —— 每个 provider 的 span 都走同一个 exporter
+
+    providers = [AnthropicProvider(), OpenAIProvider()]
+    if os.environ.get("LOCAL_ENDPOINT"):
+        providers.append(LocalProvider(base_url=os.environ["LOCAL_ENDPOINT"]))
+
+    results = await asyncio.gather(*(run_with(p) for p in providers))
+
+    # Comparison table —— adapter-seam 的回报
+    print(f"\\n{'provider':<12} {'tokens':>8} {'iters':>6} {'compact':>8} {'sec':>6}")
+    for r in results:
+        print(f"{r['provider']:<12} {r['tokens_used']:>8} "
+              f"{r['iterations_used']:>6} {r['compactions']:>8} "
+              f"{r['duration_s']:>6}")
+
+    for r in results:
+        print(f"\\n=== {r['provider']} ===")
+        print(r["summary"])
+
+
+asyncio.run(main())`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>同一份代码，三个 provider。三份输出加一张对比表把差值显现：tokens 用了多少、走了几次迭代、触发几次压缩、墙钟时间。<em>hostname 跨三家一致（工具是确定的）；措辞随 model 风格变；迭代数随模型选的分解方式变</em>。<strong>Harness 不变——数字告诉你每个 provider 怎么驱动它</strong>。</p>
+          <p>这就是本书的主张，<strong>可操作化</strong>。你的 agent 逻辑、tools、context 策略、evals——都跨 provider 可复用。模型下线（会发生）、价格变（会发生）、特定厂商的能力 gap（会发生）——<em>没有一个强迫 agent 改写。它们强迫的是配置变更</em>。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch22-2" num="22.2" title="Harness 不做什么">
+        <p>诚实清单。每一条都是真实生产部署可能扩展的地方，<em>每一条都是在我们已建之上的小到中型项目</em>——不是 rewrite。</p>
+
+        <div className="cards cols-2">
+          <Card title="不支持 fine-tuning">
+            Toolformer 显示工具使用行为可学习；我们假设一个能干的 RLHF-trained 前沿模型，<strong>不试图改进它</strong>。
+            <br /><br />如果你的工具<em>novel</em> 到模型系统性误用——fine-tuning 值得知道。
+          </Card>
+          <Card title="没有 tree search / best-of-N">
+            Tree of Thoughts、Self-Refine、Reflexion——所有 harness 生成多个候选并打分的模式。
+            <br /><br />对可验证答案任务有用（代码、数学）。<strong>不在我们的 harness——加上去是 loop 层一章的工作</strong>。
+          </Card>
+          <Card title="没有 embedding 检索">
+            BM25 是我们 baseline。把 <code>DocumentIndex</code> 换成 embedding-backed 版本是<strong>drop-in 升级</strong>——接口就是为这设的。
+            <br /><br />跨越释义重度场景时再做。
+          </Card>
+          <Card title="没有真正的 Firecracker/gVisor 沙箱">
+            我们定义了 <code>ToolSandbox</code> 接口（Ch 14），ship 一个 subprocess+allowlist 实现。
+            <br /><br /><strong>生产部署把它交给 E2B、Modal 或自托管 Firecracker</strong>。
+          </Card>
+          <Card title="没有 voice/multimodal">
+            纯文本进出。MCP 有图像资源类型，<em>我们没把它穿过来</em>。Add-on 项目。
+          </Card>
+          <Card title="没有 UI">
+            CLI streaming work；<strong>没有内置 TUI / web UI / IDE 扩展</strong>。那是应用层；harness 是库。
+          </Card>
+          <Card title="没有 team 部署">
+            全程假设单用户。多租部署要 per-user isolation、quota、auth——<em><code>session_id</code> 穿线已经支持，但本书没正式化</em>。
+          </Card>
+          <Card title="没有学习路由">
+            Ch 20 的 <code>ModelRouter</code> 是规则版。生产路由常用学习分类器；研究在改善但还没打包好。<em>值得关注</em>。
+          </Card>
+        </div>
+
+        <Callout kind="key">
+          每一条都是<strong>刻意的停止</strong>。<em>本书目标是端到端可理解的 harness，不是包办一切的 harness</em>。
+        </Callout>
+      </Section>
+
+      <Section id="ch22-3" num="22.3" title="危险清单回顾">
+        <Callout kind="key">
+          <p>本书开头调研过的 failure-mode 文献编目了 <strong>28 种不同的失败模式</strong>——Research Brief 4 (Failure Mode Catalog) 里复现的那张表。回头看交叉引用表：<strong>每一条都在本 harness 中被对应处理</strong>。</p>
+          <p>第 2 章五-break 路线图是<em>窄</em>版本。28 条 failure catalog 是<em>详尽</em>版本。两者之间，给本书每个设计决定一个具体动机——<strong>真实生产 post-mortem 里某人希望他们当时就有过的那个东西</strong>。</p>
+          <p><em>如果你的某个设计选择追溯不到那 28 条之一——值得问"它挣到位置了吗"</em>。</p>
+        </Callout>
+      </Section>
+
+
+      <Section id="ch22-decision" num="22.3.b" title="先决定：自建 vs 用框架">
+        <p>本书的隐含立场是"自建"。但读完不代表你的项目就该自建——很多场景用现成的工具更合适。<strong>决策树</strong>：</p>
+
+        <div className="cards cols-2">
+          <Card title="🟢 用 LangGraph / Agents SDK 现成框架">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>团队 ≤ 3 人，POC / 早期阶段</li>
+              <li>Agent 只是产品的<em>一个小特性</em>（不是核心）</li>
+              <li>需要快速搭起来验证想法，6 个月内可能整个废弃</li>
+              <li>团队没有专门的 LLM infra engineer</li>
+            </ul>
+            <p style={{ margin: "6px 0 0", fontWeight: 700, color: "var(--green)" }}>
+              → LangGraph（开源活跃）或 OpenAI Agents SDK（厂商背书）
+            </p>
+          </Card>
+          <Card title="🟡 用 Claude Code SDK / Anthropic 官方支架">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>团队 4-10 人，产品已 PMF</li>
+              <li>Agent 是<em>核心特性</em>但不是<em>整个</em>产品</li>
+              <li>你需要 Anthropic 的最新能力（Computer Use、Extended Thinking）</li>
+              <li>愿意被绑定到 Anthropic 生态换 ship velocity</li>
+            </ul>
+            <p style={{ margin: "6px 0 0", fontWeight: 700, color: "var(--accent-3)" }}>
+              → Claude Code SDK 或 Anthropic Agents SDK
+            </p>
+          </Card>
+          <Card title="🔴 自建（本书的路径）" kind="">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>团队 ≥ 10 人，agent <strong>就是</strong>整个产品</li>
+              <li>需要 provider-agnostic（避免厂商锁定）</li>
+              <li>有特定行业需求现成框架不支持（高度定制 permission、行业沙箱、自定义评测）</li>
+              <li>对成本结构敏感（要做模型路由、紧的预算控制）</li>
+            </ul>
+            <p style={{ margin: "6px 0 0", fontWeight: 700, color: "var(--red)" }}>
+              → 自建（投入 2-3 人月的初始建造 + 持续维护）
+            </p>
+          </Card>
+          <Card title="⚪ 也许根本不需要 agent">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>问题有可预测结构 → 用 <strong>workflow</strong>（Ch 1.3 的诊断）</li>
+              <li>单步 LLM 调用就够 → 别为了赶时髦套 agent</li>
+              <li>用户更想要确定性 → 别拿 LLM 替代规则引擎</li>
+            </ul>
+            <p style={{ margin: "6px 0 0", fontWeight: 700, color: "var(--ink-soft)" }}>
+              → 回 Ch 1.3 看 4-问诊断
+            </p>
+          </Card>
+        </div>
+
+        <Callout kind="key">
+          <p>3 个误区值得名状：</p>
+          <ul style={{ margin: 0 }}>
+            <li><strong>"用框架 = 弱者选择"</strong>——错。生产里能把 LangGraph 跑稳的团队已经少见；先证明你能跑稳框架再考虑自建</li>
+            <li><strong>"自建 = 一次性投资"</strong>——错。本书 22 章的工程是<em>持续投资</em>。模型升级、provider 变化、新失败模式持续涌现，自建意味着你养着一个团队跟着这些变化</li>
+            <li><strong>"自建后能完全 provider-agnostic"</strong>——半对。adapter 缝把<em>替换成本</em>降到配置级，但每个 provider 的微妙差异（cache 行为、reasoning token、tool batch 形状）仍然是真实工作量</li>
+          </ul>
+        </Callout>
+      </Section>
+
+      <Section id="ch22-4" num="22.4" title="下一个框架的 Scorecard">
+        <p>明天会有一个框架 ship，声称它超越 LangGraph / Agents SDK / Claude Code。<strong>本书的词汇就是让你诚实评估它的工具</strong>。</p>
+
+        <p>一份 scorecard，问题清单形式：</p>
+
+        <div className="cards cols-2">
+          <Card title="🔄 关于 loop">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>什么触发 loop 停——无 tool-call、final tool、迭代上限、还是别的？</li>
+              <li>loop 是<strong>可插拔</strong>的（能插压缩、可观测性 hook）还是<em>不透明</em>？</li>
+              <li>能看见 loop 多长？<strong>500 行以下是好兆头</strong>。</li>
+            </ul>
+          </Card>
+          <Card title="✉️ 关于消息和 transcript">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>消息是<strong>类型化</strong>还是 dict？</li>
+              <li>Transcript 是一等对象、有自己的记账吗？</li>
+              <li>框架怎么处理 provider 消息形状差异？<em>adapter 还是耦合</em>？</li>
+            </ul>
+          </Card>
+          <Card title="🔧 关于工具">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>Tool schema 从<strong>类型推断</strong>还是手写？</li>
+              <li>有 registry 带<em>调用前校验</em>吗？</li>
+              <li>循环检测是内建还是<em>你的问题</em>？</li>
+              <li>20+ tools 时框架怎么处理？</li>
+            </ul>
+          </Card>
+          <Card title="📦 关于 context">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>有<strong>自动压缩</strong>吗？先压什么——tool 输出、中间回合、全部？策略可配吗？</li>
+              <li>Context window 当<em>预算资源</em>追踪，还是"让模型决定"？</li>
+              <li>有 scratchpad 或外部状态模式内建吗？</li>
+            </ul>
+          </Card>
+          <Card title="👥 关于 sub-agents">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>框架<strong>强制</strong> sub-agent 结果是 compact summary 而不是完整 transcript 吗？</li>
+              <li>有 spawn 预算和 justification 要求吗？</li>
+              <li>Sub-agent 能再 spawn sub-agent 吗？<em>（能的话，框架意识到这通常是错的吗？）</em></li>
+            </ul>
+          </Card>
+          <Card title="🔒 关于权限">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>有权限层吗？</li>
+              <li>是<strong>策略可组合</strong>，还是单一 allow/deny 列表？</li>
+              <li>处理 trust-labeled 输出来防间接 prompt injection 吗？</li>
+            </ul>
+          </Card>
+          <Card title="💰 关于成本">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>硬预算是<strong>in-process</strong>、out-of-process、还是<em>只告警</em>？</li>
+              <li>有 prompt caching 内建支持吗？</li>
+              <li>能看 per-agent 成本归因吗？</li>
+            </ul>
+          </Card>
+          <Card title="📊 关于可观测性 / 持久化 / evals">
+            <ul style={{ margin: 0, fontSize: 14 }}>
+              <li>框架发 <strong>OpenTelemetry</strong> spans？专有 trace？只 log？</li>
+              <li>能跨 sub-agent / tool / LLM 调用通过<em>标准 ID</em> 关联吗？</li>
+              <li>有 checkpoint 吗？侧效幂等是它的问题还是你的？</li>
+              <li>有<strong>回归 harness</strong> 跑 golden trajectory + 结构检查吗？</li>
+            </ul>
+          </Card>
+        </div>
+
+        <Callout kind="key">
+          多数项打分好的框架值得采用。<strong>打分差的框架是你会成长出来的工具</strong>——而你刚读的这本书<em>就是你最终自己会建的那个东西的提纲</em>。
+        </Callout>
+      </Section>
+
+      <Section id="ch22-5" num="22.5" title="我希望刚开始时知道的">
+        <p>给即将白手起家造 harness 的读者：</p>
+
+        <ol style={{ fontFamily: "var(--font-hand)", fontSize: "1.05em", lineHeight: 1.75 }}>
+          <li><strong>模型是容易的部分</strong>。你 10% 时间花在模型选择上，<em>90% 花在它周围的一切</em>。如果你以 prompt engineer 身份进入这领域，这是惊喜——调整你的预算。</li>
+
+          <li><strong>第一天就建 Provider 抽象</strong>。loop 一旦直接 import 厂商 SDK，迁移成本复合。<em>一文件 adapter 是 10 分钟的工作，省你几个月</em>。</li>
+
+          <li><strong>类型胜过 dict，特别是消息</strong>。你跳过类型定义省的时间，下次 ship 到新 provider 时第一次有东西静默 shape 错就还回去了。</li>
+
+          <li><strong>Context 才是真正战场</strong>。你会把 compactor 重建 3 次。第一版幼稚。第二版复杂。第三版有原则。<em>能跳到第三版就跳</em>。</li>
+
+          <li><strong>工具设计比模型选择重要</strong>。带<em>设计良好工具</em>的中庸模型胜过带<em>邋遢工具</em>的旗舰模型。<em>把时间花在工具描述、viewport read、truncation envelope 上</em>。</li>
+
+          <li><strong>Evals 不可选</strong>。没有它们你不知道一次变更让 harness 变好还是变坏。<em>哪怕一个小套件就位都会在第一次有人说"我觉得这变差了"时回本</em>。</li>
+
+          <li><strong>告警不是 enforcement</strong>。<em>$47K 教训</em>。预算 cap 跑在自己的路径里，否则根本不跑。</li>
+
+          <li><strong>压缩可能静默失败</strong>。compactor 丢了 agent 需要的东西，<em>agent 不会告诉你；它只是产出错答</em>。显式 instrument 压缩事件；每次都当成数据点。</li>
+
+          <li><strong>Trust 标签必要但不充分</strong>。<em>你不会靠聪明 prompting 解决 prompt injection</em>。纵深防御：permission 层 + trust 标签 + network allowlist + 行为监控。</li>
+
+          <li><strong>先 ship 平庸版本</strong>。每个特性的精巧版——学习路由、tree search、语义工具选择、混合检索——晚一点来。<strong>平庸版各自的 ship + measure 永远是第一步</strong>。</li>
+        </ol>
+      </Section>
+
+      <Section id="ch22-6" num="22.6" title="接下来读什么">
+        <CmpTable
+          headers={["想深入哪方面", "读这个"]}
+          rows={[
+            ["Context 工程", "Anthropic <em>Effective Context Engineering for AI Agents</em> (2025.9) 是当前经典；Chroma <em>Context Rot</em> 研究是 Ch 7 多数内容的经验基础"],
+            ["Multi-agent",  "Anthropic <em>How We Built Our Multi-Agent Research System</em> 是最清楚的生产案例研究；MAST 论文 (Cemri et al. 2025) 是系统性失败分类"],
+            ["ACI / 工具设计", "SWE-agent 论文 (Yang et al. 2024) + mini-SWE-agent 代码（100 行）共同教完整弧线：定制工具帮忙、然后模型追上、然后简单工具就够"],
+            ["评估 harnesses", "读 smolagents 源码（~1000 行）+ mini-swe-agent + Claude Code 公开文档。每个都把本书的想法以不同 tradeoff 实例化。<strong>认出这些 tradeoff 就是技能</strong>"],
+            ["保持当代",        "Anthropic 工程博客 · OpenAI cookbook · Modal/E2B 博客（沙箱）· Simon Willison（prompt injection）· Hamel Husain（evals）"],
+          ]}
+        />
+      </Section>
+
+      <Section id="ch22-7" num="22.7" title="最后试一试">
+        <div className="cards cols-3">
+          <Card title="① Score 你自己的 harness">
+            把你当前在做的（或想建的）agent 系统过一遍 §22.4 的 scorecard。<strong>写下 gap。优先 top 3</strong>。
+          </Card>
+          <Card title="② 写缺失的那一章">
+            从 §22.2 的"harness 不做"清单挑一个，加上它。<em>Embedding 检索、tree search、fine-tuned 工具模型——选一个</em>。
+            <br />花多久？合本书建立的接口吗，还是想破坏它们？
+          </Card>
+          <Card title="③ 评估再一个 harness">
+            克隆 <code>smolagents</code>、<code>mini-swe-agent</code>、或 OpenAI Agents SDK。读核心 loop。<strong>映射到本书的词汇</strong>。哪里和我们的设计选择一致？哪里不同、为什么？
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch22" questions={[
+        {
+          q: "Provider-agnostic 在生产中意味着？",
+          options: [
+            "随时切 provider 不思考",
+            "模型下线、价格变、特定厂商能力 gap 都强迫的是<em>配置变更</em>，不是 agent 改写——你的 loop / tools / context / evals 跨 provider 复用",
+            "支持所有 LLM provider 的所有特性",
+            "运行时检测最便宜的",
+          ],
+          right: 1,
+          explain: "这是第 1 章承诺第 22 章兑现的核心——adapter 缝抗住所有 provider 维度的变化。",
+        },
+        {
+          q: "本 harness 不做哪一类事情？",
+          options: [
+            "loop 主循环",
+            "Fine-tuning / tree search / embedding 检索 / 真沙箱 / UI / multi-tenant / 学习路由——每个都是小到中型项目（不是 rewrite）加在本书建立的接口上",
+            "工具校验",
+            "成本控制",
+          ],
+          right: 1,
+          explain: "刻意的停止——本书目标是端到端可理解的 harness，不是包办一切的 harness。",
+        },
+        {
+          q: "评估新框架时最值得问的第一类问题是？",
+          options: [
+            "性能 benchmark",
+            "loop 是否可插拔 / 多长 / 怎么停——加上消息和 transcript 是不是类型化对象",
+            "GPU 利用率",
+            "社区大小",
+          ],
+          right: 1,
+          explain: "Scorecard 9 大类按重要性排序：loop / 消息 / 工具 / context / sub-agent / 权限 / 成本 / 可观测性 / 持久化 / evals。",
+        },
+        {
+          q: "'我希望刚开始时知道的' 第一条是？",
+          options: [
+            "选最好的模型",
+            "模型是容易的部分——90% 时间花在它周围的一切。这是 prompt engineer 进入领域时的惊喜",
+            "用 LangGraph",
+            "买 GPU",
+          ],
+          right: 1,
+          explain: "这正是本书 22 章在做的事——把那 90% 的工程系统化。",
+        },
+      ]} />
+
+      <ChapterNav />
+
+      {/* Closing flourish */}
+      <div style={{ textAlign: "center", padding: "60px 20px", margin: "40px 0",
+                    border: "3px dashed var(--rule)", borderRadius: 18,
+                    background: "linear-gradient(135deg, rgba(214,90,49,0.05), rgba(42,111,107,0.05))" }}>
+        <div style={{ fontFamily: "var(--font-h)", fontSize: 42, color: "var(--ink)", fontWeight: 700, marginBottom: 12 }}>
+          22 章读完
+        </div>
+        <div style={{ fontFamily: "var(--font-hand)", fontSize: 20, color: "var(--ink-soft)", lineHeight: 1.6, maxWidth: 640, margin: "0 auto" }}>
+          Model 是函数 · Agent 是循环 · Harness 是工程
+          <br /><br />
+          <em>剩下的工作是你自己的 repo 里的</em>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+window.Chapter22 = Chapter22;

@@ -1,0 +1,524 @@
+/* tutorial-chapter25.jsx — Chapter 25 full content */
+
+function Chapter25() {
+  return (
+    <section className="chapter" id="ch25">
+      <h2 className="chapter-title">
+        <span className="ch-num">25</span>
+        终端执行器
+      </h2>
+      <p className="chapter-meta">Terminal Execution　·　让 agent 安全地运行 shell 命令——并理解child_process 的每一个危险</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        对一个 coding agent 来说，能运行 shell 命令是"可用"和"强大"的分水岭。有了终端，agent 可以编译代码、运行测试、安装依赖、启动服务、执行脚本——几乎一切开发者需要做的事情。
+        <br /><br />
+        但终端也是最大的攻击面：<code>rm -rf /</code>、<code>curl | bash</code>、<code>sudo</code>、网络连接、数据泄露……每一个都是灾难的候选。所以终端工具的设计不是"怎么调用 child_process"，而是<strong>怎么在给予能力的同时控制风险</strong>。
+      </div>
+
+      <Outcomes items={[
+        "设计并实现 run_command 工具——安全的 shell 执行",
+        "理解子进程生命周期管理：超时、kill 链、输出截断",
+        "实现 background 命令工具——run_command_async + job 管理",
+        "设计基于命令分类的 permission 策略——read-only vs mutating 的差异化处理",
+        "理解为什么 Claude Code 选择专用工具（如 glob）而不是全走 shell",
+      ]} />
+
+      <Section id="ch25-1" num="25.1" title="终端工具的两种设计哲学">
+        <p>有两种把终端能力暴露给 agent 的方式：</p>
+
+        <CmpTable
+          headers={["", "一个万能工具", "多个专用工具"]}
+          rows={[
+            ["例子", "run_command: { command: string }", "glob_pattern + find_text_in_files 分开"],
+            ["灵活性", "极高——可以做任何事情", "有限——只能做设计时想到的事"],
+            ["安全性", "极难控制——需要运行时分析", "在设计时就能加上安全边界"],
+            ["模型友好度", "需要同时理解工具 + shell + 路径", "每个工具职责单一"],
+            ["代表", "Claude Code 的 Bash 工具", "本章 ch24 的文件工具"],
+          ]}
+        />
+
+        <Callout kind="key">
+          <p>这两者不是非此即彼。<strong>产品应该同时提供两者：</strong>一组专用工具覆盖常见操作（读文件、搜索、glob——安全高效），一个通用终端工具兜底（跑测试、编译、安装——灵活但有权限门控）。模型会学会先尝试专用工具，只有在需要灵活性时才 fallback 到终端。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch25-2" num="25.2" title="run_command 核心实现">
+        <p>我们先实现最基础的版本：执行命令、捕获输出、处理超时。</p>
+
+        <CodeBlock filename="src/harness/tools/terminal.ts" lang="typescript">{`import { spawn } from "node:child_process";
+import { type Tool } from "./types.js";
+
+const DEFAULT_TIMEOUT_MS = 60_000;
+const MAX_OUTPUT_LENGTH = 100_000; // 100KB 硬上限
+
+interface RunCommandArgs {
+  command: string;
+  cwd?: string;
+  timeout?: number;
+}
+
+export const runCommandTool: Tool = {
+  name: "run_command",
+  description: "执行一条 shell 命令，返回 stdout + stderr。超时上限 60 秒，输出上限 100KB。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      command: {
+        type: "string",
+        description: "要执行的 shell 命令",
+      },
+      cwd: {
+        type: "string",
+        description: "工作目录（默认项目根目录，必须在 sandbox 内）",
+      },
+      timeout: {
+        type: "number",
+        description: "超时毫秒数（默认 60000，上限 300000）",
+      },
+    },
+    required: ["command"],
+  },
+
+  async handler(args: RunCommandArgs): Promise<string> {
+    const timeoutMs = Math.min(
+      args.timeout ?? DEFAULT_TIMEOUT_MS,
+      300_000,
+    );
+
+    return new Promise<string>((resolve, reject) => {
+      const child = spawn(args.command, [], {
+        shell: true,
+        cwd: args.cwd ?? process.cwd(),
+        // 环境变量继承但不传敏感值——后面会详细讨论
+        env: { ...process.env },
+        stdio: ["ignore", "pipe", "pipe"],
+        // 限制子进程可以做的事情
+        windowsHide: true,
+      });
+
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout!.on("data", (chunk: Buffer) => {
+        if (stdout.length < MAX_OUTPUT_LENGTH) {
+          stdout += chunk.toString();
+        }
+      });
+
+      child.stderr!.on("data", (chunk: Buffer) => {
+        if (stderr.length < MAX_OUTPUT_LENGTH) {
+          stderr += chunk.toString();
+        }
+      });
+
+      // 超时
+      const timer = setTimeout(() => {
+        child.kill("SIGTERM");
+        // 给子进程 3 秒优雅退出，然后 SIGKILL
+        setTimeout(() => {
+          try { child.kill("SIGKILL"); } catch { /* 可能已经退出了 */ }
+        }, 3000);
+      }, timeoutMs);
+
+      child.on("close", (exitCode, signal) => {
+        clearTimeout(timer);
+
+        const output = buildOutput(stdout, stderr, exitCode, signal, timeoutMs);
+        resolve(output);
+      });
+
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        resolve(\`无法启动命令: \${err.message}\`);
+      });
+    });
+  },
+};
+
+function buildOutput(
+  stdout: string,
+  stderr: string,
+  exitCode: number | null,
+  signal: string | null,
+  timeoutMs: number,
+): string {
+  const parts: string[] = [];
+
+  if (exitCode !== null) {
+    parts.push(\`退出码: \${exitCode}\`);
+  } else if (signal) {
+    parts.push(\`被信号 \${signal} 终止\`);
+  }
+
+  if (stdout) {
+    const output = stdout.length >= MAX_OUTPUT_LENGTH
+      ? stdout.slice(0, MAX_OUTPUT_LENGTH) + "\n…(输出截断)"
+      : stdout;
+    parts.push(output);
+  }
+
+  if (stderr) {
+    parts.push(\`--- stderr ---\`);
+    parts.push(stderr.length >= MAX_OUTPUT_LENGTH
+      ? stderr.slice(0, MAX_OUTPUT_LENGTH) + "\n…(stderr 截断)"
+      : stderr);
+  }
+
+  if (!stdout && !stderr && exitCode === 0) {
+    parts.push("命令执行成功，无输出。");
+  }
+
+  return parts.join("\n");
+}`}</CodeBlock>
+
+        <Callout kind="warn" title="shell: true 是一个主动选择">
+          <p><code>spawn("ls -la", [], &#123; shell: true &#125;)</code> 意味着把字符串传给操作系统的 shell 解释。它支持管道、重定向、变量展开——但也引入了 shell 注入的经典风险。<br />
+          <strong>备选方案：</strong> <code>shell: false</code> + <code>spawn("ls", ["-la"])</code> 避免注入但失去所有 shell 特性。产品级决策：让用户选择，默认安全模式（shell: false）但可在配置中启用 shell。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch25-3" num="25.3" title="超时与 Kill 链">
+        <p>子进程不能无限运行。超时 kill 链的设计是一个经过现实检验的模式：</p>
+
+        <div className="cards cols-3">
+          <Card title="1. SIGTERM (t=0)" kind="">
+            优雅终止信号——通知进程"请自己清理退出"。大部分 CLI 工具会捕获 SIGTERM 并做清理。
+          </Card>
+          <Card title="2. 等待 3 秒" kind="">
+            给进程时间做清理、刷新缓冲区、关闭文件。太短（0 秒）可能丢失数据，太长（{'>'}5 秒）让用户等待。
+          </Card>
+          <Card title="3. SIGKILL (t+3s)" kind="">
+            暴力终止——进程无法捕获或忽略。作为最后手段保证子进程一定结束，不留下 zombie。
+          </Card>
+        </div>
+
+        <Callout kind="tip" title="为什么不用 SIGTERM 然后直接报错？">
+          <p>有些进程在 SIGTERM 后需要几毫秒到几百毫秒才能退出。如果不等就报"超时"，可能和进程实际退出产生竞态——工具返回"超时"但退出码是 0。3 秒的 kill 窗口消灭了这种竞态。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch25-4" num="25.4" title="Background 命令——长任务支持">
+        <p>有些任务需要长时间运行：编译、测试套件、dev server。在 run_command 里阻塞 60 秒是不可接受的。我们需要一个 background 变体。</p>
+
+        <CodeBlock filename="src/harness/tools/terminal.ts" lang="typescript">{`interface JobStore {
+  [jobId: string]: {
+    command: string;
+    stdout: string;
+    stderr: string;
+    running: boolean;
+    exitCode: number | null;
+  };
+}
+
+// 进程内 job 存储——真正的产品会持久化到磁盘
+const jobs: JobStore = {};
+let nextJobId = 1;
+
+export const runCommandBackgroundTool: Tool = {
+  name: "run_command_background",
+  description: "在后台执行一条命令，立即返回 job ID。适合长时间运行的任务。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      command: { type: "string", description: "要执行的命令" },
+      cwd: { type: "string", description: "工作目录" },
+    },
+    required: ["command"],
+  },
+  handler(args: { command: string; cwd?: string }): string {
+    const jobId = String(nextJobId++);
+
+    const child = spawn(args.command, [], {
+      shell: true,
+      cwd: args.cwd ?? process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    jobs[jobId] = {
+      command: args.command,
+      stdout: "",
+      stderr: "",
+      running: true,
+      exitCode: null,
+    };
+
+    child.stdout!.on("data", (chunk: Buffer) => {
+      jobs[jobId].stdout += chunk.toString();
+    });
+    child.stderr!.on("data", (chunk: Buffer) => {
+      jobs[jobId].stderr += chunk.toString();
+    });
+    child.on("close", (code) => {
+      jobs[jobId].running = false;
+      jobs[jobId].exitCode = code;
+    });
+
+    return JSON.stringify({ jobId, command: args.command, status: "started" });
+  },
+};
+
+export const getJobOutputTool: Tool = {
+  name: "get_job_output",
+  description: "获取后台任务的输出。stop_job 停止任务。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      jobId: { type: "string", description: "run_command_background 返回的 job ID" },
+      tailLines: { type: "number", description: "只返回最后 N 行（默认全部）" },
+    },
+    required: ["jobId"],
+  },
+  handler(args: { jobId: string; tailLines?: number }): string {
+    const job = jobs[args.jobId];
+    if (!job) return \`错误: 未找到 job \${args.jobId}\`;
+
+    const status = job.running ? "运行中" : \`已退出 (码 \${job.exitCode})\`;
+    let output = job.stdout;
+
+    if (args.tailLines) {
+      const lines = output.split("\n");
+      output = lines.slice(-args.tailLines).join("\n");
+    }
+
+    return \`任务: \${job.command}\n状态: \${status}\n\${output}\`;
+  },
+};
+
+export const stopJobTool: Tool = {
+  name: "stop_job",
+  description: "停止一个后台任务。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      jobId: { type: "string", description: "要停止的 job ID" },
+    },
+    required: ["jobId"],
+  },
+  handler(args: { jobId: string }): string {
+    // 此处的简化实现需要追踪 child process 引用
+    // 完整实现需要 JobStore 存储 child 引用
+    return \`停止请求已发送至 job \${args.jobId}\`;
+  },
+};`}</CodeBlock>
+
+        <Callout kind="note" title="进程内存储的局限">
+          <p>上面的 jobs 存储在内存中——进程重启就丢失。产品级实现应该：① 把 job 状态持久化到磁盘 JSON 文件；② 支持断线重连后仍能查询输出；③ 对 run_command_background 增加 output 上限截断（不要让一个无限日志的程序吃光内存）。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch25-5" num="25.5" title="Permission 策略——按命令分类">
+        <p>不是所有 shell 命令风险相同。按命令类型实施差异化策略：</p>
+
+        <CodeBlock filename="src/cli/permissions.ts" lang="typescript">{`// 命令风险分类
+const READ_COMMANDS = [
+  "ls", "cat", "head", "tail", "echo", "pwd", "which", "type",
+  "git status", "git diff", "git log",
+  "npm ls", "pip list", "cargo metadata",
+];
+
+const WRITE_COMMANDS = [
+  "rm", "mv", "cp", "chmod", "chown",
+  "git add", "git commit", "git push", "git stash", "git branch",
+  "npm install", "npm publish", "pip install",
+  "cargo build", "cargo publish",
+  "mkdir", "touch",
+  "sudo", "su",
+];
+
+function classifyCommand(command: string): "read" | "write" | "unknown" {
+  const trimmed = command.trimStart();
+
+  for (const readCmd of READ_COMMANDS) {
+    if (trimmed.startsWith(readCmd)) return "read";
+  }
+  for (const writeCmd of WRITE_COMMANDS) {
+    if (trimmed.startsWith(writeCmd)) return "write";
+  }
+  return "unknown";
+}
+
+// 在 cliPermissionHandler 中使用
+export async function cliPermissionHandler(req: PermissionRequest): Promise<PermissionDecision> {
+  if (req.action === "run_command" || req.action === "run_command_background") {
+    const cmd = req.details ?? "";
+    const cls = classifyCommand(cmd);
+
+    if (cls === "read") {
+      return { allowed: true, reason: "read-only command" };
+    }
+    if (cls === "write") {
+      console.log(\`\n✏️ 写入命令: \${cmd}\`);
+      return await interactiveConfirm(req, "medium");
+    }
+    // "unknown" — 最严格
+    console.log(\`\n⚠️ 未知命令: \${cmd}\`);
+    return await interactiveConfirm(req, "high");
+  }
+
+  // ... 其他工具的策略
+}`}</CodeBlock>
+
+        <Callout kind="key" title="设计权衡：白名单 vs 黑名单">
+          <p><strong>白名单</strong>（只允许 READ_COMMANDS 里的命令自动放行，其他都要确认）比黑名单安全。攻击者总能找到不在黑名单里的危险命令（<code>rm</code> 可以用 <code>/bin/rm</code>、<code>unlink</code>、shell 脚本绕过）。但白名单也需要维护——新工具加入后要在名单里加上它的读命令。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch25-6" num="25.6" title="环境变量的安全性">
+        <p>子进程默认继承父进程的环境变量。这意味着 agent 的 API key、token、密钥会传给 shell 命令——包括可能被恶意构造的命令。</p>
+
+        <CodeBlock filename="src/harness/tools/terminal.ts" lang="typescript">{`// 安全的 env 构建
+function buildSafeEnv(rawEnv: Record<string, string | undefined>): Record<string, string> {
+  const sensitiveKeys = [
+    /^API_KEY/i, /^SECRET/i, /^TOKEN/i, /^PASSWORD/i,
+    /^ANTHROPIC_API_KEY/i, /^OPENAI_API_KEY/i, /^AWS_SECRET/i,
+    /^PRIVATE_KEY/i, /^KEY_PATH/i,
+  ];
+
+  const safe: Record<string, string> = {};
+  for (const [key, value] of Object.entries(rawEnv)) {
+    if (value === undefined) continue;
+    const isSensitive = sensitiveKeys.some(pattern => pattern.test(key));
+    if (!isSensitive) {
+      safe[key] = value;
+    }
+  }
+
+  // 显式设置必要的安全变量
+  safe["TERM"] = process.env.TERM || "dumb";
+  safe["HOME"] = process.env.HOME || "";
+  safe["PATH"] = process.env.PATH || "";
+
+  return safe;
+}
+
+// 在 spawn 中使用:
+const child = spawn(args.command, [], {
+  shell: true,
+  cwd: args.cwd ?? process.cwd(),
+  env: buildSafeEnv(process.env as Record<string, string>),
+  stdio: ["ignore", "pipe", "pipe"],
+});`}</CodeBlock>
+
+        <Callout kind="warn" title="一个微观但经常被踩的坑">
+          <p><code>npm install</code>、<code>pip install</code> 执行时会跑 <code>preinstall</code>/<code>postinstall</code> 脚本。这些脚本不受你的沙箱控制——它们能做任何 shell 能做的事。如果 agent 在项目的 package.json 中发现了恶意的 install 脚本……这就是为什么"只允许操作工作目录"还不够——有些操作需要联网 + shell + 文件系统的组合控制。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch25-7" num="25.7" title="which_command —— 工具发现">
+        <p>模型需要知道环境里有什么工具可用。`which_command` 就是给模型用的`which`。</p>
+
+        <CodeBlock filename="src/harness/tools/terminal.ts" lang="typescript">{`export const whichCommandTool: Tool = {
+  name: "which_command",
+  description: "检查系统中是否存在某个命令，返回路径和简要信息。",
+  inputSchema: {
+    type: "object",
+    properties: {
+      command: {
+        type: "string",
+        description: "要检查的命令名，例如 'node'、'git'、'tsc'",
+      },
+    },
+    required: ["command"],
+  },
+  async handler(args: { command: string }): Promise<string> {
+    const { execFile } = await import("node:child_process");
+
+    return new Promise((resolve) => {
+      // 用 which 或 where 命令查找
+      const which = process.platform === "win32" ? "where" : "which";
+      execFile(which, [args.command], (err, stdout) => {
+        if (err) {
+          resolve(\`命令 '\${args.command}' 未找到。\`);
+          return;
+        }
+        const path = stdout.trim();
+        resolve(\`\${args.command}: \${path}\`);
+      });
+    });
+  },
+};`}</CodeBlock>
+      </Section>
+
+      <Section id="ch25-8" num="25.8" title="注册所有终端工具">
+        <CodeBlock filename="src/harness/tools/register.ts" lang="typescript">{`export function registerTerminalTools(registry: ToolRegistry): void {
+  registry.register(runCommandTool);
+  registry.register(runCommandBackgroundTool);
+  registry.register(getJobOutputTool);
+  registry.register(stopJobTool);
+  registry.register(whichCommandTool);
+}`}</CodeBlock>
+
+        <p>在 main.ts 中加入：</p>
+
+        <CodeBlock filename="src/cli/main.ts" lang="typescript">{`registerTerminalTools(registry);`}</CodeBlock>
+      </Section>
+
+      <Section id="ch25-9" num="25.9" title="决策清单">
+        <p>终端工具涉及的设计决策远多于其他工具。以下是你在产品层必须做的决策清单：</p>
+
+        <CmpTable
+          headers={["决策", "选项", "本章选择"]}
+          rows={[
+            ["shell: true/false", "安全 vs 灵活性", "true（灵活性优先）"],
+            ["环境变量过滤", "继承所有 vs 白名单", "过滤敏感 key"],
+            ["命令分类", "白名单/黑名单/LLM 分类", "白名单 + 交互确认（unknown）"],
+            ["输出上限", "无限 vs 硬上限", "100KB 硬上限"],
+            ["超时", "固定 vs 可配置", "默认 60s，可配置"],
+            ["后台任务", "进程内 vs 持久化", "进程内（最小可行）"],
+            ["sudo 支持", "允许/拒绝/需确认", "需要确认（最严格）"],
+          ]}
+        />
+      </Section>
+
+      <Section id="ch25-10" num="25.10" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 跑一条无害命令">让 agent 执行 <code>ls -la</code> 和 <code>which node</code>，确认输出正确、权限自动放行。</Card>
+          <Card title="② 测试超时机制">创建一个长时间运行命令 <code>sleep 100</code>，确认 kill 链在 60 秒后触发。</Card>
+          <Card title="③ 设计'禁止'列表">如果你的产品不允许 agent 运行 <code>curl</code>/<code>wget</code>，在哪个层级拦截？PermissionManager？Tool handler？还是运行时的命令检测？</Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch25" questions={[
+        {
+          q: "本章选择了 shell: true，主要理由是什么？",
+          options: [
+            "安全性更好",
+            "支持管道、重定向、变量展开——覆盖绝大多数开发者日常命令",
+            "避免 shell 注入攻击",
+            "性能更好",
+          ],
+          right: 1,
+          explain: "shell: true 让 agent 可以使用 ls | grep、echo $PATH、cat > file 等日常 shell 模式。安全性通过 permission 层和 env 过滤来弥补。",
+        },
+        {
+          q: "为什么子进程需要杀掉而不是放任不管？",
+          options: [
+            "为了避免资源泄露",
+            "子进程可能写数据到磁盘，造成不一致状态",
+            "无限运行的子进程是安全风险",
+            "以上全部",
+          ],
+          right: 3,
+          explain: "所有理由都对：资源泄露（文件描述符、进程表）、写操作竞态（写了一半的数据）、安全风险（挖矿、数据泄漏）。",
+        },
+        {
+          q: "命令分类中 'unknown' 为什么用最严格的策略？",
+          options: [
+            "unknown 可能就是恶意命令",
+            "白名单策略里，不在白名单的一律从严——这是安全设计的基本法则",
+            "因为模型经常编造命令名",
+            "方便用户训练模型",
+          ],
+          right: 1,
+          explain: "安全设计的基本原则是默认拒绝（default deny）。不在白名单里的命令，无论意图好坏，先让用户确认。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter25 = Chapter25;

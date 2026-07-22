@@ -1,0 +1,823 @@
+/* tutorial-chapter5.jsx — Chapter 5 full content: Streaming, Interruption, Errors */
+
+/* ─── Local diagrams ─── */
+function StreamingStateMachine() {
+  // Top row: Idle → Streaming → Dispatching
+  // Bottom: Interrupted (below Streaming, Ctrl-C branch)
+  // Return arc: Dispatching → Idle (across the top, well above nodes)
+  const states = [
+    { id: "idle",        x: 130, y: 130, label: "Idle",        color: "var(--ink-soft)" },
+    { id: "streaming",   x: 430, y: 130, label: "Streaming",   color: "var(--accent)" },
+    { id: "dispatching", x: 730, y: 130, label: "Dispatching", color: "var(--accent-2)" },
+    { id: "interrupted", x: 430, y: 330, label: "Interrupted", color: "var(--red)" },
+  ];
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 880 410" preserveAspectRatio="xMidYMid meet">
+        {states.map(s => (
+          <g key={s.id}>
+            <ellipse cx={s.x} cy={s.y} rx={90} ry={46}
+                     fill={`color-mix(in oklch, ${s.color} 14%, var(--paper-2))`}
+                     stroke={s.color} strokeWidth="3"
+                     style={{ filter: "url(#sketchy-edge-soft)" }} />
+            <text x={s.x} y={s.y + 6}
+                  fontFamily="var(--font-h)" fontSize="24"
+                  fill={s.color} textAnchor="middle" fontWeight="700">{s.label}</text>
+          </g>
+        ))}
+
+        {/* Idle → Streaming */}
+        <SkArrow x1={220} y1={130} x2={340} y2={130} />
+        <text x={280} y={118} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--ink-soft)" textAnchor="middle">user prompt</text>
+
+        {/* Streaming → Dispatching */}
+        <SkArrow x1={520} y1={130} x2={640} y2={130} />
+        <text x={580} y={118} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--ink-soft)" textAnchor="middle">completed</text>
+
+        {/* Dispatching → Idle (return arc over the top) */}
+        <path d="M 730 84 Q 730 30 430 30 Q 130 30 130 84"
+              fill="none" stroke="var(--accent-2)" strokeWidth="2.2"
+              strokeLinecap="round"
+              style={{ filter: "url(#sketchy-edge-soft)" }} />
+        <polyline points="123,75 130,84 139,77"
+                  fill="none" stroke="var(--accent-2)" strokeWidth="2.2"
+                  strokeLinecap="round" strokeLinejoin="round" />
+        <text x={430} y={22} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--accent-2)" textAnchor="middle">tool result → next turn</text>
+
+        {/* Streaming → Interrupted (Ctrl-C) */}
+        <SkArrow x1={430} y1={176} x2={430} y2={284} color="var(--red)" />
+        <text x={448} y={232} fontFamily="var(--font-hand)" fontSize="15"
+              fill="var(--red)" textAnchor="start" fontWeight="600">Ctrl-C</text>
+
+        <text x={430} y={388} fontFamily="var(--font-hand)" fontSize="17"
+              fill="var(--red)" textAnchor="middle">partial text 已保存到 transcript</text>
+      </svg>
+      <div className="caption">流式状态机。Ctrl-C 从 Streaming 分支出去，checkpoint 已经到达的部分。</div>
+    </div>
+  );
+}
+
+function StreamEventsDiagram() {
+  const events = [
+    { name: "TextDelta",       desc: "一段流式文本",       color: "var(--accent-2)" },
+    { name: "ReasoningDelta",  desc: "一段流式 reasoning", color: "var(--accent-4)" },
+    { name: "ToolCallStart",   desc: "工具调用开始",       color: "var(--accent)" },
+    { name: "ToolCallDelta",   desc: "参数 JSON 分片到达", color: "var(--accent)" },
+    { name: "Completed",       desc: "终止，附带 token 计数", color: "var(--green)" },
+  ];
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 290" preserveAspectRatio="xMidYMid meet">
+        {events.map((e, i) => (
+          <g key={i}>
+            <rect x={30} y={20 + i * 50} width={260} height={40} rx={8}
+                  fill={e.color} stroke="var(--ink)" strokeWidth="2"
+                  style={{ filter: "url(#sketchy-edge-soft)" }} />
+            <text x={160} y={45 + i * 50} fontFamily="var(--font-mono)" fontSize="19"
+                  fill="var(--paper)" textAnchor="middle" fontWeight="700">{e.name}</text>
+            <text x={310} y={45 + i * 50} fontFamily="var(--font-hand)" fontSize="19"
+                  fill="var(--ink)">{e.desc}</text>
+          </g>
+        ))}
+      </svg>
+      <div className="caption">5 种 StreamEvent 覆盖 loop 需要看到的一切。其它（keepalive、内部 marker）adapter 直接丢弃。</div>
+    </div>
+  );
+}
+
+function RetryJitterDiagram() {
+  return (
+    <div className="diagram">
+      <svg viewBox="0 0 900 240" preserveAspectRatio="xMidYMid meet">
+        {/* No jitter — synchronized retry */}
+        <text x={30} y={30} fontFamily="var(--font-h)" fontSize="22" fill="var(--red)" fontWeight="700">无 jitter — 同步雷阵</text>
+        {Array.from({ length: 10 }, (_, i) => (
+          <circle key={i} cx={150 + i * 4} cy={70} r="6" fill="var(--red)" opacity={0.7} />
+        ))}
+        <text x={150} y={108} fontFamily="var(--font-hand)" fontSize="16" fill="var(--ink-soft)">
+          10 个 client 同时退避 1s，同时回来 → provider 二次冲击
+        </text>
+
+        {/* With jitter — spread */}
+        <text x={30} y={150} fontFamily="var(--font-h)" fontSize="22" fill="var(--green)" fontWeight="700">有 jitter — 时间分散</text>
+        {Array.from({ length: 10 }, (_, i) => (
+          <circle key={i} cx={150 + i * 38 + Math.random() * 10} cy={190}
+                  r="6" fill="var(--green)" opacity={0.7} />
+        ))}
+        <text x={150} y={228} fontFamily="var(--font-hand)" fontSize="16" fill="var(--ink-soft)">
+          random.uniform(0, base) 把 10 个 client 摊到恢复窗口里 → provider 平稳起死回生
+        </text>
+      </svg>
+      <div className="caption">jitter 比看起来重要。Marc Brooker 2015 AWS 那篇 blog 是经典。</div>
+    </div>
+  );
+}
+
+/* ─── Chapter 5 ─── */
+function Chapter5() {
+  return (
+    <section className="chapter" id="ch5">
+      <h2 className="chapter-title">
+        <span className="ch-num">5</span>
+        流式、中断与错误处理
+      </h2>
+      <p className="chapter-meta">Streaming, Interruption, and Error Handling　·　把 harness 改造成 async</p>
+
+      <Prereqs />
+
+      <Callout kind="warn" title="📦 这一章会改 Ch 3-4 的 ProviderResponse——按这里迁移">
+        <p>Ch 3 的 <code>ProviderResponse.tool_name / tool_args / tool_call_id</code>（单数字段）<strong>升级</strong>为 <code>tool_calls: tuple[ToolCallRef, ...]</code>（数组）。Ch 4 的 <code>run()</code> 直接读单数字段，本章后会读到错误："<code>tool_use ids must have matching tool_result ids</code>"——因为 Ch 4 loop 只看了第一个调用，第二个就丢了。</p>
+        <p>本章 §5.3 提供了 <strong>back-compat shortcut property</strong>（<code>tool_name</code>、<code>tool_args</code>、<code>tool_call_id</code> 仍可用），让 Ch 4 老代码暂时活着——<em>但只能调到第一个调用</em>。<strong>本章读完一定要做的迁移</strong>：把 Ch 4 的 dispatch 循环改成迭代 <code>response.tool_calls</code>，否则 Ch 13 接入 MCP 时会一调用一崩。</p>
+      </Callout>
+
+      <div className="lead">
+        前情：工具是一等公民、通过 registry 派发。Loop 紧凑、类型化、provider-agnostic。它<strong>还不做</strong>的三件事——
+        模型生成 15 秒长文本时用户盯着空终端、用户按 Ctrl-C 时 partial state 不留痕地消失、provider 返回 503 整个 run 死。
+        <br /><br />
+        这三件在每一次生产运行里都会发生，并且共享足够多的基础设施——本章一次性修好它们。<strong>共同的线索是 async</strong>——本章把 harness 重构成 asyncio，从此长留。
+      </div>
+
+      <Outcomes items={[
+        "Harness 流式输出 token、捕获 Ctrl-C 后的干净 checkpoint、用指数退避 + 有界预算从瞬时错误恢复",
+        "5 种 StreamEvent 把 Anthropic / OpenAI / OSS 的不同流式形状统一",
+        "ProviderResponse 升级为 tool_calls 元组——支持模型一次返回多个工具调用",
+        "FallbackProvider：主备双路、组合式继承——loop 不知道它是复合的",
+      ]} />
+
+      <Section id="ch5-1" num="5.1" title="为什么 async，为什么现在">
+        <StreamingStateMachine />
+
+        <p>到上一章为止一切都是同步的：loop 调 <code>provider.complete()</code>，provider 调厂商 SDK，SDK 阻塞线程直到响应到达，loop 派发工具，工具跑。同步对那时建的够用。<strong>对接下来要建的，3 个原因都不够：</strong></p>
+
+        <div className="cards cols-3">
+          <Card title="Streaming 天生是 async" kind="">
+            Anthropic 和 OpenAI 的流式都通过 SSE 派发事件。你可以用 generator 同步读，但 <code>async for event in stream:</code> 才是 Python 的惯用拟合。
+          </Card>
+          <Card title="中断需要协作式取消" kind="">
+            同步循环里的 Ctrl-C 要么打在网络读中间（脏）要么打在操作之间（你根本中断不了阻塞调用）。
+            Async 给我们 <code>asyncio.CancelledError</code>——<strong>一个有类型、有结构的方式来 unwind 一个未完成的回合</strong>。
+            <em>设计源头：Nathaniel Smith 2018 "Notes on structured concurrency"。</em>
+          </Card>
+          <Card title="并行 sub-agent 想要 concurrency" kind="">
+            第 17 章并行跑 sub-agent。那是 coroutine-per-agent 的故事，不是 thread-per-agent——线程行但更重、对厂商 SDK 也不友好。
+          </Card>
+        </div>
+
+        <Callout kind="note">
+          一个让步：我们保留一个同步入口给脚本和测试。<code>run()</code> 变成 <code>arun()</code>（async）；一个薄的 <code>run()</code> 包装在被同步调用时跑 <code>asyncio.run(arun(...))</code>。
+        </Callout>
+      </Section>
+
+      <Section id="ch5-2" num="5.2" title="StreamEvent 形状">
+        <p>不同 provider 流式形状不同：Anthropic 发 <code>content_block_*</code> 系列；OpenAI 发 <code>response.output_*.delta</code> 系列。我们的任务是把两边规范化成一个内部事件流，让 loop 不再操心是谁喂的。</p>
+
+        <StreamEventsDiagram />
+
+        <CodeBlock filename="src/harness/providers/events.py" lang="python">{`from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Literal
+
+
+@dataclass(frozen=True)
+class TextDelta:
+    text: str
+    kind: Literal["text_delta"] = "text_delta"
+
+
+@dataclass(frozen=True)
+class ReasoningDelta:
+    """A fragment of model-internal reasoning (Chapter 3 ReasoningBlock).
+    Emitted by reasoning-enabled providers; loop accumulates into
+    ProviderResponse.reasoning_text."""
+    text: str
+    kind: Literal["reasoning_delta"] = "reasoning_delta"
+
+
+@dataclass(frozen=True)
+class ToolCallStart:
+    id: str
+    name: str
+    kind: Literal["tool_call_start"] = "tool_call_start"
+
+
+@dataclass(frozen=True)
+class ToolCallDelta:
+    id: str
+    args_fragment: str   # partial JSON, accumulated by the loop
+    kind: Literal["tool_call_delta"] = "tool_call_delta"
+
+
+@dataclass(frozen=True)
+class Completed:
+    input_tokens: int
+    output_tokens: int
+    reasoning_tokens: int = 0
+    reasoning_metadata: dict = field(default_factory=dict)
+    kind: Literal["completed"] = "completed"
+
+
+StreamEvent = TextDelta | ReasoningDelta | ToolCallStart | ToolCallDelta | Completed`}</CodeBlock>
+      </Section>
+
+      <Section id="ch5-3" num="5.3" title="升级后的 Provider 协议">
+        <p>引入 <strong>ToolCallRef</strong>——把 ProviderResponse 升级成支持<em>批量</em>工具调用。一次 provider 响应可以带多个工具调用——OpenAI Responses 和 Anthropic Messages 都默认这样；许多 OSS 服务器（特别是 Ollama 跑小模型如 Gemma）不论你设啥都会 batch。</p>
+
+        <Callout kind="warn" title="单数形状的代价（直到本章为止的 bug）">
+          单数 tool_call 字段会<strong>静默丢弃第一个之后的所有调用</strong>，loop 会走进死胡同：要么下回合 provider 的 invariant 失败（<code>"tool_use ids must have matching tool_result ids"</code>），要么模型重新规划被丢掉的调用、loop detector 触发于重复。要么哪种，<strong>模型要求的调用都神秘消失了。</strong>
+        </Callout>
+
+        <CodeBlock filename="src/harness/providers/base.py" lang="python">{`@dataclass(frozen=True)
+class ToolCallRef:
+    """One tool invocation carried in a ProviderResponse.
+
+    Separate from messages.ToolCall — that's the in-transcript block.
+    This is the pre-transcript handoff shape. The loop builds one
+    in-transcript ToolCall per ToolCallRef when committing the assistant
+    message.
+    """
+    id: str
+    name: str
+    args: dict
+
+
+@dataclass(frozen=True)
+class ProviderResponse:
+    text: str | None = None
+    tool_calls: tuple[ToolCallRef, ...] = ()
+    reasoning_text: str | None = None
+    reasoning_metadata: dict = field(default_factory=dict)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+
+    @property
+    def is_tool_call(self) -> bool:
+        return len(self.tool_calls) > 0
+
+    @property
+    def is_final(self) -> bool:
+        return self.text is not None and not self.tool_calls
+
+    # Back-compat shortcuts — earlier chapters talked about a single call.
+    @property
+    def tool_call_id(self) -> str | None:
+        return self.tool_calls[0].id if self.tool_calls else None
+
+    @property
+    def tool_name(self) -> str | None:
+        return self.tool_calls[0].name if self.tool_calls else None
+
+    @property
+    def tool_args(self) -> dict | None:
+        return self.tool_calls[0].args if self.tool_calls else None
+
+
+class Provider(Protocol):
+    name: str
+
+    def astream(self, transcript: Transcript, tools: list[dict]) -> AsyncIterator[StreamEvent]:
+        ...
+
+    async def acomplete(self, transcript: Transcript, tools: list[dict]) -> ProviderResponse:
+        ...`}</CodeBlock>
+
+        <Callout kind="tip" title="一个微妙的类型签名细节">
+          <p><code>astream</code> 在协议里声明为 <code>def</code>，<strong>不是</strong> <code>async def</code>，尽管每个实现都写成 <code>async def astream(...): yield ...</code>。原因：</p>
+          <ul style={{ margin: "6px 0" }}>
+            <li><code>async def f() {">"} AsyncIterator[T]</code> 声明的是<em>"返回 iterator 的 coroutine"</em></li>
+            <li><code>def f() {">"} AsyncIterator[T]</code> 声明的是<em>"返回 iterator 的可调用对象"</em>——这正是 async generator 被调用时产出的</li>
+          </ul>
+          <p>Pyright 在第一种形状上拒绝 async generator override；第二种接受。如果你的编辑器报 <code>Return type mismatch: base returns CoroutineType[..., AsyncIterator[...]]</code>——这就是修复。</p>
+        </Callout>
+
+        <h4 className="sub-title">accumulate：把事件流折叠为一个 ProviderResponse</h4>
+        <p><code>acomplete()</code> 可以在 <code>astream()</code> 之上实现：把所有事件 fold 成一个 ProviderResponse。<em>每个具体 provider 只要实现 astream()</em>。</p>
+
+        <CodeBlock filename="src/harness/providers/base.py（accumulate 节选）" lang="python">{`async def accumulate(stream: AsyncIterator[StreamEvent]) -> ProviderResponse:
+    """Collect a stream into one ProviderResponse — handles batched tool calls."""
+    text_parts, reasoning_parts = [], []
+    tool_entries: dict[str, dict] = {}   # id → {"name": str, "args_buffer": str}
+    tool_ids_in_order: list[str] = []
+    last_opened_id: str | None = None
+    orphan_counter = 0
+    input_tokens = output_tokens = reasoning_tokens = 0
+    reasoning_metadata: dict = {}
+
+    async for event in stream:
+        match event:
+            case TextDelta(text=t):
+                text_parts.append(t)
+            case ReasoningDelta(text=t):
+                reasoning_parts.append(t)
+            case ToolCallStart(id=i, name=n):
+                entry_id = i or f"_orphan_{orphan_counter}"
+                if not i:
+                    orphan_counter += 1
+                if entry_id not in tool_entries:
+                    tool_entries[entry_id] = {"name": n, "args_buffer": ""}
+                    tool_ids_in_order.append(entry_id)
+                last_opened_id = entry_id
+            case ToolCallDelta(id=i, args_fragment=frag):
+                # Fragments reference parent tool_id; fall back to last-opened
+                # id; synthesize orphan if a fragment arrives before any Start.
+                target_id = i or last_opened_id or f"_orphan_{orphan_counter}"
+                if target_id not in tool_entries:
+                    tool_entries[target_id] = {"name": "", "args_buffer": ""}
+                    tool_ids_in_order.append(target_id)
+                tool_entries[target_id]["args_buffer"] += frag
+            case Completed(input_tokens=it, output_tokens=ot, ...):
+                input_tokens, output_tokens = it, ot
+                ...
+
+    # Build tool_calls in arrival order; JSON-parse each args buffer.
+    tool_calls = []
+    for tid in tool_ids_in_order:
+        entry = tool_entries[tid]
+        try:
+            args = json.loads(entry["args_buffer"]) if entry["args_buffer"] else {}
+        except json.JSONDecodeError:
+            # Surface raw buffer; registry's validator returns a structured
+            # error to the model on the next turn.
+            args = {"_raw": entry["args_buffer"]}
+        tool_calls.append(ToolCallRef(id=tid, name=entry["name"], args=args))
+
+    if tool_calls:
+        return ProviderResponse(tool_calls=tuple(tool_calls), ...)
+    return ProviderResponse(text="".join(text_parts), ...)`}</CodeBlock>
+
+        <Callout kind="key" title="什么都不会丢">
+          每个 <code>ToolCallStart</code> 开一个按 id 索引的 entry；每个 <code>ToolCallDelta</code> append 到对应 id 的 entry；arrival-order 列表给我们稳定的回放序。<strong>orphan fallback 是防御式的</strong>——一个 fragment 在 start 之前到达的畸形流，会显示为 <code>_orphan_0</code> 而非消失。
+        </Callout>
+      </Section>
+
+      <Section id="ch5-4" num="5.4" title="三家 Adapter 都得到 astream">
+        <p>每家 adapter 实现 astream；都产出同一份规范化 StreamEvent 流；只有"vendor 原始事件 → StreamEvent"的翻译不同。</p>
+
+        <h4 className="sub-title">Anthropic：从 streaming context manager 翻译</h4>
+        <CodeBlock filename="src/harness/providers/anthropic.py（节选）" lang="python">{`class AnthropicProvider(Provider):
+    name = "anthropic"
+
+    async def astream(self, transcript, tools) -> AsyncIterator[StreamEvent]:
+        kwargs = {
+            "model": self.model, "max_tokens": self.max_tokens,
+            "messages": [_to_anthropic(m, self.enable_thinking)
+                         for m in transcript.messages],
+            "tools": tools,
+        }
+        if transcript.system: kwargs["system"] = transcript.system
+        if self.enable_thinking:
+            kwargs["thinking"] = {"type": "enabled",
+                                  "budget_tokens": self.thinking_budget_tokens}
+
+        current_tool_id = None
+        async with self._client.messages.stream(**kwargs) as stream:
+            async for raw in stream:
+                event = _translate(raw, current_tool_id)
+                if isinstance(event, ToolCallStart):
+                    current_tool_id = event.id
+                if event is not None:
+                    yield event
+            final = await stream.get_final_message()
+            yield Completed(input_tokens=final.usage.input_tokens,
+                            output_tokens=final.usage.output_tokens)
+
+
+def _translate(raw, current_tool_id):
+    t = raw.type
+    if t == "content_block_start" and raw.content_block.type == "tool_use":
+        return ToolCallStart(id=raw.content_block.id, name=raw.content_block.name)
+    if t == "content_block_delta":
+        d = raw.delta
+        if d.type == "text_delta":      return TextDelta(text=d.text)
+        if d.type == "thinking_delta":  return ReasoningDelta(text=d.thinking)
+        if d.type == "input_json_delta":
+            return ToolCallDelta(id=current_tool_id or "",
+                                 args_fragment=d.partial_json)
+    return None`}</CodeBlock>
+
+        <Callout kind="note">
+          input-json deltas <strong>不带 id</strong>——所以 <code>current_tool_id</code> 被穿在 <code>_translate</code> 里，记住最近一次 <code>tool_use</code> 块的 id。这就是 ToolCallDelta 拿到正确 call_id 的方式。
+        </Callout>
+
+        <h4 className="sub-title">OpenAI：把 Responses 事件类型翻译过来</h4>
+        <CodeBlock filename="src/harness/providers/openai.py（节选）" lang="python">{`class OpenAIProvider(Provider):
+    name = "openai"
+
+    async def astream(self, transcript, tools) -> AsyncIterator[StreamEvent]:
+        kwargs = {
+            "model": self.model,
+            "input": [i for m in transcript.messages
+                        for i in _to_responses_input(m)],
+            "max_output_tokens": self.max_output_tokens,
+            "stream": True,
+        }
+        if transcript.system:   kwargs["instructions"] = transcript.system
+        if tools:               kwargs["tools"] = [_tool_to_responses(t) for t in tools]
+        if self.reasoning_effort is not None:
+            kwargs["reasoning"] = {"effort": self.reasoning_effort}
+            kwargs["include"] = ["reasoning.encrypted_content"]
+            kwargs["store"] = False    # 我们做无状态
+
+        stream = await self._client.responses.create(**kwargs)
+
+        call_ids_by_item: dict[str, str] = {}   # item_id → call_id
+        reasoning_item_meta: dict[str, dict] = {}
+
+        async for event in stream:
+            et = getattr(event, "type", None)
+            if et == "response.output_text.delta":
+                if delta := event.delta: yield TextDelta(text=delta)
+
+            elif et == "response.reasoning_summary_text.delta":
+                if delta := event.delta: yield ReasoningDelta(text=delta)
+
+            elif et == "response.output_item.added":
+                item = event.item
+                if item.type == "function_call":
+                    call_id = item.call_id or item.id
+                    call_ids_by_item[item.id] = call_id
+                    yield ToolCallStart(id=call_id, name=item.name)
+                elif item.type == "reasoning":
+                    reasoning_item_meta.setdefault(item.id, {"id": item.id})
+
+            elif et == "response.function_call_arguments.delta":
+                item_id = event.item_id
+                call_id = call_ids_by_item.get(item_id, item_id)
+                yield ToolCallDelta(id=call_id, args_fragment=event.delta)
+
+            elif et == "response.output_item.done":
+                # reasoning item carries encrypted_content here
+                if event.item.type == "reasoning":
+                    rid = event.item.id
+                    reasoning_item_meta[rid]["encrypted_content"] = (
+                        event.item.encrypted_content
+                    )
+
+            elif et == "response.completed":
+                u = event.response.usage
+                yield Completed(
+                    input_tokens=u.input_tokens, output_tokens=u.output_tokens,
+                    reasoning_tokens=getattr(u.output_tokens_details,
+                                              "reasoning_tokens", 0) or 0,
+                    reasoning_metadata=(
+                        {"openai_items": list(reasoning_item_meta.values())}
+                        if reasoning_item_meta else {}
+                    ),
+                )`}</CodeBlock>
+
+        <Callout kind="tip">
+          两个形状差异值得点名：① OpenAI 的 argument-delta 事件带 <code>item_id</code> 不是 <code>call_id</code>——所以保留一个小查找表。② Reasoning items 的 <code>encrypted_content</code> 只在 <code>response.output_item.done</code> 时发出——我们在那里 buffer 它，让最终 <code>Completed</code> 通过 <code>reasoning_metadata</code> 带出。
+        </Callout>
+
+        <h4 className="sub-title">OSS：一行代码</h4>
+        <CodeBlock filename="src/harness/providers/local.py" lang="python">{`class LocalProvider(OpenAIProvider):
+    name = "local"
+
+    def __init__(self, model="llama-3.1-8b-instruct",
+                 base_url="http://localhost:8000/v1",
+                 api_key="not-needed", client=None,
+                 max_output_tokens=4096):
+        if client is None:
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+        super().__init__(model=model, client=client,
+                         max_output_tokens=max_output_tokens)`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>vLLM、Ollama、LM Studio、llama.cpp 的 server——任何说 OpenAI-compatible Responses 的本地端点，<strong>都通过这个类不改一行代码流式工作</strong>。Adapter 缝在第二次回本。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch5-5" num="5.5" title="Async loop">
+        <p>第 4 章的同步 loop 变成 async。逻辑相同，管道不同。</p>
+
+        <CodeBlock filename="src/harness/agent.py" lang="python">{`async def arun(
+    provider: Provider,
+    registry: ToolRegistry,
+    user_message: str,
+    transcript: Transcript | None = None,
+    system: str | None = None,
+    on_event: Callable[[StreamEvent], None] | None = None,
+    on_tool_call: Callable[[ToolCall], None] | None = None,
+    on_tool_result: Callable[[ToolResult], None] | None = None,
+) -> str:
+    if transcript is None:
+        transcript = Transcript(system=system)
+    transcript.append(Message.user_text(user_message))
+
+    for _ in range(MAX_ITERATIONS):
+        partial_text: list[str] = []
+        try:
+            response = await _one_turn(provider, registry, transcript,
+                                       partial_text, on_event)
+        except asyncio.CancelledError:
+            if partial_text:
+                transcript.append(Message.assistant_text(
+                    "".join(partial_text) + " [interrupted]"))
+            raise
+
+        if response.is_final:
+            transcript.append(Message.from_assistant_response(response))
+            return response.text or ""
+
+        # One assistant message carrying all N ToolCall blocks.
+        transcript.append(Message.from_assistant_response(response))
+
+        # Dispatch each call sequentially, in arrival order.
+        for ref in response.tool_calls:
+            call = ToolCall(id=ref.id, name=ref.name, args=dict(ref.args))
+            if on_tool_call:    on_tool_call(call)
+            result = registry.dispatch(call.name, call.args, call.id)
+            transcript.append(Message.tool_result(result))
+            if on_tool_result: on_tool_result(result)
+
+    raise RuntimeError(f"agent did not finish in {MAX_ITERATIONS} iterations")
+
+
+async def _one_turn(provider, registry, transcript, partial_text, on_event):
+    """Run one provider turn; push text deltas into partial_text as we go.
+    On CancelledError, accumulated text is still in partial_text — caller flushes it."""
+    stream = provider.astream(transcript, registry.schemas())
+    async def forward():
+        async for event in stream:
+            if on_event: on_event(event)
+            if isinstance(event, TextDelta):
+                partial_text.append(event.text)
+            yield event
+    return await accumulate(forward())
+
+
+def run(*args, **kwargs) -> str:
+    """Sync wrapper for scripts and tests."""
+    return asyncio.run(arun(*args, **kwargs))`}</CodeBlock>
+
+        <Callout kind="key" title="3 个 callback 覆盖一个回合的全部可见表面">
+          <ul style={{ margin: 0 }}>
+            <li><code>on_event</code>：字符级流式渲染</li>
+            <li><code>on_tool_call</code>：宣布调用，显示工具名 + 解析后的参数（不是 JSON-delta 碎片）</li>
+            <li><code>on_tool_result</code>：打印结果预览，<strong>✗</strong> 表示 error，<strong>→</strong> 表示成功</li>
+          </ul>
+          <p>这就是 Claude Code、aider 给你的"agent 在工作、它在做什么"那种感受。</p>
+        </Callout>
+
+        <h4 className="sub-title">多轮 from scratch：Chat 连续性</h4>
+        <p>把 <code>transcript</code> 放在 loop 外面构造、每次 <code>arun(...)</code> 都把它传进去——<strong>就这 3 行</strong>。</p>
+
+        <CodeBlock filename="examples/ch05_multi_turn.py（核心）" lang="python">{`async def main():
+    provider = AnthropicProvider()
+    registry = ToolRegistry(tools=[calc, bash])
+
+    # One transcript, reused across every turn. This is the whole feature.
+    transcript = Transcript(system="You are a helpful, concise assistant.")
+
+    prompts = [
+        "My favourite number is 42. Remember it.",
+        "What's my favourite number times seven? Use the calculator.",
+        "Now divide the number I first mentioned by two.",
+    ]
+    for prompt in prompts:
+        print(f"\\n\\nUser: {prompt}\\nAssistant: ", end="", flush=True)
+        await arun(provider, registry, prompt,
+                   transcript=transcript,
+                   on_event=on_event,
+                   on_tool_call=on_tool_call,
+                   on_tool_result=on_tool_result)`}</CodeBlock>
+
+        <Callout kind="key">
+          <p>跑起来：prompt 2 答 <strong>294</strong>（因为 prompt 1 在 transcript 里），prompt 3 答 <strong>21</strong>（因为两个前置 prompt 都还在）。<strong>注释掉 transcript=transcript，所有 follow-up 都会失败</strong>——模型不知道"my favourite number"指什么。</p>
+          <p>这就是<em>整个</em>原语。§5.6.1 的 REPL 是同一个想法加 signal handling 和 Ctrl-C 语义。第 21 章把 in-memory transcript 换成 SQLite 后端，session 跨进程持久。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch5-6" num="5.6" title="干净地中断">
+        <p>用户按 Ctrl-C，两件事必须发生：① partial assistant message 被捕获到 transcript；② in-flight provider 连接干净关闭。</p>
+
+        <CodeBlock filename="examples/ch05_interruptible.py" lang="python">{`import asyncio, signal
+from harness.agent import arun
+
+async def main():
+    provider = AnthropicProvider()
+    registry = ToolRegistry(tools=[calc, bash])
+
+    task = asyncio.create_task(
+        arun(provider, registry, "Tell me a long story, with three chapters.",
+             on_event=on_event)
+    )
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGINT, task.cancel)
+
+    try:
+        answer = await task
+        print("\\n---\\n", answer)
+    except asyncio.CancelledError:
+        print("\\n[interrupted]")
+
+asyncio.run(main())`}</CodeBlock>
+
+        <Callout kind="key">
+          <code>task.cancel()</code> 在 coroutine 内部抛 <code>asyncio.CancelledError</code>。Anthropic adapter 的 streaming context manager 在 exit 时干净关 HTTP 连接。<strong>Transcript 的 system prompt 和已完成的工具结果都还在；只有当下流式的 assistant message 丢了——而 <code>_one_turn</code> 把 partial 文本 flush 进了 transcript</strong>。
+        </Callout>
+
+        <h4 className="sub-title">交互式 REPL：第一次 Ctrl-C 打断，第二次（1.5s 内）才退出</h4>
+        <CodeBlock filename="examples/ch05_repl.py（核心）" lang="python">{`async def main():
+    transcript = Transcript(system="You are a helpful assistant.")
+    last_sigint = 0.0
+
+    while True:
+        try:
+            user_input = await asyncio.to_thread(input, "\\n> ")
+        except EOFError:
+            return
+        if not user_input.strip(): continue
+
+        task = asyncio.create_task(
+            arun(provider, registry, user_input,
+                 transcript=transcript, on_event=on_event))
+
+        def on_sigint():
+            nonlocal last_sigint
+            now = time.monotonic()
+            if now - last_sigint < 1.5 and task.done():
+                loop.stop()  # 2 次 Ctrl-C 且无任务在跑 → quit
+            else:
+                last_sigint = now
+                if not task.done(): task.cancel()
+        loop.add_signal_handler(signal.SIGINT, on_sigint)
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            print("\\n[interrupted — Ctrl-C again within 1.5s to quit]")`}</CodeBlock>
+
+        <Callout kind="warn" title="一个值得记住的副作用">
+          Transcript 会跨 prompts 单调增长。10 轮含两次工具调查询的 chat 容易破 30K token。<strong>这就是第 7 章 accountant 在测、第 8 章 compactor 在修的事</strong>——chat 连续性 REPL 跑 10 分钟之后，context engineering 突然变得真实。
+        </Callout>
+      </Section>
+
+      <Section id="ch5-7" num="5.7" title="重试瞬时错误">
+        <p>Provider 会失败：429（限流）、500/502/503/504（边缘负载均衡 / autoscale / deploy / 任何东西）、connection reset（任何东西）。一个在第一次 503 就死的 harness 不是 harness——而修这个的模式都是<em>来之不易的工程智慧、不是 LLM 特有的新东西</em>。Michael Nygard <em>Release It!</em> 是经典书。</p>
+
+        <h4 className="sub-title">想要的 RetryPolicy 有 4 个属性</h4>
+        <div className="cards cols-2">
+          <Card title="可重试 vs 不可重试是决策不是猜测" kind="">
+            <strong>重试</strong>：429, 500, 502, 503, 504, connection timeout。
+            <strong>不重试</strong>：400, 401, 403, 404。畸形请求不会自己变好。
+          </Card>
+          <Card title="指数退避 + jitter" kind="">
+            <code>wait = min(max, base * 2**attempt + uniform(0, base))</code>
+            <br />jitter 那项比看起来重要。
+          </Card>
+          <Card title="有界总重试 + wall time" kind="">
+            per-call、per-session、wall-clock 三层。<em>"无限重试"是成本失控模式。</em>
+          </Card>
+          <Card title="尊重 Retry-After" kind="">
+            Anthropic、OpenAI 在 429 上都发 <code>retry-after</code> header。忽略它去走自己的指数退避——你会被限流得更狠不是更轻。
+          </Card>
+        </div>
+
+        <RetryJitterDiagram />
+
+        <CodeBlock filename="src/harness/providers/retry.py" lang="python">{`@dataclass
+class RetryPolicy:
+    max_attempts: int = 5
+    base_delay: float = 1.0
+    max_delay: float = 30.0
+    max_total_seconds: float = 120.0
+    retryable_statuses: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+
+    async def run(self, fn):
+        start = asyncio.get_event_loop().time()
+        last_exception = None
+        for attempt in range(self.max_attempts):
+            try:
+                return await fn()
+            except Exception as e:
+                last_exception = e
+                if not self._retryable(e):
+                    raise
+                elapsed = asyncio.get_event_loop().time() - start
+                if elapsed >= self.max_total_seconds:
+                    raise RetryBudgetExceeded(...) from e
+                delay = self._delay(attempt, e)
+                await asyncio.sleep(delay)
+        raise RetryBudgetExceeded(...) from last_exception
+
+    def _retryable(self, e):
+        status = getattr(e, "status_code", None)
+        if status is None:
+            return isinstance(e, (ConnectionError, TimeoutError,
+                                  asyncio.TimeoutError))
+        return status in self.retryable_statuses
+
+    def _delay(self, attempt, error):
+        retry_after = getattr(error, "retry_after", None)
+        if retry_after is not None:
+            return float(retry_after)
+        jitter = random.uniform(0, self.base_delay)
+        return min(self.base_delay * (2 ** attempt) + jitter, self.max_delay)`}</CodeBlock>
+
+        <Callout kind="warn" title="一个值得注意的微妙处：retry 不能 mid-stream">
+          如果我们已经向 caller 发出了 3 个 token，从头重试会产生 3 个重复 token。<strong>retry 包<em>打开</em>流；一旦流已经打开，mid-stream 错误就向上冒。</strong>
+          第 21 章用 checkpointing 处理 mid-stream 失败：agent 从上一个完成的回合恢复，不是从一个 partial 回合中间。
+        </Callout>
+      </Section>
+
+      <Section id="ch5-8" num="5.8" title="主备回退 — 当主 provider 倒下">
+        <p>当主 provider 长时间不可用，我们想 fallback 到第二个。模式是<strong>一个包裹两个 provider 的 provider</strong>：</p>
+
+        <CodeBlock filename="src/harness/providers/fallback.py" lang="python">{`class FallbackProvider:
+    name = "fallback"
+
+    def __init__(self, primary: Provider, secondary: Provider):
+        self.primary = primary
+        self.secondary = secondary
+
+    async def astream(self, transcript, tools) -> AsyncIterator[StreamEvent]:
+        try:
+            async for event in self.primary.astream(transcript, tools):
+                yield event
+            return
+        except RetryBudgetExceeded:
+            pass   # fall through to secondary
+        async for event in self.secondary.astream(transcript, tools):
+            yield event
+
+    async def acomplete(self, transcript, tools):
+        return await accumulate(self.astream(transcript, tools))`}</CodeBlock>
+
+        <Callout kind="key">
+          <p><strong>组合优于继承。</strong> <code>FallbackProvider</code> 自己就是一个 <code>Provider</code>；loop 不知道它是复合的。要三路回退？包两个 <code>FallbackProvider</code>。</p>
+          <p>值得标记的注意事项：工具调用的参数形状跨 provider 有细微差异——routed through OpenAI 的同一个工具调用可能产出和 Anthropic 略不同的 JSON。第 22 章显式测试这个；眼下 fallback 对文本响应正确，对工具调用<em>足够形状相近以渡过多数真实失败事件</em>。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch5-9" num="5.9" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 实现 partial-text 救援">
+            起一个长生成任务，mid-stream 按 Ctrl-C，确认 transcript 抓到了已产出的部分（带 <code>[interrupted]</code> 标记）。如果没抓到，找缺失的线。
+          </Card>
+          <Card title="② 注入混沌">
+            写一个 <code>ChaosProvider</code> 包裹任意 provider，20% 概率随机 500。跑 calculator 示例。RetryPolicy 救得回来吗？100% 失败率呢？
+          </Card>
+          <Card title="③ 测量 jitter 效应">
+            从 <code>_delay</code> 去掉 jitter。50 个并行 agent 打一个 mock provider（首次返 429）。记录所有 50 个完成的 wall-clock。加回 jitter 再跑——看差异。<em>第 20 章会用到。</em>
+          </Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch5" questions={[
+        {
+          q: "为什么 ProviderResponse.tool_calls 是 tuple，不是单数字段？",
+          options: [
+            "为了性能",
+            "为了支持模型一次返回多个工具调用——OpenAI Responses 和 Anthropic Messages 都默认这样",
+            "Python 类型检查器要求",
+            "为了向后兼容",
+          ],
+          right: 1,
+          explain: "单数字段会静默丢弃第 2 个及之后的调用，导致 provider invariant 失败或 loop 检测器误触发。",
+        },
+        {
+          q: "Ctrl-C 后 transcript 里的 partial assistant text 哪里来？",
+          options: [
+            "Provider SDK 自动保存",
+            "_one_turn 通过引用传入一个 partial_text 列表；CancelledError 后 caller flush 它，并在结尾加 [interrupted] 标记",
+            "靠 Anthropic 的 server-side 保存",
+            "丢失了，没有办法",
+          ],
+          right: 1,
+          explain: "这是协作式取消的关键设计：partial 状态在抛 CancelledError 之前已经累积到 caller 可见的位置。",
+        },
+        {
+          q: "为什么 RetryPolicy 不能 mid-stream 重试？",
+          options: [
+            "Provider 不允许",
+            "如果已经向 caller 发出过 token，从头重试会产生重复输出——语义错。retry 只能包流的 *打开*",
+            "asyncio 限制",
+            "成本太高",
+          ],
+          right: 1,
+          explain: "重试只能在副作用未发生的'打开流'阶段。Chapter 21 的 checkpointing 才是 mid-stream 失败的正解。",
+        },
+        {
+          q: "Jitter 在退避里解决什么问题？",
+          options: [
+            "节省内存",
+            "Thundering-herd：所有 client 同时退避同样长时间、同一刻一起回来，给恢复中的 provider 二次冲击",
+            "提升单 client 延迟",
+            "随机化日志",
+          ],
+          right: 1,
+          explain: "Marc Brooker 2015 AWS 那篇 'Exponential Backoff And Jitter' 是经典参考。jitter 把重试摊到恢复窗口里。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter5 = Chapter5;

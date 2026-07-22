@@ -1,0 +1,439 @@
+/* tutorial-chapter30.jsx — Chapter 30 full content */
+
+function Chapter30() {
+  return (
+    <section className="chapter" id="ch30">
+      <h2 className="chapter-title">
+        <span className="ch-num">30</span>
+        配置系统
+      </h2>
+      <p className="chapter-meta">Configuration System　·　分层配置、工具开关、权限策略的自定义——让 agent 适应不同的人和项目</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        ch23 的产品入口里，我们硬编码了模型名、temperature、context window 大小。这在早期是合理的——功能优先于可配置性。但到了产品化阶段，硬编码就是用户不友好的代名词。
+        <br /><br />
+        配置系统要解决三个问题：<strong>哪些东西应该可配置？</strong>（太多配置项会让用户不知所措）、<strong>配置从哪里来？</strong>（默认值 → 配置文件 → 环境变量 → CLI 参数）、<strong>配置对谁生效？</strong>（全局 vs 项目级 vs 会话级）。
+      </div>
+
+      <Outcomes items={[
+        "设计分层的配置系统——默认值 → 配置文件 → 环境变量 → CLI 参数",
+        "实现配置的加载与合并",
+        "设计工具开关和权限策略的可配置化",
+        "理解配置变更的生效时机——哪些需要重启，哪些可以在运行时重新加载",
+      ]} />
+
+      <Section id="ch30-1" num="30.1" title="配置项的设计">
+        <p>不是所有东西都应该可配置。以下是经过分类的配置项清单：</p>
+
+        <CmpTable
+          headers={["类别", "配置项", "默认值", "说明"]}
+          rows={[
+            ["模型", "provider", "anthropic", "模型供应方"],
+            ["模型", "model", "claude-sonnet-4-20250514", "模型名"],
+            ["模型", "temperature", "0", "生成温度（0–1）"],
+            ["模型", "maxTokensPerTurn", "4096", "每次请求的最大输出 token"],
+            ["工具", "enabledTools", "['file','terminal','git','ui']", "启用的工具类别"],
+            ["工具", "toolsPerTurn", "10", "每回合展示给模型的工具数"],
+            ["上下文", "maxContextSize", "100000", "上下文窗口上限"],
+            ["上下文", "autoCompactionThreshold", "0.8", "上下文利用率超过此比例时自动压缩"],
+            ["权限", "autoAllowReadCommands", "true", "是否自动放行读命令"],
+            ["权限", "requireConfirmationForWrite", "true", "写操作是否需要确认"],
+            ["权限", "sensitivePaths", "['.env', '*secret*', '*token*', '*.pem']", "敏感路径模式"],
+            ["预算", "budgetEnabled", "false", "是否启用预算控制"],
+            ["预算", "maxTokensPerSession", "100000", "会话 token 上限"],
+            ["UI", "thinkingMode", "auto", "思考模式: auto / on / off"],
+            ["UI", "colorEnabled", "true", "是否启用终端颜色输出"],
+          ]}
+        />
+
+        <Callout kind="key">
+          <p>注意工具是分<strong>类别</strong>启用的，不是每个工具单独开关。因为：① 降低认知负担（用户不需要了解 20+ 个工具）；② 减少配置项数量；③ 类别级别的开关足够满足大多数场景。高级用户仍然可以编辑配置文件来精确控制。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch30-2" num="30.2" title="配置加载链">
+        <p>配置的加载顺序（后面的覆盖前面的）：</p>
+
+        <div className="cards cols-4">
+          <Card title="1. 内置默认" kind="">写在代码里的默认值。任何环境都有一个可工作的配置。</Card>
+          <Card title="2. 全局配置" kind=""><code>~/.agent-code/config.json</code>。跨项目的用户偏好。</Card>
+          <Card title="3. 项目配置" kind=""><code>.agent-code.json</code> 或 <code>.agent-code/config.json</code>（项目根目录）。项目级的团队约定。</Card>
+          <Card title="4. 环境变量" kind=""><code>PROVIDER=openai MODEL=gpt-4o</code>。适合 CI/CD 和容器化。</Card>
+          <Card title="5. CLI 参数" kind=""><code>--model claude-sonnet-4 --temperature 0</code>。单次运行的覆盖。</Card>
+        </div>
+
+        <CodeBlock filename="src/config/config.ts" lang="typescript">{`import { readFile, access } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { parseArgs } from "node:util";
+
+/* ──────────── 配置类型 ──────────── */
+
+export interface AgentConfig {
+  provider: string;
+  model: string;
+  temperature: number;
+  maxTokensPerTurn: number;
+  enabledTools: string[];
+  toolsPerTurn: number;
+  maxContextSize: number;
+  autoCompactionThreshold: number;
+  autoAllowReadCommands: boolean;
+  requireConfirmationForWrite: boolean;
+  sensitivePaths: string[];
+  budgetEnabled: boolean;
+  maxTokensPerSession: number;
+  thinkingMode: "auto" | "on" | "off";
+  colorEnabled: boolean;
+}
+
+/* ──────────── 默认值 ──────────── */
+
+const DEFAULTS: AgentConfig = {
+  provider: "anthropic",
+  model: "claude-sonnet-4-20250514",
+  temperature: 0,
+  maxTokensPerTurn: 4096,
+  enabledTools: ["file", "terminal", "git", "ui"],
+  toolsPerTurn: 10,
+  maxContextSize: 100_000,
+  autoCompactionThreshold: 0.8,
+  autoAllowReadCommands: true,
+  requireConfirmationForWrite: true,
+  sensitivePaths: [".env", "*secret*", "*token*", "*.pem"],
+  budgetEnabled: false,
+  maxTokensPerSession: 100_000,
+  thinkingMode: "auto",
+  colorEnabled: true,
+};
+
+/* ──────────── 加载器 ──────────── */
+
+export async function loadConfig(): Promise<AgentConfig> {
+  const configs: Partial<AgentConfig>[] = [DEFAULTS];
+
+  // 1. 全局配置
+  const globalConfig = await tryReadJSON(
+    join(homedir(), ".agent-code", "config.json"),
+  );
+  if (globalConfig) configs.push(globalConfig);
+
+  // 2. 项目配置
+  const projectConfig = await tryReadJSON(
+    resolve(process.cwd(), ".agent-code.json"),
+  );
+  if (projectConfig) configs.push(projectConfig);
+
+  const projectDirConfig = await tryReadJSON(
+    resolve(process.cwd(), ".agent-code", "config.json"),
+  );
+  if (projectDirConfig) configs.push(projectDirConfig);
+
+  // 3. 环境变量
+  configs.push(loadEnvOverrides());
+
+  // 4. CLI 参数
+  configs.push(loadCLIOverrides());
+
+  // 合并
+  return mergeConfigs(configs);
+}
+
+/* ──────────── 辅助函数 ──────────── */
+
+async function tryReadJSON(path: string): Promise<Partial<AgentConfig> | null> {
+  try {
+    await access(path);
+    const content = await readFile(path, "utf-8");
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+function loadEnvOverrides(): Partial<AgentConfig> {
+  const env = process.env;
+  const overrides: Partial<AgentConfig> = {};
+
+  if (env.PROVIDER) overrides.provider = env.PROVIDER;
+  if (env.MODEL) overrides.model = env.MODEL;
+  if (env.TEMPERATURE) overrides.temperature = parseFloat(env.TEMPERATURE);
+  if (env.MAX_TOKENS_PER_TURN) overrides.maxTokensPerTurn = parseInt(env.MAX_TOKENS_PER_TURN);
+  if (env.TOOLS) overrides.enabledTools = env.TOOLS.split(",");
+  if (env.BUDGET_ENABLED === "true") overrides.budgetEnabled = true;
+  if (env.THINKING_MODE) overrides.thinkingMode = env.THINKING_MODE as any;
+
+  return overrides;
+}
+
+function loadCLIOverrides(): Partial<AgentConfig> {
+  try {
+    const args = parseArgs({
+      args: process.argv.slice(2),
+      options: {
+        provider: { type: "string" },
+        model: { type: "string" },
+        temperature: { type: "string" },
+        maxTokensPerTurn: { type: "string" },
+        "thinking-mode": { type: "string" },
+        "no-color": { type: "boolean" },
+      },
+      strict: false,
+    });
+
+    const overrides: Partial<AgentConfig> = {};
+    if (args.values.provider) overrides.provider = args.values.provider as string;
+    if (args.values.model) overrides.model = args.values.model as string;
+    if (args.values.temperature) overrides.temperature = parseFloat(args.values.temperature as string);
+    if (args.values["thinking-mode"]) overrides.thinkingMode = args.values["thinking-mode"] as any;
+    if (args.values["no-color"]) overrides.colorEnabled = false;
+
+    return overrides;
+  } catch {
+    return {};
+  }
+}
+
+function mergeConfigs(layers: Partial<AgentConfig>[]): AgentConfig {
+  const result = { ...DEFAULTS };
+  for (const layer of layers) {
+    for (const [key, value] of Object.entries(layer)) {
+      if (value !== undefined) {
+        (result as any)[key] = value;
+      }
+    }
+  }
+  return result;
+}`}</CodeBlock>
+
+        <Callout kind="note" title="配置文件格式的取舍">
+          <p>JSON 是最简单的选择。但如果你需要注释（解释每个配置项），可以考虑 YAML 或 TOML。JSON5（允许注释和尾逗号）是一个不错的中间点。本章选择 JSON 因为零依赖、学零成本——你可以在后续升级为 JSON5 或 YAML。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch30-3" num="30.3" title="工具开关的实现">
+        <p>配置中的 <code>enabledTools</code> 控制哪些工具类别被注册：</p>
+
+        <CodeBlock filename="src/cli/main.ts" lang="typescript">{`import { loadConfig, type AgentConfig } from "../config/config.js";
+
+export async function runAgentCLI(): Promise<void> {
+  const config = await loadConfig();
+  const registry = new ToolRegistry();
+
+  // 根据配置注册工具
+  const toolRegistrations: Record<string, () => void> = {
+    file: () => registerFileTools(registry),
+    terminal: () => registerTerminalTools(registry),
+    git: () => registerGitTools(registry),
+    code: () => registerCodeAnalysisTools(registry),
+    ui: () => registerUITools(registry),
+    mcp: () => registry.registerMCPTools(),
+  };
+
+  for (const tool of config.enabledTools) {
+    const register = toolRegistrations[tool];
+    if (register) {
+      register();
+    } else {
+      console.warn(\`警告: 未知工具类别 "\${tool}"\`);
+    }
+  }
+
+  // 使用配置的其他值
+  const accountant = new ContextAccountant({
+    maxContextSize: config.maxContextSize,
+    autoCompactionThreshold: config.autoCompactionThreshold,
+  });
+
+  const budget = new BudgetEnforcer({
+    enabled: config.budgetEnabled,
+    maxTokens: config.maxTokensPerSession,
+  });
+
+  const provider = createProvider(config);
+  // ... 继续装配
+}`}</CodeBlock>
+
+        <p>工具类别的定义在注册文件里：</p>
+
+        <CodeBlock filename="src/harness/tools/categories.ts" lang="typescript">{`/** 工具类别定义——用于配置中的 enabldTools */
+export const TOOL_CATEGORIES = {
+  file: {
+    name: "file",
+    description: "文件系统工具——读、写、搜索、glob",
+    tools: ["read_file", "create_file", "delete_file", "list_directory",
+            "glob_pattern", "find_text_in_files", "get_file_info", "edit_lines"],
+  },
+  terminal: {
+    name: "terminal",
+    description: "终端工具——执行命令、后台任务",
+    tools: ["run_command", "run_command_background", "get_job_output",
+            "stop_job", "which_command"],
+  },
+  git: {
+    name: "git",
+    description: "Git 工具——status, diff, commit, branch, stash",
+    tools: ["git_status", "git_diff", "git_log", "git_commit",
+            "git_stash", "git_branch"],
+  },
+  code: {
+    name: "code",
+    description: "代码分析工具——符号搜索、依赖分析",
+    tools: ["extract_code_context"],
+  },
+  ui: {
+    name: "ui",
+    description: "UI 交互工具——进度条、确认框、输入框",
+    tools: ["show_progress", "confirm_dialog", "input_dialog", "show_diff_view"],
+  },
+};`}</CodeBlock>
+
+        <Callout kind="tip" title="工具开关的运行时影响">
+          <p>减少工具数量对模型性能有直接影响（ch12 工具悬崖）。如果项目很小（100 个文件），不需要 LSP 和代码分析——关闭 <code>code</code> 类别可以降低工具数，提高模型选工具准确率。<br />
+          配置文件中的 <code>enabledTools</code> 实际上是"上下文节省"的第一道防线。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch30-4" num="30.4" title="权限策略的可配置化">
+        <p>ch25 中命令分类的白名单是硬编码的。现在把它放到配置里：</p>
+
+        <CodeBlock filename="src/config/config.ts" lang="typescript">{`// 在 AgentConfig 中扩展
+export interface AgentConfig {
+  // ...前面已有的...
+
+  // 权限策略
+  readCommands: string[];   // 自动放行的命令前缀
+  writeCommands: string[];  // 需确认的命令前缀
+  blockedCommands: string[]; // 禁止执行的命令
+}
+
+const DEFAULTS: AgentConfig = {
+  // ...
+  readCommands: [
+    "ls", "cat", "head", "tail", "echo", "pwd", "which",
+    "type", "node --version", "npm --version", "git --version",
+  ],
+  writeCommands: [
+    "rm", "mv", "cp", "chmod", "chown", "mkdir", "touch",
+    "git add", "git commit", "git push", "git stash",
+    "npm install", "pip install",
+  ],
+  blockedCommands: [
+    "sudo", "su", "chmod 777", "curl.*| sh", "wget.*| bash",
+  ],
+};
+
+// 在 permission handler 中使用
+export function classifyCommand(
+  command: string,
+  config: AgentConfig,
+): "read" | "write" | "blocked" | "unknown" {
+  const trimmed = command.trimStart();
+
+  for (const pattern of config.blockedCommands) {
+    if (new RegExp(pattern).test(trimmed)) return "blocked";
+  }
+  for (const readCmd of config.readCommands) {
+    if (trimmed.startsWith(readCmd)) return "read";
+  }
+  for (const writeCmd of config.writeCommands) {
+    if (trimmed.startsWith(writeCmd)) return "write";
+  }
+  return "unknown";
+}`}</CodeBlock>
+
+        <Callout kind="warn" title="blockedCommands 不是安全边界">
+          <p>命令黑名单（blockedCommands）很容易绕过——用户可以用 base64 编码、shell 脚本、<code>/full/path/to/sudo</code> 等方法跳过字符串匹配。<strong>真正的安全来自 PermissionManager 的交互式确认 + 最低权限原则</strong>，而不是命令名匹配。blockedCommands 只是一个给用户的"快捷拒绝清单"。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch30-5" num="30.5" title="配置变更的生效时机">
+        <p>不同配置项的生效时机不同：</p>
+
+        <CmpTable
+          headers={["生效时机", "配置项", "理由"]}
+          rows={[
+            ["需重启", "provider, model, enabledTools, maxContextSize", "这些影响 harness 初始化——运行时改变需要重建整个 loop"],
+            ["下一回合生效", "temperature, maxTokensPerTurn, toolsPerTurn", "Provider 和 Registry 可安全地在回合间替换"],
+            ["立即生效", "thinkingMode, colorEnabled, autoAllowReadCommands", "只是 UI 渲染和权限策略的开关，不涉及运行时状态"],
+          ]}
+        />
+
+        <Callout kind="tip">
+          <p>对于"需重启"的配置项，一个用户友好的做法是：在 agent 启动时检测配置变更（比较缓存的配置和磁盘上的最新配置），如果变了就提示用户重启。<strong>不要尝试在运行时重新初始化整个 harness——它太容易引入偶发 bug。</strong></p>
+        </Callout>
+      </Section>
+
+      <Section id="ch30-6" num="30.6" title="示例配置文件">
+        <p>展示给用户的参考配置：</p>
+
+        <CodeBlock filename=".agent-code.json" lang="json">{`{
+  "//": "Agent Code 项目配置",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-20250514",
+  "temperature": 0,
+  "enabledTools": ["file", "terminal", "git", "ui"],
+  "toolsPerTurn": 10,
+  "maxContextSize": 100000,
+  "autoAllowReadCommands": true,
+  "requireConfirmationForWrite": true,
+  "sensitivePaths": [".env", "*secret*", "*credential*"],
+  "blockedCommands": ["sudo", "su", "curl.*| sh"],
+  "budgetEnabled": false,
+  "thinkingMode": "auto",
+  "colorEnabled": true
+}`}</CodeBlock>
+      </Section>
+
+      <Section id="ch30-7" num="30.7" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 创建两个配置文件">写一个全局配置（~/.agent-code/config.json）和项目配置（.agent-code.json）。验证加载链正确——项目配置覆盖了全局配置。</Card>
+          <Card title="② 实验工具开关">关闭 <code>git</code> 类别，启动 agent。确认 Git 工具不在工具列表中。然后在对话中问 agent "帮我提交代码"——观察它尝试用 run_command 调 git。</Card>
+          <Card title="③ 设计一个\u201C配置校验\u201D函数">配置文件可能写错——provider 名字拼错了、temperature 超出 0-1 范围。写一个 <code>validateConfig()</code> 函数，在加载时做类型检查和值域校验。</Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch30" questions={[
+        {
+          q: "配置加载链的顺序是？",
+          options: [
+            "CLI 参数 → 环境变量 → 项目配置 → 全局配置 → 默认值",
+            "默认值 → 全局配置 → 项目配置 → 环境变量 → CLI 参数",
+            "环境变量 → 配置文件 → CLI 参数 → 默认值",
+            "默认值 → CLI 参数 → 环境变量 → 配置文件",
+          ],
+          right: 1,
+          explain: "后面的覆盖前面的。默认值最底层，CLI 参数最高优先级。这样确保：① 无配置也能工作（默认值）；② 项目约定覆盖个人偏好；③ 单次运行可以临时覆盖一切。",
+        },
+        {
+          q: "工具按类别启用而不是逐工具开关，主要原因是什么？",
+          options: [
+            "逐工具开关实现起来太复杂",
+            "降低用户的认知负担——20+ 工具逐开关用户根本不会去配置",
+            "按类别开关更高效",
+            "工具类别和 npm package 一一对应",
+          ],
+          right: 1,
+          explain: "产品设计原则：大多数用户只需要\u201C多给我一些能力\u201D或\u201C少一些噪音\u201D，而不是精确控制每一个工具。类别级开关覆盖了 80% 的需求，高级用户仍然可以修改代码或扩展配置格式。",
+        },
+        {
+          q: "为什么 maxContextSize 的更改需要重启 agent？",
+          options: [
+            "因为 ContextAccountant 在初始化时分配缓冲区",
+            "运行时更改 context size 可能让已经压缩的 transcript 与新大小不一致",
+            "不是技术原因，而是为了避免出现配置不一致：运行时改变影响初始化的参数是一种反模式",
+            "以上都是",
+          ],
+          right: 3,
+          explain: "所有理由都有道理，但最关键的是 3：初始化参数在运行时改变是一种反模式——它让系统状态难以推理。好的设计说'重启'，而不是'尝试在飞行中更换引擎'。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter30 = Chapter30;

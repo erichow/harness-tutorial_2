@@ -1,0 +1,378 @@
+/* tutorial-chapter23.jsx — Chapter 23 full content */
+
+function Chapter23() {
+  return (
+    <section className="chapter" id="ch23">
+      <h2 className="chapter-title">
+        <span className="ch-num">23</span>
+        从 Harness 到产品
+      </h2>
+      <p className="chapter-meta">From Harness to Application　·　把 22 章的抽象组装成一个可执行的 CLI coding agent</p>
+
+      <Prereqs />
+
+      <div className="lead">
+        前 22 章造了一个通用 agent harness——Provider 协议、ToolRegistry、Compactor、PermissionManager、BudgetEnforcer、Checkpointer。每一个都是解耦的、可测试的、与具体产品无关的。
+        <br /><br />
+        从这章开始，我们要掉头了：<strong>在 harness 之上建一个具体的产品。</strong> 一个能在终端里跑、能读文件、能执行命令、能提交 Git、能和用户对话的 coding agent。不是 Claude Code 的克隆，而是"你也可以造一个"的路线图。
+      </div>
+
+      <Outcomes items={[
+        "理解框架层 (harness) 与应用层 (product) 的分界——哪些抽象保留、哪些被固定",
+        "写出 runAgentCLI() 入口函数，装配所有已有子系统",
+        "第一次让 agent 在真实终端上运行，读自己的源码",
+        "看到 '框架能跑' 和 '产品能用' 之间的差距——这正是 ch24-32 要填补的",
+      ]} />
+
+      <Section id="ch23-1" num="23.1" title="分界线在哪里">
+        <p>回顾一下 harness 提供了什么：</p>
+
+        <CmpTable
+          headers={["子系统", "文件", "职责"]}
+          rows={[
+            ["Agent loop",   "agent.ts",         "arun() — 思考→工具→观察→继续或停止"],
+            ["Transcript",   "transcript.ts",     "类型化的不可变对话历史"],
+            ["ToolRegistry", "tools/registry.ts", "工具注册、发现、schema 验证"],
+            ["Provider",     "providers/",        "模型适配层（已有多厂商）"],
+            ["Compactor",    "context/compactor.ts",   "上下文压缩保留重要信息"],
+            ["ContextAcct",  "context/accountant.ts",  "Token 记账与窗口监控"],
+            ["Scratchpad",   "context/scratchpad.ts",  "外部持久化状态"],
+            ["Retrieval",    "context/retrieval.ts",   "按需加载外部知识"],
+            ["Permission",   "permissions/manager.ts", "调用前安全检查"],
+            ["Budget",       "budget/enforcer.ts",     "Token 与成本限制"],
+            ["Checkpoint",   "checkpoint/",            "断点续传"],
+            ["Tracing",      "tracing.ts",             "OTel 可观测性"],
+            ["Eval",         "eval/",                  "评测框架"],
+            ["MCP",          "mcp/client.ts",          "外部工具协议"],
+          ]}
+        />
+
+        <p>这些全是 <strong>机制</strong>，不是 <strong>策略</strong>。产品层要做的就是：</p>
+
+        <div className="cards cols-3">
+          <Card title="选策略" kind="">
+            Compactor 如何压缩？Permission 允许什么？Budget 上限多少？<br />
+            产品层拍板，框架层执行。
+          </Card>
+          <Card title="加工具" kind="">
+            框架只有 registry——产品决定注册哪组工具：文件、Git、终端、LSP……<br />
+            这是最厚的层。
+          </Card>
+          <Card title="定入口" kind="">
+            CLI 参数、配置文件、环境变量、stdin/stdout 协议。<br />
+            框架不关心这些——产品需要它们才能落地。
+          </Card>
+        </div>
+
+        <Callout kind="key" title="两个方向都要守住">
+          <p><strong>不要往回改框架。</strong> 产品需求要接入 harness 的出入口，而不是突破它的抽象。一旦你开始在产品层 import 框架的内部模块并操纵它们的私有状态，你就丢失了"可替换"这个资产。</p>
+          <p><strong>但框架的设计必须允许产品接进来。</strong> 如果 PermissionManager 没有 hook 点让产品注入交互式确认对话框，那是框架的 defect——回到框架层修，再回产品层用。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch23-2" num="23.2" title="runAgentCLI() 入口">
+        <p>这是最低限度能跑的产品入口。它把框架层的所有子系统装配到一起，启动一个命令行交互式 agent。</p>
+
+        <CodeBlock filename="src/cli/main.ts" lang="typescript">{`import { arun } from "../harness/agent.js";
+import { Transcript } from "../harness/transcript.js";
+import { ToolRegistry } from "../harness/tools/registry.js";
+import { ToolCatalog } from "../harness/tools/catalog.js";
+import { ContextAccountant } from "../harness/context/accountant.js";
+import { Compactor } from "../harness/context/compactor.js";
+import { PermissionManager } from "../harness/permissions/manager.js";
+import { BudgetEnforcer } from "../harness/budget/enforcer.js";
+import { Checkpointer } from "../harness/checkpoint/checkpointer.js";
+import { createProvider } from "./provider.js";
+import { cliPermissionHandler } from "./permissions.js";
+import { cliEventHandler } from "./events.js";
+import { readline } from "node:readline/promises";
+
+export async function runAgentCLI(): Promise<void> {
+  // 1. 注册所有基础工具
+  const registry = new ToolRegistry();
+  const catalog = new ToolCatalog(registry);
+  registry.registerFileTools();
+  registry.registerWebTools();
+  registry.registerMCPTools();
+
+  // 2. 权限管理器（交互式确认）
+  const permissionManager = new PermissionManager();
+  permissionManager.setHandler(cliPermissionHandler);
+
+  // 3. 上下文管理
+  const accountant = new ContextAccountant({ maxContextSize: 100_000 });
+
+  // 4. Provider（从环境变量读取配置）
+  const provider = createProvider();
+
+  // 5. 预算
+  const budget = new BudgetEnforcer({ enabled: true, maxTokens: 100_000 });
+
+  // 6. 主交互循环
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  let transcript = new Transcript();
+  try {
+    console.log("Agent 已就绪。输入你的问题（输入 exit 退出）");
+
+    while (true) {
+      const input = await rl.question("> ");
+      if (input.trim().toLowerCase() === "exit") break;
+
+      transcript = await arun(
+        provider,
+        registry,
+        input,
+        transcript,
+        "你是一个 coding agent。使用可用工具帮助用户完成编程任务。",
+        cliEventHandler,
+        undefined,  // onToolCall
+        undefined,  // onToolResult
+        undefined,  // onSnapshot
+        accountant,
+        undefined,  // compactor
+        undefined,  // onCompaction
+        catalog.getPinnedTools(),
+        10,         // toolsPerTurn
+      );
+    }
+  } finally {
+    rl.close();
+  }
+}`}</CodeBlock>
+
+        <Callout kind="warn" title="这只是骨架——大部分参数还是 undefined">
+          <p>compactor 没配、checkpointer 没连、tool call 回调没写。但这就是正确的起点：<strong>先让链路通，再逐层注入能力。</strong> 后续每章会替换一个 undefined 为真实实现。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch23-3" num="23.3" title="装配 Provider">
+        <p>产品层需要决定：支持哪些模型？通过什么方式配置？</p>
+
+        <CodeBlock filename="src/cli/provider.ts" lang="typescript">{`import { type Provider } from "../harness/providers/base.js";
+
+export function createProvider(): Provider {
+  const providerName = process.env.PROVIDER || "anthropic";
+  // 也可以用配置文件，第 30 章会做
+
+  switch (providerName) {
+    case "anthropic":
+      return createAnthropicProvider({
+        apiKey: process.env.ANTHROPIC_API_KEY!,
+        model: process.env.MODEL || "claude-sonnet-4-20250514",
+        temperature: parseFloat(process.env.TEMPERATURE || "0"),
+      });
+
+    case "openai":
+      return createOpenAIProvider({
+        apiKey: process.env.OPENAI_API_KEY!,
+        model: process.env.MODEL || "gpt-4o",
+      });
+
+    case "mock":
+      // 第 2 章的老朋友——测试和开发用
+      return createMockProvider();
+
+    default:
+      throw new Error(\`Unknown provider: \${providerName}\`);
+  }
+}`}</CodeBlock>
+
+        <Callout kind="note" title="为什么 temperature 默认 0？">
+          Coding agent 不是创意写作——你要的是确定性、可复现的行为。temperature=0 让模型对同一输入给出同一回答。等你跑通基础流程后，可以调高到 0.2–0.3 来获得一些多样化（例如文件搜索策略）。
+        </Callout>
+      </Section>
+
+      <Section id="ch23-4" num="23.4" title="权限的 CLI 面孔">
+        <p>第 6/14 章留下的 PermissionManager 是一个抽象的闸门。产品层要赋予它具体的面孔——在终端里问用户"允许吗？"</p>
+
+        <CodeBlock filename="src/cli/permissions.ts" lang="typescript">{`import { type PermissionRequest, type PermissionDecision } from "../harness/permissions/manager.js";
+import { readline } from "node:readline/promises";
+
+export async function cliPermissionHandler(
+  req: PermissionRequest,
+): Promise<PermissionDecision> {
+  // 自动允许读操作
+  if (req.action.startsWith("read_") || req.action === "list_directory") {
+    return { allowed: true, reason: "read-only" };
+  }
+
+  console.log(\`\n⚠️  需要确认: \${req.action}\`);
+  if (req.details) {
+    console.log(\`   \${req.details}\`);
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await rl.question("  允许? (y=一次 / a=总是允许 / n=拒绝 / v=查看详情): ");
+
+    switch (answer.trim().toLowerCase()) {
+      case "y": return { allowed: true, remember: false };
+      case "a": return { allowed: true, remember: true };
+      case "v":
+        console.log(JSON.stringify(req, null, 2));
+        const followUp = await rl.question("  现在允许? (y/n): ");
+        return { allowed: followUp.trim().toLowerCase() === "y", remember: false };
+      default:
+        return { allowed: false, reason: "用户拒绝" };
+    }
+  } finally {
+    rl.close();
+  }
+}`}</CodeBlock>
+
+        <p>三个要点：<code>remember: true</code>（"总是允许"）让 PermissionManager 为该 action 跳过后续确认——直到会话结束或用户显式重置。自动放行 read-only 操作减少了摩擦。拒绝时要给理由，以便审计。</p>
+      </Section>
+
+      <Section id="ch23-5" num="23.5" title="事件输出——第一个可见的反馈">
+        <p>第 5 章的 StreamEvent 是 harness 内部的事件总线。产品层需要把它渲染成终端上看得见的东西。</p>
+
+        <CodeBlock filename="src/cli/events.ts" lang="typescript">{`import type { StreamEvent } from "../harness/stream/types.js";
+
+export function cliEventHandler(event: StreamEvent): void {
+  switch (event.type) {
+    case "text":
+      process.stdout.write(event.delta);
+      break;
+
+    case "tool_call":
+      console.log(\`\n🔧 正在使用工具: \${event.toolName}\`);
+      break;
+
+    case "tool_result":
+      const preview = event.content.slice(0, 200);
+      console.log(\`📎 工具返回: \${preview}\${event.content.length > 200 ? "…" : ""}\`);
+      break;
+
+    case "error":
+      console.error(\`❌ 错误: \${event.message}\`);
+      break;
+
+    case "progress":
+      // 第 29 章会实现进度条
+      break;
+
+    case "compaction":
+      console.log(\`📦 压缩: 回收了 \${event.tokensReclaimed} tokens\`);
+      break;
+  }
+}`}</CodeBlock>
+
+        <Callout kind="tip" title="流式渲染是最好的 UX">
+          让用户看到模型"正在思考"——文本逐字出现而不是一次性刷屏——是 agent 产品最基本的信任机制。用户看到模型在写、在纠错、在调用工具，而不是在空白屏幕前转圈 10 秒。
+        </Callout>
+      </Section>
+
+      <Section id="ch23-6" num="23.6" title="第一次真实的终端运行">
+        <p>让它跑一次。不用复杂任务，先问一个简单问题——让 agent 读自己的源码：</p>
+
+        <CodeBlock filename="shell" lang="shell">{`# 假设 package.json 的 bin 字段配好了
+npx agent-code
+
+# 或者直接在开发模式下
+npx tsx src/cli/main.ts`}</CodeBlock>
+
+        <CodeBlock filename="terminal" lang="shell">{`Agent 已就绪。输入你的问题（输入 exit 退出）
+> 读 src/cli/main.ts 这个文件，告诉我它做了什么
+
+📖 读文件: src/cli/main.ts
+📎 文件内容（前 1000 字符）:
+  import { arun } from ...
+
+> 这段代码注册了哪些工具？
+📖 读文件: src/cli/main.ts
+📎 文件内容（后 800 字符）:
+  registry.registerFileTools();
+  registry.registerWebTools();
+  registry.registerMCPTools();
+
+> 这个文件注册了三种工具：文件工具、Web 工具、MCP 工具。arun() 函数在 agent.ts 中...`}</CodeBlock>
+
+        <p>如果这段能跑通，就说明：</p>
+        <ul>
+          <li>arun() 正确调用了 Provider</li>
+          <li>ToolRegistry 正确派发了 read_file</li>
+          <li>PermissionManager 正确放行了读操作</li>
+          <li>StreamEvent 正确渲染到了终端</li>
+        </ul>
+
+        <Callout kind="key">
+          <p>能跑通这一段，你就有了一条端到端的链路。剩下 9 章都在这个链路上插功能，不需要重新搭建。</p>
+        </Callout>
+      </Section>
+
+      <Section id="ch23-7" num="23.7" title="差距分析：当前能做什么，还不能做什么">
+        <p>第一次终端运行暴露了当前能力的边界：</p>
+
+        <CmpTable
+          headers={["能做", "不能做"]}
+          rows={[
+            ["读文件、列目录", "写文件、创建文件、删除文件"],
+            ["调用预注册的 Web/MCP 工具", "搜索文件、grep、glob"],
+            ["多轮对话", "执行 shell 命令"],
+            ["token 记账", "Git 操作"],
+            ["基本的权限确认", "代码补全、跳转定义"],
+            ["流式文本输出", "进度条、确认对话框、diff 视图"],
+          ]}
+        />
+
+        <p>右边那一列，就是 ch24–ch29 要填补的。每一章会产出一组真实可用的工具，注册进 registry，让 agent 能做更多事情。</p>
+      </Section>
+
+      <Section id="ch23-8" num="23.8" title="试一试">
+        <div className="cards cols-3">
+          <Card title="① 跑通一个回合">复制本章的 main.ts，连上 mock provider，让 agent 做一个 read_file 然后回到文本。确认每一段代码都不报错。</Card>
+          <Card title="② 自定义事件渲染">修改 cliEventHandler 中的 tool_result 预览长度，并用颜色（ANSI escape codes）区分文本/工具/错误。</Card>
+          <Card title="③ 思考产品的命名">产品叫什么？"agent-code"？记住这个名字会在 ch32 的 package.json、README、终端提示里出现。</Card>
+        </div>
+      </Section>
+
+      <Quiz chapter="ch23" questions={[
+        {
+          q: "这一章的核心任务是？",
+          options: [
+            "给 harness 增加新功能",
+            "把已有 harness 子系统组装成可执行的 CLI 产品",
+            "重写 PermissionManager",
+            "删除所有 mock",
+          ],
+          right: 1,
+          explain: "框架层已经做完了。产品层的工作是装配、配置、接入终端。",
+        },
+        {
+          q: "cliPermissionHandler 为什么默认放行 read_* 操作？",
+          options: [
+            "因为读操作不需要用户知道",
+            "为了减少摩擦——读操作没有副作用，不需要每次都打断用户",
+            "因为 PermissionManager 不支持读操作",
+            "因为用户不喜欢做选择",
+          ],
+          right: 1,
+          explain: "权限管理要找到安全与流畅度的平衡。读操作无副作用，自动放行是正确的取舍。写操作/终端执行则需要确认。",
+        },
+        {
+          q: "流式渲染对 Coding Agent 为什么重要？",
+          options: [
+            "美观",
+            "建立用户的信任——看到模型在思考而不是空白屏幕前沉默",
+            "减少 token 消耗",
+            "加速工具执行",
+          ],
+          right: 1,
+          explain: "用户看到文本逐字出现，就知道系统在工作。空白屏幕会让用户怀疑系统卡住了或出错了。",
+        },
+      ]} />
+
+      <ChapterNav />
+    </section>
+  );
+}
+
+window.Chapter23 = Chapter23;
