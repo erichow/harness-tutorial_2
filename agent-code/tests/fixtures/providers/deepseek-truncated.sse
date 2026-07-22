@@ -1,0 +1,1 @@
+data: {"id":"chat_deepseek_truncated","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial answer"},"finish_reason":null}],"usage":null}

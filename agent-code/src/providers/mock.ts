@@ -1,6 +1,7 @@
 import type {
   Provider,
   ProviderRequest,
+  ProviderResponseCompleted,
   ProviderStreamEvent,
 } from "./provider.js";
 
@@ -8,7 +9,16 @@ export interface MockWaitForAbort {
   readonly type: "wait_for_abort";
 }
 
-export type MockProviderEvent = ProviderStreamEvent | MockWaitForAbort;
+type MockResponseCompleted = Omit<
+  ProviderResponseCompleted,
+  "requestId" | "providerFinishReason"
+> &
+  Partial<Pick<ProviderResponseCompleted, "requestId" | "providerFinishReason">>;
+
+export type MockProviderEvent =
+  | Exclude<ProviderStreamEvent, ProviderResponseCompleted>
+  | MockResponseCompleted
+  | MockWaitForAbort;
 
 export interface MockProviderResponse {
   readonly events: readonly MockProviderEvent[];
@@ -16,6 +26,7 @@ export interface MockProviderResponse {
 
 /** A deterministic provider for tests, examples, and offline development. */
 export class MockProvider implements Provider {
+  readonly name = "mock";
   readonly requests: ProviderRequest[] = [];
   #nextResponse = 0;
 
@@ -40,7 +51,15 @@ export class MockProvider implements Provider {
         throw request.signal.reason;
       }
 
-      yield event;
+      if (event.type === "response_completed") {
+        yield {
+          ...event,
+          requestId: event.requestId ?? `mock-response-${this.#nextResponse - 1}`,
+          providerFinishReason: event.providerFinishReason ?? event.finishReason,
+        };
+      } else {
+        yield event;
+      }
     }
   }
 }

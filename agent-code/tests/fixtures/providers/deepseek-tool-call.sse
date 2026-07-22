@@ -1,0 +1,11 @@
+: keep-alive
+
+data: {"id":"chat_deepseek_tool","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"raw private reasoning","content":"Checking ","tool_calls":[{"index":0,"id":"call_weather","type":"function","function":{"name":"get_weather","arguments":"{\"city\":"}}]},"finish_reason":null}],"usage":null}
+
+data: {"id":"chat_deepseek_tool","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Shenzhen\"}"}}]},"finish_reason":null}],"usage":null}
+
+data: {"id":"chat_deepseek_tool","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":null}
+
+data: {"id":"chat_deepseek_tool","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":30,"completion_tokens":8,"total_tokens":38,"prompt_cache_hit_tokens":4}}
+
+data: [DONE]

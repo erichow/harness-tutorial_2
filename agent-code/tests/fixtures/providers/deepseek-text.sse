@@ -1,0 +1,7 @@
+data: {"id":"chat_deepseek_text","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"raw private reasoning","content":"It is sunny."},"finish_reason":null}],"usage":null}
+
+data: {"id":"chat_deepseek_text","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}
+
+data: {"id":"chat_deepseek_text","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":42,"completion_tokens":5,"total_tokens":47,"prompt_cache_hit_tokens":12}}
+
+data: [DONE]

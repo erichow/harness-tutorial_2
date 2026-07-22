@@ -1,0 +1,15 @@
+data: {"type":"response.created","response":{"id":"resp_openai_tool"}}
+
+data: {"type":"response.output_text.delta","delta":"Checking "}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_weather","call_id":"call_weather","name":"get_weather","arguments":""}}
+
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_weather","output_index":0,"delta":"{\"city\":"}
+
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_weather","output_index":0,"delta":"\"Shenzhen\"}"}
+
+data: {"type":"response.function_call_arguments.done","item_id":"fc_weather","output_index":0,"arguments":"{\"city\":\"Shenzhen\"}","name":"get_weather"}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_weather","call_id":"call_weather","name":"get_weather","arguments":"{\"city\":\"Shenzhen\"}"}}
+
+data: {"type":"response.completed","response":{"id":"resp_openai_tool","status":"completed","usage":{"input_tokens":30,"output_tokens":8,"input_tokens_details":{"cached_tokens":4}}}}

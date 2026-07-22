@@ -33,6 +33,8 @@ export interface ProviderUsage {
 export interface ProviderResponseCompleted {
   readonly type: "response_completed";
   readonly finishReason: "stop" | "tool_calls";
+  readonly requestId: string;
+  readonly providerFinishReason: string;
 }
 
 export type ProviderStreamEvent =
@@ -43,5 +45,29 @@ export type ProviderStreamEvent =
   | ProviderResponseCompleted;
 
 export interface Provider {
+  readonly name: string;
   stream(request: ProviderRequest): AsyncIterable<ProviderStreamEvent>;
+}
+
+export interface ProviderErrorOptions extends ErrorOptions {
+  readonly code?: string | undefined;
+  readonly requestId?: string | undefined;
+  readonly retryable?: boolean | undefined;
+  readonly status?: number | undefined;
+}
+
+export class ProviderError extends Error {
+  readonly code: string | undefined;
+  readonly requestId: string | undefined;
+  readonly retryable: boolean;
+  readonly status: number | undefined;
+
+  constructor(message: string, options: ProviderErrorOptions = {}) {
+    super(message, options);
+    this.name = "ProviderError";
+    this.code = options.code;
+    this.requestId = options.requestId;
+    this.retryable = options.retryable ?? false;
+    this.status = options.status;
+  }
 }

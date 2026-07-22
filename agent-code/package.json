@@ -16,6 +16,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
+    "test:smoke": "vitest run --config vitest.config.ts tests/integration/provider-smoke.test.ts",
     "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts"
   },
   "license": "MIT",

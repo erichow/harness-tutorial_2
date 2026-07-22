@@ -48,6 +48,13 @@ export interface UsageEvent extends EventBase {
   readonly cachedInputTokens?: number | undefined;
 }
 
+export interface ProviderResponseEvent extends EventBase {
+  readonly type: "provider_response";
+  readonly provider: string;
+  readonly requestId: string;
+  readonly finishReason: string;
+}
+
 export type ErrorCategory =
   | "user"
   | "tool"
@@ -77,5 +84,6 @@ export type RuntimeEvent =
   | ToolCallFinishedEvent
   | PermissionRequestedEvent
   | UsageEvent
+  | ProviderResponseEvent
   | ErrorEvent
   | TurnFinishedEvent;

@@ -64,6 +64,15 @@ export const runtimeEventSchema = z.discriminatedUnion("type", [
   z
     .object({
       ...eventBase,
+      type: z.literal("provider_response"),
+      provider: z.string().min(1),
+      requestId: z.string().min(1),
+      finishReason: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBase,
       type: z.literal("error"),
       category: z.enum(["user", "tool", "provider", "cancelled", "internal"]),
       message: z.string(),

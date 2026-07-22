@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import type { ContentBlock, ToolCallBlock, ToolResultBlock } from "../messages/blocks.js";
 import type { Transcript, TranscriptMessage } from "../messages/transcript.js";
-import type { Provider, ProviderStreamEvent } from "../providers/provider.js";
+import {
+  ProviderError,
+  type Provider,
+  type ProviderStreamEvent,
+} from "../providers/provider.js";
 import type { ToolExecutor } from "../tools/executor.js";
 import { isCancellation, throwIfCancelled } from "./cancellation.js";
 import {
@@ -49,6 +53,22 @@ class ProviderProtocolError extends Error {
   }
 }
 
+class ProviderStepError extends Error {
+  readonly partialContent: readonly ContentBlock[];
+  readonly retryable: boolean;
+
+  constructor(
+    message: string,
+    partialContent: readonly ContentBlock[],
+    options: { readonly cause: unknown; readonly retryable: boolean },
+  ) {
+    super(message, { cause: options.cause });
+    this.name = "ProviderStepError";
+    this.partialContent = partialContent;
+    this.retryable = options.retryable;
+  }
+}
+
 export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
   const limits = options.limits ?? DEFAULT_TURN_LIMITS;
   validateTurnLimits(limits);
@@ -92,6 +112,13 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
         tools: options.tools,
         signal,
         emit,
+      });
+
+      await emit({
+        type: "provider_response",
+        provider: options.provider.name,
+        requestId: streamed.requestId,
+        finishReason: streamed.providerFinishReason,
       });
 
       transcript = appendMessage(transcript, {
@@ -152,9 +179,24 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
       return await finish("cancelled");
     }
 
+    if (error instanceof ProviderStepError && error.partialContent.length > 0) {
+      transcript = appendMessage(transcript, {
+        id: createId(),
+        role: "assistant",
+        content: error.partialContent,
+        createdAt: now().toISOString(),
+      });
+    }
+
     const category: ErrorCategory = "provider";
     const message = error instanceof Error ? error.message : String(error);
-    await emitError(emit, category, message, false);
+    const retryable =
+      error instanceof ProviderStepError
+        ? error.retryable
+        : error instanceof ProviderError
+          ? error.retryable
+          : false;
+    await emitError(emit, category, message, retryable);
     return await finish("error");
   }
 }
@@ -163,6 +205,8 @@ interface ConsumedProviderResponse {
   readonly content: readonly ContentBlock[];
   readonly toolCalls: readonly ToolCallBlock[];
   readonly finishReason: "stop" | "tool_calls";
+  readonly requestId: string;
+  readonly providerFinishReason: string;
 }
 
 async function consumeProviderResponse(options: {
@@ -177,25 +221,55 @@ async function consumeProviderResponse(options: {
   const content: ContentBlock[] = [];
   const toolCalls: ToolCallBlock[] = [];
   let finishReason: "stop" | "tool_calls" | undefined;
+  let requestId: string | undefined;
+  let providerFinishReason: string | undefined;
 
-  for await (const event of options.provider.stream({
-    transcript: options.transcript,
-    tools: options.tools.definitions,
-    signal: options.signal,
-  })) {
-    throwIfCancelled(options.signal);
-    if (finishReason !== undefined) {
-      throw new ProviderProtocolError("Provider emitted an event after response_completed");
+  try {
+    for await (const event of options.provider.stream({
+      transcript: options.transcript,
+      tools: options.tools.definitions,
+      signal: options.signal,
+    })) {
+      throwIfCancelled(options.signal);
+      if (finishReason !== undefined) {
+        throw new ProviderProtocolError("Provider emitted an event after response_completed");
+      }
+      await consumeEvent(event, content, toolCalls, options.emit);
+      if (event.type === "response_completed") {
+        finishReason = event.finishReason;
+        requestId = event.requestId;
+        providerFinishReason = event.providerFinishReason;
+      }
     }
-    await consumeEvent(event, content, toolCalls, options.emit);
-    if (event.type === "response_completed") finishReason = event.finishReason;
+  } catch (error) {
+    if (isCancellation(error, options.signal)) throw error;
+    if (error instanceof ProviderProtocolError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ProviderStepError(
+      message,
+      content.filter((block) => block.type !== "tool_call"),
+      {
+        cause: error,
+        retryable: error instanceof ProviderError ? error.retryable : false,
+      },
+    );
   }
 
-  if (finishReason === undefined) {
+  if (
+    finishReason === undefined ||
+    requestId === undefined ||
+    providerFinishReason === undefined
+  ) {
     throw new ProviderProtocolError("Provider stream ended without response_completed");
   }
 
-  return { content, toolCalls, finishReason };
+  return {
+    content,
+    toolCalls,
+    finishReason,
+    requestId,
+    providerFinishReason,
+  };
 }
 
 async function consumeEvent(

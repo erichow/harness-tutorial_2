@@ -88,9 +88,10 @@ describe("runTurn", () => {
       "text_delta",
       "text_delta",
       "usage",
+      "provider_response",
       "turn_finished",
     ]);
-    expect(events.map((event) => event.sequence)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(events.map((event) => event.sequence)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     expect(new Set(events.map((event) => event.turnId))).toEqual(new Set(["id-0"]));
   });
 

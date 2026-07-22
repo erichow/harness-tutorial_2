@@ -101,12 +101,20 @@ const events: RuntimeEvent[] = [
   {
     ...baseEvent,
     sequence: 7,
+    type: "provider_response",
+    provider: "openai",
+    requestId: "resp_123",
+    finishReason: "completed",
+  },
+  {
+    ...baseEvent,
+    sequence: 8,
     type: "error",
     category: "provider",
     message: "rate limited",
     retryable: true,
   },
-  { ...baseEvent, sequence: 8, type: "turn_finished", reason: "completed" },
+  { ...baseEvent, sequence: 9, type: "turn_finished", reason: "completed" },
 ];
 
 describe("transcript serialization", () => {
