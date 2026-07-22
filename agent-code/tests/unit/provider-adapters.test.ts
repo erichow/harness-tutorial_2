@@ -209,7 +209,7 @@ describe("OpenAIResponsesProvider", () => {
         {
           type: "function_call_output",
           call_id: "call_weather",
-          output: "sunny",
+          output: "{\"status\":\"success\",\"content\":\"sunny\"}",
         },
       ],
     });
@@ -318,7 +318,7 @@ describe("DeepSeekChatProvider", () => {
       {
         role: "tool",
         tool_call_id: "call_weather",
-        content: "sunny",
+        content: "{\"status\":\"success\",\"content\":\"sunny\"}",
       },
     ]));
     expect([...first, ...second].some(

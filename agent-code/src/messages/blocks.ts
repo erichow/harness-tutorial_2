@@ -20,6 +20,24 @@ export interface ToolResultBlock {
   readonly content: string;
   /** Optional structured data for renderers, logs, and automation. */
   readonly data?: JsonValue | undefined;
+  /** Present on results produced by the chapter 5 Tool Registry. */
+  readonly error?: ToolResultError | undefined;
+  /** Output accounting is optional so chapter 2-4 transcripts remain readable. */
+  readonly output?: ToolResultOutput | undefined;
+}
+
+export interface ToolResultError {
+  readonly code: string;
+  readonly message: string;
+  readonly retryable: boolean;
+}
+
+export interface ToolResultOutput {
+  readonly contentBytes: number;
+  readonly totalContentBytes: number;
+  readonly truncated: boolean;
+  /** Opaque, tool-owned cursor to pass to a later invocation. */
+  readonly nextCursor?: string | undefined;
 }
 
 export interface ReasoningSummaryBlock {

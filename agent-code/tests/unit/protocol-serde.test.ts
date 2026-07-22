@@ -42,6 +42,12 @@ const messages: TranscriptMessage[] = [
         status: "success",
         content: "1: export const answer = 42;",
         data: { path: "src/index.ts", truncated: false },
+        output: {
+          contentBytes: 28,
+          totalContentBytes: 28,
+          truncated: false,
+          nextCursor: "line-2",
+        },
       },
     ],
   },
@@ -79,6 +85,11 @@ const events: RuntimeEvent[] = [
       status: "success",
       content: "ok",
       data: { bytes: 2 },
+      output: {
+        contentBytes: 2,
+        totalContentBytes: 2,
+        truncated: false,
+      },
     },
   },
   {

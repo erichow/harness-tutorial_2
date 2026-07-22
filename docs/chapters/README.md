@@ -12,5 +12,6 @@ git switch --detach chapter-01
 | 02 | [类型化消息和事件协议](./02-messages-and-events.md) | `chapter-02` | 完成 |
 | 03 | [Mock Provider 和最小 Agent Loop](./03-mock-provider-agent-loop.md) | `chapter-03` | 完成 |
 | 04 | [GPT / DeepSeek Provider 和流式工具调用](./04-real-providers-and-streaming-tools.md) | `chapter-04` | 完成 |
+| 05 | [Tool Registry、Schema 和结果信封](./05-tool-registry-and-results.md) | `chapter-05` | 完成 |
 
 后续章节按 [总体设计稿](../../PRACTICAL_TUTORIAL.md) 的顺序补充。

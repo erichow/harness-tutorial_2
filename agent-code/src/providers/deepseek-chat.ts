@@ -1,6 +1,7 @@
 import type { ContentBlock, ToolCallBlock, ToolResultBlock } from "../messages/blocks.js";
 import type { TranscriptMessage } from "../messages/transcript.js";
 import type { ToolDefinition } from "../tools/executor.js";
+import { serializeToolResultForProvider } from "../tools/result.js";
 import {
   isRecord,
   parseJsonObject,
@@ -203,7 +204,7 @@ function mapChatMessages(
         ...results.map((result) => ({
           role: "tool",
           tool_call_id: result.toolCallId,
-          content: result.content,
+          content: serializeToolResultForProvider(result),
         })),
       );
       continue;

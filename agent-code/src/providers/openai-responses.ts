@@ -1,6 +1,7 @@
 import type { ContentBlock } from "../messages/blocks.js";
 import type { Transcript, TranscriptMessage } from "../messages/transcript.js";
 import type { ToolDefinition } from "../tools/executor.js";
+import { serializeToolResultForProvider } from "../tools/result.js";
 import {
   isRecord,
   parseJsonObject,
@@ -285,7 +286,7 @@ function mapResponsesInput(
         input.push({
           type: "function_call_output",
           call_id: block.toolCallId,
-          output: block.content,
+          output: serializeToolResultForProvider(block),
         });
       }
     }

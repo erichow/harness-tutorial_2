@@ -8,6 +8,7 @@ import {
   type ProviderStreamEvent,
 } from "../providers/provider.js";
 import type { ToolExecutor } from "../tools/executor.js";
+import { createToolErrorResult } from "../tools/result.js";
 import { isCancellation, throwIfCancelled } from "./cancellation.js";
 import {
   DEFAULT_TURN_LIMITS,
@@ -152,13 +153,11 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
         } catch (error) {
           if (isCancellation(error, signal)) throw error;
           const message = error instanceof Error ? error.message : String(error);
-          result = {
-            type: "tool_result",
-            toolCallId: call.id,
-            status: "error",
-            content: `Tool ${call.name} failed: ${message}`,
-            data: { code: "execution_failed" },
-          };
+          result = createToolErrorResult(
+            call.id,
+            "execution_failed",
+            `Tool ${call.name} failed: ${message}`,
+          );
         }
         results.push(result);
         await emit({ type: "tool_call_finished", result });

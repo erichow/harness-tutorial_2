@@ -8,6 +8,8 @@ import {
   InMemoryToolExecutor,
   type ToolImplementation,
 } from "../../src/tools/executor.js";
+import { ToolRegistry } from "../../src/tools/registry.js";
+import type { Tool } from "../../src/tools/tool.js";
 
 const noTools = new InMemoryToolExecutor([]);
 
@@ -177,6 +179,61 @@ describe("runTurn", () => {
     expect(calls).toEqual(["one", "two", "three"]);
   });
 
+  it("returns a repeated-call error to the model without re-running the handler", async () => {
+    let executions = 0;
+    const echo: Tool = {
+      definition: {
+        name: "echo",
+        description: "Echo a text value",
+        inputSchema: {
+          type: "object",
+          properties: { text: { type: "string" } },
+          required: ["text"],
+          additionalProperties: false,
+        },
+      },
+      sideEffects: [],
+      async handler(input) {
+        executions += 1;
+        return { content: String(input.text) };
+      },
+    };
+    const repeatedCall = (id: string) => response(
+      {
+        type: "tool_call",
+        call: { type: "tool_call", id, name: "echo", input: { text: "same" } },
+      },
+      { type: "response_completed", finishReason: "tool_calls" },
+    );
+    const provider = new MockProvider([
+      repeatedCall("call-1"),
+      repeatedCall("call-2"),
+      response(
+        { type: "text_delta", delta: "stopped repeating" },
+        { type: "response_completed", finishReason: "stop" },
+      ),
+    ]);
+
+    const registry = new ToolRegistry([echo], { maxIdenticalCalls: 1 });
+    const result = await runTurn({
+      provider,
+      transcript: createTranscript(),
+      tools: registry.createExecutor(),
+      now: fixedNow,
+      createId: scriptedIds(),
+    });
+    const repeatedResult = provider.requests[2]?.transcript.messages
+      .at(-1)?.content.at(0);
+
+    expect(result.reason).toBe("completed");
+    expect(executions).toBe(1);
+    expect(repeatedResult).toMatchObject({
+      type: "tool_result",
+      status: "error",
+      error: { code: "repeated_call" },
+    });
+  });
+
   it.each([
     {
       name: "unknown tool",
@@ -228,7 +285,8 @@ describe("runTurn", () => {
     expect(resultBlock).toMatchObject({
       type: "tool_result",
       status: "error",
-      data: { code },
+      error: { code, retryable: false },
+      output: { truncated: false },
     });
   });
 

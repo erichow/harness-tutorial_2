@@ -23,6 +23,23 @@ export const toolResultBlockSchema = z
     status: z.enum(["success", "error"]),
     content: z.string(),
     data: z.json().optional(),
+    error: z
+      .object({
+        code: z.string().min(1),
+        message: z.string(),
+        retryable: z.boolean(),
+      })
+      .strict()
+      .optional(),
+    output: z
+      .object({
+        contentBytes: z.number().int().nonnegative(),
+        totalContentBytes: z.number().int().nonnegative(),
+        truncated: z.boolean(),
+        nextCursor: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
