@@ -1,0 +1,308 @@
+import { describe, expect, it } from "vitest";
+
+import { createTranscript } from "../../src/messages/transcript.js";
+import { MockProvider, type MockProviderResponse } from "../../src/providers/mock.js";
+import { runTurn } from "../../src/runtime/agent.js";
+import type { RuntimeEvent } from "../../src/runtime/events.js";
+import {
+  InMemoryToolExecutor,
+  type ToolImplementation,
+} from "../../src/tools/executor.js";
+
+const noTools = new InMemoryToolExecutor([]);
+
+function response(
+  ...events: MockProviderResponse["events"]
+): MockProviderResponse {
+  return { events };
+}
+
+function scriptedIds(): () => string {
+  let next = 0;
+  return () => `id-${next++}`;
+}
+
+const fixedNow = (): Date => new Date("2026-07-22T12:00:00.000Z");
+
+function echoTool(overrides: Partial<ToolImplementation> = {}): ToolImplementation {
+  return {
+    definition: {
+      name: "echo",
+      description: "Echo a text value",
+      inputSchema: {
+        type: "object",
+        properties: { text: { type: "string" } },
+        required: ["text"],
+      },
+    },
+    validate(input) {
+      return typeof input.text === "string" ? undefined : "text must be a string";
+    },
+    async execute(input) {
+      return { content: String(input.text), data: { echoed: input.text ?? null } };
+    },
+    ...overrides,
+  };
+}
+
+describe("runTurn", () => {
+  it("streams a text response into events and the transcript", async () => {
+    const provider = new MockProvider([
+      response(
+        { type: "reasoning_summary_delta", delta: "Greet " },
+        { type: "reasoning_summary_delta", delta: "briefly." },
+        { type: "text_delta", delta: "Hel" },
+        { type: "text_delta", delta: "lo" },
+        { type: "usage", inputTokens: 4, outputTokens: 2 },
+        { type: "response_completed", finishReason: "stop" },
+      ),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const original = createTranscript();
+
+    const result = await runTurn({
+      provider,
+      transcript: original,
+      tools: noTools,
+      emit: (event) => { events.push(event); },
+      now: fixedNow,
+      createId: scriptedIds(),
+    });
+
+    expect(result.reason).toBe("completed");
+    expect(result.steps).toBe(1);
+    expect(original.messages).toHaveLength(0);
+    expect(result.transcript.messages).toMatchObject([
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning_summary", text: "Greet briefly." },
+          { type: "text", text: "Hello" },
+        ],
+      },
+    ]);
+    expect(events.map((event) => event.type)).toEqual([
+      "turn_started",
+      "reasoning_summary_delta",
+      "reasoning_summary_delta",
+      "text_delta",
+      "text_delta",
+      "usage",
+      "turn_finished",
+    ]);
+    expect(events.map((event) => event.sequence)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(new Set(events.map((event) => event.turnId))).toEqual(new Set(["id-0"]));
+  });
+
+  it("executes a tool and sends its result to the next provider step", async () => {
+    const provider = new MockProvider([
+      response(
+        {
+          type: "tool_call",
+          call: { type: "tool_call", id: "call-1", name: "echo", input: { text: "hi" } },
+        },
+        { type: "response_completed", finishReason: "tool_calls" },
+      ),
+      response(
+        { type: "text_delta", delta: "The tool said hi." },
+        { type: "response_completed", finishReason: "stop" },
+      ),
+    ]);
+    const events: RuntimeEvent[] = [];
+
+    const result = await runTurn({
+      provider,
+      transcript: createTranscript(),
+      tools: new InMemoryToolExecutor([echoTool()]),
+      emit: (event) => { events.push(event); },
+      now: fixedNow,
+      createId: scriptedIds(),
+    });
+
+    expect(result.reason).toBe("completed");
+    expect(result.steps).toBe(2);
+    expect(provider.requests).toHaveLength(2);
+    expect(provider.requests[1]?.transcript.messages).toMatchObject([
+      { role: "assistant", content: [{ type: "tool_call", id: "call-1" }] },
+      {
+        role: "tool",
+        content: [{ type: "tool_result", toolCallId: "call-1", status: "success" }],
+      },
+    ]);
+    expect(events.map((event) => event.type)).toContain("tool_call_started");
+    expect(events.map((event) => event.type)).toContain("tool_call_finished");
+  });
+
+  it("supports multiple tool calls across multiple provider steps", async () => {
+    const calls: string[] = [];
+    const tools = new InMemoryToolExecutor([
+      echoTool({
+        async execute(input) {
+          calls.push(String(input.text));
+          return { content: String(input.text) };
+        },
+      }),
+    ]);
+    const toolCall = (id: string, text: string) => ({
+      type: "tool_call" as const,
+      call: { type: "tool_call" as const, id, name: "echo", input: { text } },
+    });
+    const provider = new MockProvider([
+      response(
+        toolCall("call-1", "one"),
+        toolCall("call-2", "two"),
+        { type: "response_completed", finishReason: "tool_calls" },
+      ),
+      response(
+        toolCall("call-3", "three"),
+        { type: "response_completed", finishReason: "tool_calls" },
+      ),
+      response(
+        { type: "text_delta", delta: "done" },
+        { type: "response_completed", finishReason: "stop" },
+      ),
+    ]);
+
+    const result = await runTurn({
+      provider,
+      transcript: createTranscript(),
+      tools,
+      now: fixedNow,
+      createId: scriptedIds(),
+    });
+
+    expect(result.reason).toBe("completed");
+    expect(result.steps).toBe(3);
+    expect(calls).toEqual(["one", "two", "three"]);
+  });
+
+  it.each([
+    {
+      name: "unknown tool",
+      tools: new InMemoryToolExecutor([]),
+      call: { type: "tool_call" as const, id: "bad-1", name: "missing", input: {} },
+      code: "unknown_tool",
+    },
+    {
+      name: "invalid arguments",
+      tools: new InMemoryToolExecutor([echoTool()]),
+      call: { type: "tool_call" as const, id: "bad-2", name: "echo", input: { text: 3 } },
+      code: "invalid_arguments",
+    },
+    {
+      name: "tool exception",
+      tools: new InMemoryToolExecutor([
+        echoTool({
+          async execute() {
+            throw new Error("disk unavailable");
+          },
+        }),
+      ]),
+      call: { type: "tool_call" as const, id: "bad-3", name: "echo", input: { text: "x" } },
+      code: "execution_failed",
+    },
+  ])("returns $name to the model as a tool error", async ({ tools, call, code }) => {
+    const provider = new MockProvider([
+      response(
+        { type: "tool_call", call },
+        { type: "response_completed", finishReason: "tool_calls" },
+      ),
+      response(
+        { type: "text_delta", delta: "recovered" },
+        { type: "response_completed", finishReason: "stop" },
+      ),
+    ]);
+
+    const result = await runTurn({
+      provider,
+      transcript: createTranscript(),
+      tools,
+      now: fixedNow,
+      createId: scriptedIds(),
+    });
+    const resultBlock = provider.requests[1]?.transcript.messages
+      .at(-1)?.content.at(0);
+
+    expect(result.reason).toBe("completed");
+    expect(resultBlock).toMatchObject({
+      type: "tool_result",
+      status: "error",
+      data: { code },
+    });
+  });
+
+  it("stops with max_steps after the configured number of provider responses", async () => {
+    const call = (id: string) => response(
+      {
+        type: "tool_call",
+        call: { type: "tool_call", id, name: "echo", input: { text: id } },
+      },
+      { type: "response_completed", finishReason: "tool_calls" },
+    );
+    const provider = new MockProvider([call("call-1"), call("call-2")]);
+    const events: RuntimeEvent[] = [];
+
+    const result = await runTurn({
+      provider,
+      transcript: createTranscript(),
+      tools: new InMemoryToolExecutor([echoTool()]),
+      limits: { maxSteps: 2 },
+      emit: (event) => { events.push(event); },
+      now: fixedNow,
+      createId: scriptedIds(),
+    });
+
+    expect(result.reason).toBe("max_steps");
+    expect(result.steps).toBe(2);
+    expect(provider.requests).toHaveLength(2);
+    expect(events.at(-1)).toMatchObject({ type: "turn_finished", reason: "max_steps" });
+  });
+
+  it("cancels while a provider stream is pending", async () => {
+    const controller = new AbortController();
+    const provider = new MockProvider([
+      response({ type: "wait_for_abort" }),
+    ]);
+    const events: RuntimeEvent[] = [];
+
+    const pending = runTurn({
+      provider,
+      transcript: createTranscript(),
+      tools: noTools,
+      signal: controller.signal,
+      emit: (event) => { events.push(event); },
+      now: fixedNow,
+      createId: scriptedIds(),
+    });
+    queueMicrotask(() => controller.abort(new Error("user pressed Ctrl-C")));
+    const result = await pending;
+
+    expect(result.reason).toBe("cancelled");
+    expect(events.slice(-2)).toMatchObject([
+      { type: "error", category: "cancelled" },
+      { type: "turn_finished", reason: "cancelled" },
+    ]);
+  });
+
+  it("turns a malformed provider stream into a provider error", async () => {
+    const provider = new MockProvider([
+      response({ type: "text_delta", delta: "incomplete" }),
+    ]);
+    const events: RuntimeEvent[] = [];
+
+    const result = await runTurn({
+      provider,
+      transcript: createTranscript(),
+      tools: noTools,
+      emit: (event) => { events.push(event); },
+      now: fixedNow,
+      createId: scriptedIds(),
+    });
+
+    expect(result.reason).toBe("error");
+    expect(events.slice(-2)).toMatchObject([
+      { type: "error", category: "provider", message: expect.stringContaining("response_completed") },
+      { type: "turn_finished", reason: "error" },
+    ]);
+  });
+});

@@ -1,0 +1,267 @@
+import { randomUUID } from "node:crypto";
+
+import type { ContentBlock, ToolCallBlock, ToolResultBlock } from "../messages/blocks.js";
+import type { Transcript, TranscriptMessage } from "../messages/transcript.js";
+import type { Provider, ProviderStreamEvent } from "../providers/provider.js";
+import type { ToolExecutor } from "../tools/executor.js";
+import { isCancellation, throwIfCancelled } from "./cancellation.js";
+import {
+  DEFAULT_TURN_LIMITS,
+  type TurnLimits,
+  validateTurnLimits,
+} from "./limits.js";
+import {
+  RUNTIME_EVENT_PROTOCOL_VERSION,
+  type ErrorCategory,
+  type RuntimeEvent,
+  type TurnFinishReason,
+} from "./events.js";
+
+export interface RunTurnOptions {
+  readonly provider: Provider;
+  readonly transcript: Transcript;
+  readonly tools: ToolExecutor;
+  readonly signal?: AbortSignal | undefined;
+  readonly limits?: TurnLimits | undefined;
+  readonly emit?: ((event: RuntimeEvent) => void | Promise<void>) | undefined;
+  /** Test seams; normal callers should leave these unset. */
+  readonly now?: (() => Date) | undefined;
+  readonly createId?: (() => string) | undefined;
+}
+
+export interface RunTurnResult {
+  readonly transcript: Transcript;
+  readonly reason: TurnFinishReason;
+  readonly steps: number;
+  readonly turnId: string;
+}
+
+type RuntimeEventPayload = RuntimeEvent extends infer Event
+  ? Event extends RuntimeEvent
+    ? Omit<Event, "protocolVersion" | "sequence" | "timestamp" | "turnId">
+    : never
+  : never;
+
+class ProviderProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderProtocolError";
+  }
+}
+
+export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
+  const limits = options.limits ?? DEFAULT_TURN_LIMITS;
+  validateTurnLimits(limits);
+
+  const signal = options.signal ?? new AbortController().signal;
+  const now = options.now ?? (() => new Date());
+  const createId = options.createId ?? randomUUID;
+  const turnId = createId();
+  let sequence = 0;
+  let steps = 0;
+  let transcript = options.transcript;
+
+  const emit = async (
+    event: RuntimeEventPayload,
+  ): Promise<void> => {
+    await options.emit?.({
+      ...event,
+      protocolVersion: RUNTIME_EVENT_PROTOCOL_VERSION,
+      sequence,
+      timestamp: now().toISOString(),
+      turnId,
+    } as RuntimeEvent);
+    sequence += 1;
+  };
+
+  const finish = async (reason: TurnFinishReason): Promise<RunTurnResult> => {
+    await emit({ type: "turn_finished", reason });
+    return { transcript, reason, steps, turnId };
+  };
+
+  await emit({ type: "turn_started" });
+
+  try {
+    while (steps < limits.maxSteps) {
+      throwIfCancelled(signal);
+      steps += 1;
+
+      const streamed = await consumeProviderResponse({
+        provider: options.provider,
+        transcript,
+        tools: options.tools,
+        signal,
+        emit,
+      });
+
+      transcript = appendMessage(transcript, {
+        id: createId(),
+        role: "assistant",
+        content: streamed.content,
+        createdAt: now().toISOString(),
+      });
+
+      if (streamed.toolCalls.length === 0) {
+        if (streamed.finishReason !== "stop") {
+          throw new ProviderProtocolError(
+            "Provider finished with tool_calls but emitted no tool calls",
+          );
+        }
+        return await finish("completed");
+      }
+
+      if (streamed.finishReason !== "tool_calls") {
+        throw new ProviderProtocolError(
+          "Provider emitted tool calls but did not finish with tool_calls",
+        );
+      }
+
+      const results: ToolResultBlock[] = [];
+      for (const call of streamed.toolCalls) {
+        throwIfCancelled(signal);
+        let result: ToolResultBlock;
+        try {
+          result = await options.tools.execute(call, { signal });
+        } catch (error) {
+          if (isCancellation(error, signal)) throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          result = {
+            type: "tool_result",
+            toolCallId: call.id,
+            status: "error",
+            content: `Tool ${call.name} failed: ${message}`,
+            data: { code: "execution_failed" },
+          };
+        }
+        results.push(result);
+        await emit({ type: "tool_call_finished", result });
+      }
+
+      transcript = appendMessage(transcript, {
+        id: createId(),
+        role: "tool",
+        content: results,
+        createdAt: now().toISOString(),
+      });
+    }
+
+    return await finish("max_steps");
+  } catch (error) {
+    if (isCancellation(error, signal)) {
+      await emitError(emit, "cancelled", "Turn cancelled", false);
+      return await finish("cancelled");
+    }
+
+    const category: ErrorCategory = "provider";
+    const message = error instanceof Error ? error.message : String(error);
+    await emitError(emit, category, message, false);
+    return await finish("error");
+  }
+}
+
+interface ConsumedProviderResponse {
+  readonly content: readonly ContentBlock[];
+  readonly toolCalls: readonly ToolCallBlock[];
+  readonly finishReason: "stop" | "tool_calls";
+}
+
+async function consumeProviderResponse(options: {
+  readonly provider: Provider;
+  readonly transcript: Transcript;
+  readonly tools: ToolExecutor;
+  readonly signal: AbortSignal;
+  readonly emit: (
+    event: RuntimeEventPayload,
+  ) => Promise<void>;
+}): Promise<ConsumedProviderResponse> {
+  const content: ContentBlock[] = [];
+  const toolCalls: ToolCallBlock[] = [];
+  let finishReason: "stop" | "tool_calls" | undefined;
+
+  for await (const event of options.provider.stream({
+    transcript: options.transcript,
+    tools: options.tools.definitions,
+    signal: options.signal,
+  })) {
+    throwIfCancelled(options.signal);
+    if (finishReason !== undefined) {
+      throw new ProviderProtocolError("Provider emitted an event after response_completed");
+    }
+    await consumeEvent(event, content, toolCalls, options.emit);
+    if (event.type === "response_completed") finishReason = event.finishReason;
+  }
+
+  if (finishReason === undefined) {
+    throw new ProviderProtocolError("Provider stream ended without response_completed");
+  }
+
+  return { content, toolCalls, finishReason };
+}
+
+async function consumeEvent(
+  event: ProviderStreamEvent,
+  content: ContentBlock[],
+  toolCalls: ToolCallBlock[],
+  emit: (
+    event: RuntimeEventPayload,
+  ) => Promise<void>,
+): Promise<void> {
+  switch (event.type) {
+    case "text_delta":
+      appendText(content, "text", event.delta);
+      await emit({ type: "text_delta", delta: event.delta });
+      return;
+    case "reasoning_summary_delta":
+      appendText(content, "reasoning_summary", event.delta);
+      await emit({ type: "reasoning_summary_delta", delta: event.delta });
+      return;
+    case "tool_call":
+      content.push(event.call);
+      toolCalls.push(event.call);
+      await emit({ type: "tool_call_started", call: event.call });
+      return;
+    case "usage":
+      await emit({
+        type: "usage",
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        ...(event.cachedInputTokens === undefined
+          ? {}
+          : { cachedInputTokens: event.cachedInputTokens }),
+      });
+      return;
+    case "response_completed":
+      return;
+  }
+}
+
+function appendText(
+  content: ContentBlock[],
+  type: "text" | "reasoning_summary",
+  delta: string,
+): void {
+  const last = content.at(-1);
+  if (last?.type === type) {
+    content[content.length - 1] = { type, text: last.text + delta };
+  } else {
+    content.push({ type, text: delta });
+  }
+}
+
+function appendMessage(transcript: Transcript, message: TranscriptMessage): Transcript {
+  return {
+    ...transcript,
+    messages: [...transcript.messages, message],
+  };
+}
+
+async function emitError(
+  emit: (
+    event: RuntimeEventPayload,
+  ) => Promise<void>,
+  category: ErrorCategory,
+  message: string,
+  retryable: boolean,
+): Promise<void> {
+  await emit({ type: "error", category, message, retryable });
+}
