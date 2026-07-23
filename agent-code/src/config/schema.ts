@@ -51,6 +51,18 @@ const mcpServerSchema = executableExtensionSchema.extend({
   ])).min(1).optional(),
 }).strict();
 
+const lspServerSchema = executableExtensionSchema.extend({
+  languageIds: z.record(
+    z.string().trim().regex(/^\.[A-Za-z0-9.+_-]+$/u),
+    z.string().trim().min(1),
+  ).refine((mapping) => Object.keys(mapping).length > 0, {
+    message: "at least one file suffix is required",
+  }),
+  maxDocumentBytes: z.number().int().positive().optional(),
+  initializationOptions: z.json().optional(),
+  enabled: z.boolean().optional(),
+}).strict();
+
 export const configurationSchema = z.object({
   version: z.literal(1).optional(),
   provider: z.enum(["openai", "deepseek"]).optional(),
@@ -83,6 +95,10 @@ export const configurationSchema = z.object({
   mcpServers: z.record(
     z.string().trim().regex(/^[A-Za-z0-9_-]+$/u),
     mcpServerSchema,
+  ).optional(),
+  lspServers: z.record(
+    z.string().trim().regex(/^[A-Za-z0-9_-]+$/u),
+    lspServerSchema,
   ).optional(),
   hooks: z.object(Object.fromEntries(
     hookEventNames.map((event) => [event, z.array(hookSchema).optional()]),

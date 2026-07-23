@@ -118,7 +118,7 @@ describe("layered configuration", () => {
     expect(configuration.skippedFiles[0]?.reason).toContain("until the workspace is trusted");
   });
 
-  it("merges MCP, Hooks, and Skills only from configuration layers that passed trust", async () => {
+  it("merges MCP, LSP, Hooks, and Skills only from configuration layers that passed trust", async () => {
     const { root, paths } = await fixture();
     await json(paths.user, {
       trustedWorkspaces: [root],
@@ -128,6 +128,14 @@ describe("layered configuration", () => {
           args: ["user-server.mjs"],
           envFrom: { AUTH_TOKEN: "DOCS_TOKEN" },
           timeoutMs: 5_000,
+        },
+      },
+      lspServers: {
+        typescript: {
+          command: "typescript-language-server",
+          args: ["--stdio"],
+          languageIds: { ".ts": "typescript", ".tsx": "typescriptreact" },
+          initializationOptions: { preferences: { includeCompletions: false } },
         },
       },
       hooks: {
@@ -146,6 +154,13 @@ describe("layered configuration", () => {
           sideEffects: ["network"],
         },
       },
+      lspServers: {
+        rust: {
+          command: "rust-analyzer",
+          languageIds: { ".rs": "rust" },
+          timeoutMs: 8_000,
+        },
+      },
       hooks: {
         PreToolUse: [{ command: "project-policy", matcher: "*" }],
         Stop: [{ command: "turn-finished" }],
@@ -162,6 +177,19 @@ describe("layered configuration", () => {
     expect(configuration.mcpServers).toMatchObject({
       docs: { command: "node", envFrom: { AUTH_TOKEN: "DOCS_TOKEN" } },
       issues: { command: "node", sideEffects: ["network"] },
+    });
+    expect(configuration.lspServers).toEqual({
+      typescript: {
+        command: "typescript-language-server",
+        args: ["--stdio"],
+        languageIds: { ".ts": "typescript", ".tsx": "typescriptreact" },
+        initializationOptions: { preferences: { includeCompletions: false } },
+      },
+      rust: {
+        command: "rust-analyzer",
+        languageIds: { ".rs": "rust" },
+        timeoutMs: 8_000,
+      },
     });
     expect(configuration.hooks.PreToolUse?.map(({ command }) => command))
       .toEqual(["user-policy", "project-policy"]);

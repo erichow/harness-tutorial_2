@@ -373,6 +373,7 @@ export function runtimeExtensions(
   return {
     trust: configuration.trust,
     mcpServers: configuration.mcpServers,
+    lspServers: configuration.lspServers,
     hooks: configuration.hooks,
     skills: configuration.skills,
     environment,

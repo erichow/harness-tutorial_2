@@ -1,6 +1,6 @@
 import { realpath, stat } from "node:fs/promises";
 
-export type ProjectFeature = "config" | "hooks" | "mcp" | "permission_rules" | "skills";
+export type ProjectFeature = "config" | "hooks" | "lsp" | "mcp" | "permission_rules" | "skills";
 
 export interface WorkspaceTrustOptions {
   readonly workspaceRoot: string;

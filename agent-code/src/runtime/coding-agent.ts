@@ -18,6 +18,11 @@ import {
   type McpServerConfiguration,
   type McpTransportFactory,
 } from "../extensions/mcp.js";
+import {
+  createLspToolset,
+  type LspClientFactory,
+  type LspServerConfiguration,
+} from "../extensions/lsp.js";
 import { createSkillLoaderTool, SkillCatalog } from "../extensions/skills.js";
 import { createWorkspaceFileToolset } from "../tools/files/index.js";
 import type { UndoResult } from "../tools/files/checkpoint.js";
@@ -53,6 +58,7 @@ export interface CodingAgentRuntimeOptions {
   readonly extensions?: {
     readonly trust: WorkspaceTrust;
     readonly mcpServers?: Readonly<Record<string, McpServerConfiguration>> | undefined;
+    readonly lspServers?: Readonly<Record<string, LspServerConfiguration>> | undefined;
     readonly hooks?: HookConfiguration | undefined;
     readonly skills?: {
       readonly userDirectory?: string | undefined;
@@ -62,6 +68,7 @@ export interface CodingAgentRuntimeOptions {
     readonly diagnostic?: ((message: string) => void) | undefined;
     /** Test seams; normal callers should leave these unset. */
     readonly createMcpTransport?: McpTransportFactory | undefined;
+    readonly createLspClient?: LspClientFactory | undefined;
     readonly executeHook?: HookCommandExecutor | undefined;
   } | undefined;
 }
@@ -87,6 +94,7 @@ export class CodingAgentRuntime {
   readonly #finishCheckpoint: (checkpointId: string) => void;
   readonly #disposeProcesses: () => Promise<void>;
   readonly #disposeMcp: () => Promise<void>;
+  readonly #disposeLsp: () => Promise<void>;
   readonly #hooks: HookRunner | undefined;
   #disposed = false;
 
@@ -97,6 +105,7 @@ export class CodingAgentRuntime {
     readonly sandboxStatus: SandboxStatus;
     readonly disposeProcesses: () => Promise<void>;
     readonly disposeMcp: () => Promise<void>;
+    readonly disposeLsp: () => Promise<void>;
     readonly hooks?: HookRunner | undefined;
     readonly undo: () => Promise<UndoResult>;
     readonly beginCheckpoint: () => string;
@@ -110,6 +119,7 @@ export class CodingAgentRuntime {
     this.sandboxStatus = options.sandboxStatus;
     this.#disposeProcesses = options.disposeProcesses;
     this.#disposeMcp = options.disposeMcp;
+    this.#disposeLsp = options.disposeLsp;
     this.#hooks = options.hooks;
     this.#undo = options.undo;
     this.#beginCheckpoint = options.beginCheckpoint;
@@ -129,6 +139,7 @@ export class CodingAgentRuntime {
       workspaceRoot: options.workspaceRoot,
     });
     let disposeMcp = async (): Promise<void> => undefined;
+    let disposeLsp = async (): Promise<void> => undefined;
     let createdRuntime: CodingAgentRuntime | undefined;
     try {
       const testTools = createTestTools(shell.processManager);
@@ -149,6 +160,14 @@ export class CodingAgentRuntime {
         diagnostic: options.extensions?.diagnostic,
       });
       disposeMcp = async () => await mcp.dispose();
+      const lsp = await createLspToolset({
+        workspaceRoot: options.workspaceRoot,
+        servers: options.extensions?.lspServers,
+        environment: options.extensions?.environment,
+        createClient: options.extensions?.createLspClient,
+        diagnostic: options.extensions?.diagnostic,
+      });
+      disposeLsp = async () => await lsp.dispose();
       const skills = options.extensions === undefined
         ? undefined
         : await SkillCatalog.create({
@@ -179,6 +198,7 @@ export class CodingAgentRuntime {
         ...shell.tools,
         ...testTools,
         ...mcp.tools,
+        ...lsp.tools,
         ...(skillLoader === undefined ? [] : [skillLoader]),
       ];
       const tools = selectTools(allTools, options.tools?.allowedNames);
@@ -192,6 +212,7 @@ export class CodingAgentRuntime {
         sandboxStatus: shell.processManager.sandboxStatus,
         disposeProcesses: async () => await shell.processManager.dispose(),
         disposeMcp: async () => await mcp.dispose(),
+        disposeLsp: async () => await lsp.dispose(),
         hooks,
         undo: async () => await fileToolset.checkpoints.undoLatest(),
         beginCheckpoint: () => fileToolset.checkpoints.beginTurn(),
@@ -204,12 +225,13 @@ export class CodingAgentRuntime {
       await hooks?.notify("SessionStart", {
         workspaceRoot: options.workspaceRoot,
         mcpServers: [...mcp.connectedServers],
+        lspServers: [...lsp.connectedServers],
         skills: skills?.entries.map(({ name, source, path }) => ({ name, source, path })) ?? [],
       }, AbortSignal.timeout(10_000));
       return runtime;
     } catch (error) {
       if (createdRuntime === undefined) {
-        await Promise.all([shell.processManager.dispose(), disposeMcp()]);
+        await Promise.all([shell.processManager.dispose(), disposeMcp(), disposeLsp()]);
       } else {
         await createdRuntime.dispose();
       }
@@ -262,7 +284,7 @@ export class CodingAgentRuntime {
     if (this.#disposed) return;
     this.#disposed = true;
     try {
-      await Promise.all([this.#disposeProcesses(), this.#disposeMcp()]);
+      await Promise.all([this.#disposeProcesses(), this.#disposeMcp(), this.#disposeLsp()]);
     } finally {
       this.trace.finish();
     }

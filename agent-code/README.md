@@ -2,7 +2,7 @@
 
 `agent-code` 是《从零构建 Coding Agent CLI》实战教程的伴随项目。
 
-当前章节：第 21 章。
+当前章节：第 22 章。
 
 ```bash
 npm install
@@ -44,6 +44,17 @@ npm run test:subagents
 只会在临时集成 worktree 中解决冲突和运行测试，通过后才 fast-forward 父分支。
 父 Agent 只收到结构化摘要、trace 与 commit/diff 引用。完整设计见
 [第 21 章](../docs/chapters/21-subagent-worktree-isolation.md)。
+
+可选 LSP 插件：
+
+```bash
+npm run test:lsp
+```
+
+LSP 只增加只读的 hover、definition、references 和 document symbols 查询；
+协议 framing 由 `vscode-jsonrpc` 处理。服务器不可用时不注册对应工具，并继续使用
+`search_text`、`read_file` 和 `run_tests`。完整实现与配置见
+[第 22 章](../docs/chapters/22-lsp-optional-plugin.md)。
 
 Headless 单次执行：
 
@@ -98,6 +109,26 @@ server、六类生命周期 Hook 和 Skills。MCP 工具继续经过统一权限
 内容会标记为不可信。Skill 只发布目录，正文通过 `load_skill` 按需读取，兄弟脚本
 不会自动执行。完整配置和安全边界见
 [第 19 章](../docs/chapters/19-mcp-hooks-skills.md)。
+
+同一配置文件也可以按语言配置可选 LSP server：
+
+```json
+{
+  "lspServers": {
+    "typescript": {
+      "command": "typescript-language-server",
+      "args": ["--stdio"],
+      "languageIds": {
+        ".ts": "typescript",
+        ".tsx": "typescriptreact"
+      },
+      "timeoutMs": 5000
+    }
+  }
+}
+```
+
+语言服务器进程默认不会继承 Provider API key；项目配置仍需先通过 workspace trust。
 
 OpenAI 官方当前建议复杂推理和编码任务使用 `gpt-5.6-sol`；`gpt-5.6`
 是指向 Sol 的滚动别名。教程使用完整 model ID，便于明确记录 Session

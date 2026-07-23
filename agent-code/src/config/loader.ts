@@ -50,6 +50,7 @@ export interface LoadedConfiguration {
     readonly projectRules: readonly PermissionRule[];
   };
   readonly mcpServers: Readonly<NonNullable<Configuration["mcpServers"]>>;
+  readonly lspServers: Readonly<NonNullable<Configuration["lspServers"]>>;
   readonly hooks: Readonly<NonNullable<Configuration["hooks"]>>;
   readonly skills: Readonly<NonNullable<Configuration["skills"]>>;
   readonly loadedFiles: readonly LoadedConfigurationFile[];
@@ -128,6 +129,7 @@ export async function loadConfiguration(
       projectRules: Object.freeze(rules.project),
     }),
     mcpServers: Object.freeze({ ...merged.mcpServers }),
+    lspServers: Object.freeze({ ...merged.lspServers }),
     hooks: freezeHooks(merged.hooks),
     skills: Object.freeze({ ...merged.skills }),
     loadedFiles: Object.freeze(documents.map(({ layer, path }) => ({ layer, path }))),
@@ -278,6 +280,7 @@ function mergeConfiguration(base: Configuration, override: Configuration): Confi
     turn: { ...base.turn, ...override.turn },
     permissions: { ...base.permissions, ...override.permissions },
     mcpServers: { ...base.mcpServers, ...override.mcpServers },
+    lspServers: { ...base.lspServers, ...override.lspServers },
     hooks: mergeHooks(base.hooks, override.hooks),
     skills: { ...base.skills, ...override.skills },
     ...(base.trustedWorkspaces === undefined && override.trustedWorkspaces === undefined
