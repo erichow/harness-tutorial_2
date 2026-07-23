@@ -95,7 +95,13 @@ export const runtimeEventSchema = z.discriminatedUnion("type", [
     .object({
       ...eventBase,
       type: z.literal("turn_finished"),
-      reason: z.enum(["completed", "max_steps", "cancelled", "error"]),
+      reason: z.enum(["completed", "max_steps", "max_duration", "max_tokens", "cancelled", "error"]),
+      tests: z.object({
+        status: z.enum(["not_run", "passed", "failed"]),
+        runs: z.number().int().nonnegative(),
+        repairRounds: z.number().int().nonnegative(),
+        lastOutcome: z.string().optional(),
+      }).optional(),
     })
     .strict(),
 ]);

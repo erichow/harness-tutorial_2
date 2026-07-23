@@ -7,6 +7,7 @@ import { createGitTools } from "../tools/git/index.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createShellTools } from "../tools/shell/index.js";
 import type { ProcessManagerOptions } from "../tools/shell/process-manager.js";
+import { createTestTools } from "../tools/testing/index.js";
 import type { SandboxStatus } from "../tools/shell/sandbox-runner.js";
 import { runTurn, type RunTurnResult } from "./agent.js";
 import { RuntimeEventLog } from "./event-log.js";
@@ -70,9 +71,10 @@ export class CodingAgentRuntime {
       ...options.shell,
       workspaceRoot: options.workspaceRoot,
     });
+    const testTools = createTestTools(shell.processManager);
     return new CodingAgentRuntime({
       provider: options.provider,
-      registry: new ToolRegistry([...fileToolset.tools, ...gitTools, ...shell.tools], {
+      registry: new ToolRegistry([...fileToolset.tools, ...gitTools, ...shell.tools, ...testTools], {
         permissions: options.permissions,
       }),
       sandboxStatus: shell.processManager.sandboxStatus,

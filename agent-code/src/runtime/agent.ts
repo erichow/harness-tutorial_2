@@ -11,10 +11,11 @@ import type { ToolExecutor, ToolPermissionEvent } from "../tools/executor.js";
 import { createToolErrorResult } from "../tools/result.js";
 import { isCancellation, throwIfCancelled } from "./cancellation.js";
 import {
-  DEFAULT_TURN_LIMITS,
+  resolveTurnLimits,
   type TurnLimits,
   validateTurnLimits,
 } from "./limits.js";
+import { createTestLoopExecutor, type TestRunSummary } from "./test-loop.js";
 import {
   RUNTIME_EVENT_PROTOCOL_VERSION,
   type ErrorCategory,
@@ -39,6 +40,7 @@ export interface RunTurnResult {
   readonly reason: TurnFinishReason;
   readonly steps: number;
   readonly turnId: string;
+  readonly tests: TestRunSummary;
 }
 
 type RuntimeEventPayload = RuntimeEvent extends infer Event
@@ -71,20 +73,33 @@ class ProviderStepError extends Error {
 }
 
 export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
-  const limits = options.limits ?? DEFAULT_TURN_LIMITS;
+  const limits = resolveTurnLimits(options.limits);
   validateTurnLimits(limits);
 
-  const signal = options.signal ?? new AbortController().signal;
+  const callerSignal = options.signal ?? new AbortController().signal;
+  const durationController = new AbortController();
+  const durationTimer = setTimeout(() => {
+    durationController.abort(new Error(`Turn duration limit reached (${limits.maxDurationMs} ms)`));
+  }, limits.maxDurationMs);
+  durationTimer.unref();
+  const signal = AbortSignal.any([callerSignal, durationController.signal]);
   const now = options.now ?? (() => new Date());
   const createId = options.createId ?? randomUUID;
   const turnId = createId();
   let sequence = 0;
   let steps = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
   let transcript = options.transcript;
+  const testLoop = createTestLoopExecutor(options.tools, limits);
 
   const emit = async (
     event: RuntimeEventPayload,
   ): Promise<void> => {
+    if (event.type === "usage") {
+      inputTokens += event.inputTokens;
+      outputTokens += event.outputTokens;
+    }
     await options.emit?.({
       ...event,
       protocolVersion: RUNTIME_EVENT_PROTOCOL_VERSION,
@@ -96,8 +111,9 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
   };
 
   const finish = async (reason: TurnFinishReason): Promise<RunTurnResult> => {
-    await emit({ type: "turn_finished", reason });
-    return { transcript, reason, steps, turnId };
+    const tests = testLoop.summary();
+    await emit({ type: "turn_finished", reason, tests });
+    return { transcript, reason, steps, turnId, tests };
   };
 
   await emit({ type: "turn_started" });
@@ -110,7 +126,7 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
       const streamed = await consumeProviderResponse({
         provider: options.provider,
         transcript,
-        tools: options.tools,
+        tools: testLoop.executor,
         signal,
         emit,
       });
@@ -128,6 +144,10 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
         content: streamed.content,
         createdAt: now().toISOString(),
       });
+
+      if (inputTokens > limits.maxInputTokens || outputTokens > limits.maxOutputTokens) {
+        return await finish("max_tokens");
+      }
 
       if (streamed.toolCalls.length === 0) {
         if (streamed.finishReason !== "stop") {
@@ -149,7 +169,7 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
         throwIfCancelled(signal);
         let result: ToolResultBlock;
         try {
-          result = await options.tools.execute(call, {
+          result = await testLoop.executor.execute(call, {
             signal,
             emitPermission: async (event) => await emitPermissionEvent(emit, event),
           });
@@ -176,7 +196,13 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
 
     return await finish("max_steps");
   } catch (error) {
-    if (isCancellation(error, signal)) {
+    if (durationController.signal.aborted) {
+      await emitError(emit, "internal", durationController.signal.reason instanceof Error
+        ? durationController.signal.reason.message
+        : "Turn duration limit reached", false);
+      return await finish("max_duration");
+    }
+    if (isCancellation(error, callerSignal)) {
       await emitError(emit, "cancelled", "Turn cancelled", false);
       return await finish("cancelled");
     }
@@ -200,6 +226,8 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
           : false;
     await emitError(emit, category, message, retryable);
     return await finish("error");
+  } finally {
+    clearTimeout(durationTimer);
   }
 }
 

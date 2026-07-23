@@ -10,7 +10,8 @@ export type ToolErrorCode =
   | "invalid_arguments"
   | "permission_denied"
   | "execution_failed"
-  | "repeated_call";
+  | "repeated_call"
+  | "limit_reached";
 
 interface ResultOptions {
   readonly maxOutputBytes?: number | undefined;

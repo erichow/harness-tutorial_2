@@ -1,4 +1,5 @@
 import type { ToolCallBlock, ToolResultBlock } from "../messages/blocks.js";
+import type { TestRunSummary } from "./test-loop.js";
 
 export const RUNTIME_EVENT_PROTOCOL_VERSION = 1 as const;
 
@@ -79,11 +80,19 @@ export interface ErrorEvent extends EventBase {
   readonly retryable: boolean;
 }
 
-export type TurnFinishReason = "completed" | "max_steps" | "cancelled" | "error";
+export type TurnFinishReason =
+  | "completed"
+  | "max_steps"
+  | "max_duration"
+  | "max_tokens"
+  | "cancelled"
+  | "error";
 
 export interface TurnFinishedEvent extends EventBase {
   readonly type: "turn_finished";
   readonly reason: TurnFinishReason;
+  /** Deterministic runtime summary; optional only for reading chapter 9-era events. */
+  readonly tests?: TestRunSummary | undefined;
 }
 
 export type RuntimeEvent =

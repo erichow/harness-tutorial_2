@@ -105,6 +105,7 @@ const BUILTIN_MANAGED_RULES: readonly PermissionRule[] = Object.freeze([
       "git_log",
       "git_prepare_commit",
       "git_commit",
+      "run_tests",
     ]),
     resources: Object.freeze(["external:*"]),
     reason: "Workspace file tools cannot access paths outside the workspace.",

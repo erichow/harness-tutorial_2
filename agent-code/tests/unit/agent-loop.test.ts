@@ -4,6 +4,7 @@ import { createTranscript } from "../../src/messages/transcript.js";
 import { MockProvider, type MockProviderResponse } from "../../src/providers/mock.js";
 import { runTurn } from "../../src/runtime/agent.js";
 import type { RuntimeEvent } from "../../src/runtime/events.js";
+import type { JsonObject } from "../../src/protocol/json.js";
 import {
   InMemoryToolExecutor,
   type ToolImplementation,
@@ -179,6 +180,63 @@ describe("runTurn", () => {
     expect(calls).toEqual(["one", "two", "three"]);
   });
 
+  it("continues from a failed test through diagnosis and repair to a passing test", async () => {
+    const executed: string[] = [];
+    const tools = new InMemoryToolExecutor([
+      {
+        definition: { name: "run_tests", description: "test", inputSchema: {} },
+        async execute(input) {
+          const outcome = String(input.outcome);
+          executed.push(`test:${outcome}`);
+          return { content: outcome, data: { outcome, testStatus: outcome } };
+        },
+      },
+      {
+        definition: { name: "read_file", description: "read", inputSchema: {} },
+        async execute() {
+          executed.push("read");
+          return { content: "relevant source" };
+        },
+      },
+      {
+        definition: { name: "apply_patch", description: "patch", inputSchema: {} },
+        async execute() {
+          executed.push("patch");
+          return { content: "changed" };
+        },
+      },
+    ]);
+    const toolStep = (id: string, name: string, input: JsonObject = {}) => response(
+      { type: "tool_call", call: { type: "tool_call", id, name, input } },
+      { type: "response_completed", finishReason: "tool_calls" },
+    );
+    const provider = new MockProvider([
+      toolStep("test-fail", "run_tests", { outcome: "failed" }),
+      toolStep("diagnose", "read_file"),
+      toolStep("repair", "apply_patch"),
+      toolStep("test-pass", "run_tests", { outcome: "passed" }),
+      response(
+        { type: "text_delta", delta: "fixed" },
+        { type: "response_completed", finishReason: "stop" },
+      ),
+    ]);
+
+    const result = await runTurn({
+      provider,
+      transcript: createTranscript(),
+      tools,
+      limits: { maxSteps: 6 },
+    });
+
+    expect(executed).toEqual(["test:failed", "read", "patch", "test:passed"]);
+    expect(result.tests).toEqual({
+      status: "passed",
+      runs: 2,
+      repairRounds: 1,
+      lastOutcome: "passed",
+    });
+  });
+
   it("returns a repeated-call error to the model without re-running the handler", async () => {
     let executions = 0;
     const echo: Tool = {
@@ -315,6 +373,48 @@ describe("runTurn", () => {
     expect(result.steps).toBe(2);
     expect(provider.requests).toHaveLength(2);
     expect(events.at(-1)).toMatchObject({ type: "turn_finished", reason: "max_steps" });
+  });
+
+  it("stops before tool execution when provider-reported token usage exceeds the budget", async () => {
+    let executions = 0;
+    const provider = new MockProvider([
+      response(
+        { type: "usage", inputTokens: 11, outputTokens: 2 },
+        {
+          type: "tool_call",
+          call: { type: "tool_call", id: "too-late", name: "echo", input: { text: "no" } },
+        },
+        { type: "response_completed", finishReason: "tool_calls" },
+      ),
+    ]);
+    const result = await runTurn({
+      provider,
+      transcript: createTranscript(),
+      tools: new InMemoryToolExecutor([echoTool({
+        async execute() {
+          executions += 1;
+          return { content: "unexpected" };
+        },
+      })]),
+      limits: { maxSteps: 2, maxInputTokens: 10 },
+    });
+
+    expect(result.reason).toBe("max_tokens");
+    expect(executions).toBe(0);
+    expect(result.tests.status).toBe("not_run");
+  });
+
+  it("cancels a pending provider at the wall-clock turn limit", async () => {
+    const provider = new MockProvider([response({ type: "wait_for_abort" })]);
+    const result = await runTurn({
+      provider,
+      transcript: createTranscript(),
+      tools: noTools,
+      limits: { maxSteps: 2, maxDurationMs: 20 },
+    });
+
+    expect(result.reason).toBe("max_duration");
+    expect(result.tests).toEqual({ status: "not_run", runs: 0, repairRounds: 0 });
   });
 
   it("cancels while a provider stream is pending", async () => {

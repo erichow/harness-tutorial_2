@@ -69,12 +69,19 @@ export interface JobSnapshot {
   readonly output: OutputPage;
 }
 
+export interface JobStreamOutput {
+  readonly stdout: OutputPage;
+  readonly stderr: OutputPage;
+}
+
 interface ProcessRecord {
   readonly id: string;
   readonly command: string;
   readonly cwd: string;
   readonly startedAt: Date;
   readonly output: BoundedProcessOutput;
+  readonly stdout: BoundedProcessOutput;
+  readonly stderr: BoundedProcessOutput;
   readonly child: ReturnType<SandboxRunner["spawn"]>;
   readonly completion: Promise<void>;
   resolveCompletion(): void;
@@ -170,6 +177,16 @@ export class ProcessManager {
     };
   }
 
+  /** Read stdout and stderr independently so test diagnostics never lose their origin. */
+  readJobStreams(jobId: string, maxOutputBytes: number): JobStreamOutput {
+    const record = this.#requireJob(jobId);
+    const budget = Math.max(128, maxOutputBytes);
+    return {
+      stdout: record.stdout.page(0, budget),
+      stderr: record.stderr.page(0, budget),
+    };
+  }
+
   async stopJob(jobId: string): Promise<JobSnapshot> {
     const record = this.#requireJob(jobId);
     if (record.finishedAt === undefined) {
@@ -229,6 +246,8 @@ export class ProcessManager {
       cwd: displayRelative(this.workspaceRoot, cwd),
       startedAt: new Date(),
       output: new BoundedProcessOutput(this.#maxCaptureBytes),
+      stdout: new BoundedProcessOutput(this.#maxCaptureBytes),
+      stderr: new BoundedProcessOutput(this.#maxCaptureBytes),
       child,
       completion,
       resolveCompletion,
@@ -236,10 +255,14 @@ export class ProcessManager {
     this.#jobs.set(record.id, record);
 
     child.stdout.on("data", (chunk: Buffer | string) => {
-      record.output.append("stdout", Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      record.output.append("stdout", bytes);
+      record.stdout.append("stdout", bytes);
     });
     child.stderr.on("data", (chunk: Buffer | string) => {
-      record.output.append("stderr", Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      record.output.append("stderr", bytes);
+      record.stderr.append("stderr", bytes);
     });
     child.once("error", (error) => {
       record.error = error.message;

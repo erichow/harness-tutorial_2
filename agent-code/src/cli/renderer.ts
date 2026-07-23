@@ -137,6 +137,18 @@ export class TerminalRenderer {
       case "turn_finished":
         this.#endStream();
         if (event.reason === "max_steps") this.#writeLine("Turn stopped: maximum steps reached.");
+        if (event.reason === "max_duration") this.#writeLine("Turn stopped: maximum duration reached.");
+        if (event.reason === "max_tokens") this.#writeLine("Turn stopped: token budget reached.");
+        if (event.tests !== undefined) {
+          const detail = event.tests.status === "not_run"
+            ? event.tests.runs === 0
+              ? "not run"
+              : `not run after latest changes (${event.tests.runs} earlier run${event.tests.runs === 1 ? "" : "s"})`
+            : event.tests.status === "passed"
+              ? `passed (${event.tests.runs} run${event.tests.runs === 1 ? "" : "s"})`
+              : `failed (${event.tests.lastOutcome ?? "failed"})`;
+          this.#writeLine(`Tests: ${detail}.`);
+        }
         return;
     }
   }

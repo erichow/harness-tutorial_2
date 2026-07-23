@@ -103,6 +103,29 @@ describe("TerminalRenderer", () => {
     expect(sink.text()).toContain("safe texthidden");
   });
 
+  it.each([
+    ["not_run", "Tests: not run."],
+    ["passed", "Tests: passed (2 runs)."],
+    ["failed", "Tests: failed (timed_out)."],
+  ] as const)("renders the deterministic %s test summary", (status, expected) => {
+    const sink = output();
+    const renderer = new TerminalRenderer({ output: sink.target });
+    renderer.render({
+      ...base,
+      sequence: 0,
+      type: "turn_finished",
+      reason: "completed",
+      tests: {
+        status,
+        runs: status === "not_run" ? 0 : 2,
+        repairRounds: status === "not_run" ? 0 : 1,
+        ...(status === "failed" ? { lastOutcome: "timed_out" } : {}),
+      },
+    });
+
+    expect(sink.text()).toContain(expected);
+  });
+
   it("buffers runtime events until a permission answer completes", async () => {
     const sink = output();
     const renderer = new TerminalRenderer({ output: sink.target });
