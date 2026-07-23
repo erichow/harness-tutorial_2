@@ -225,7 +225,7 @@ export async function runChatCli(
   }
 }
 
-function requireApiKey(
+export function requireApiKey(
   provider: "openai" | "deepseek",
   environment: NodeJS.ProcessEnv,
 ): string {
@@ -237,7 +237,7 @@ function requireApiKey(
   return apiKey;
 }
 
-interface ResolvedSessionContext {
+export interface ResolvedSessionContext {
   readonly provider: "openai" | "deepseek";
   readonly model: string;
   readonly workspace: string;
@@ -245,10 +245,11 @@ interface ResolvedSessionContext {
   readonly mode: "created" | "resumed" | "forked";
 }
 
-async function resolveSessionContext(
+export async function resolveSessionContext(
   store: SessionStore,
   options: ChatCliOptions,
   environment: NodeJS.ProcessEnv,
+  cwd = process.cwd(),
 ): Promise<ResolvedSessionContext> {
   if (options.resumeSessionId !== undefined) {
     const snapshot = await store.read(options.resumeSessionId);
@@ -304,7 +305,7 @@ async function resolveSessionContext(
   if (options.provider === undefined || options.model === undefined) {
     throw new Error("New sessions require a provider and model.");
   }
-  const workspace = options.workspace ?? process.cwd();
+  const workspace = options.workspace ?? cwd;
   return {
     provider: options.provider,
     model: options.model,
@@ -319,7 +320,7 @@ async function resolveSessionContext(
   };
 }
 
-function chatDefaults(configuration: LoadedConfiguration): ChatConfigurationDefaults {
+export function chatDefaults(configuration: LoadedConfiguration): ChatConfigurationDefaults {
   return {
     ...(configuration.provider === undefined ? {} : { provider: configuration.provider }),
     ...(configuration.model === undefined ? {} : { model: configuration.model }),
@@ -330,7 +331,7 @@ function chatDefaults(configuration: LoadedConfiguration): ChatConfigurationDefa
   };
 }
 
-function runtimeContext(configuration: LoadedConfiguration): {
+export function runtimeContext(configuration: LoadedConfiguration): {
   maxTokens?: number;
   instructions: {
     userInstructionPath?: string;
@@ -356,7 +357,7 @@ function runtimeContext(configuration: LoadedConfiguration): {
   };
 }
 
-function explicitWorkspace(args: readonly string[], cwd: string): string | undefined {
+export function explicitWorkspace(args: readonly string[], cwd: string): string | undefined {
   let workspace: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--workspace" && args[index + 1] !== undefined) {

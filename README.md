@@ -32,5 +32,6 @@ chapter-01 ... chapter-23
 - [x] 第 15 章：Session 持久化、恢复和分支
 - [x] 第 16 章：上下文预算、压缩和项目指令
 - [x] 第 17 章：配置系统和策略层级
+- [x] 第 18 章：Headless 和 JSONL 协议
 
 其余章节见 [实战教程设计稿](./PRACTICAL_TUTORIAL.md)。

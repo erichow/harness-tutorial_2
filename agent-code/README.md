@@ -2,7 +2,7 @@
 
 `agent-code` 是《从零构建 Coding Agent CLI》实战教程的伴随项目。
 
-当前章节：第 17 章。
+当前章节：第 18 章。
 
 ```bash
 npm install
@@ -20,6 +20,31 @@ npm run test:mvp
 ```
 
 普通测试不访问模型 API，也不需要 API key。
+
+Headless 单次执行：
+
+```bash
+OPENAI_API_KEY=... node dist/cli/bin.js \
+  --print "检查当前项目" \
+  --provider openai \
+  --model gpt-5.6-sol
+```
+
+从 stdin 读取多个版本化 JSONL 请求，并逐事件输出 JSONL：
+
+```bash
+node dist/cli/bin.js \
+  --print \
+  --input-format jsonl \
+  --output-format jsonl \
+  --provider openai \
+  --model gpt-5.6-sol < requests.jsonl
+```
+
+Headless 退出码为：`0` 成功、`1` Provider/内部错误、`2` 输入/配置错误、
+`3` 预算耗尽、`4` 权限拒绝、`130` 取消。stdout 只写所选协议，诊断写
+stderr；需要交互确认的权限在 Headless 中安全拒绝。完整协议见
+[第 18 章](../docs/chapters/18-headless-jsonl-protocol.md)。
 
 交互模式（不会自动读取 `.env.local`）：
 

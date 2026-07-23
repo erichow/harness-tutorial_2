@@ -14,6 +14,7 @@ const HELP = `agent-code ${VERSION}
 Usage:
   agent-code [options]
   agent-code chat [--provider <openai|deepseek>] [--model <model>] [--workspace <path>]
+  agent-code --print [prompt] [--input-format <text|jsonl>] [--output-format <text|json|jsonl>]
   agent-code --resume <session-id> [--session-dir <path>]
   agent-code --fork-session <session-id> [chat options]
   agent-code session export <session-id> [--session-dir <path>]
@@ -21,6 +22,7 @@ Usage:
 Options:
   -h, --help       Show this help message
   -V, --version    Show the version
+  --print [prompt] Run non-interactively; read stdin when prompt is omitted
 
 Configuration:
   ~/.agent-code/config.json and trusted <workspace>/.agent-code/config*.json

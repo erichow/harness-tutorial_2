@@ -25,5 +25,6 @@ git switch --detach chapter-01
 | 15 | [Session 持久化、恢复和分支](./15-session-persistence-resume-branch.md) | `chapter-15` | 完成 |
 | 16 | [上下文预算、压缩和项目指令](./16-context-budget-compression-instructions.md) | `chapter-16` | 完成 |
 | 17 | [配置系统和策略层级](./17-configuration-policy-hierarchy.md) | `chapter-17` | 完成 |
+| 18 | [Headless 和 JSONL 协议](./18-headless-jsonl-protocol.md) | `chapter-18` | 完成 |
 
 后续章节按 [总体设计稿](../../PRACTICAL_TUTORIAL.md) 的顺序补充。

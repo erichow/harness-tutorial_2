@@ -2,11 +2,16 @@
 
 import { main } from "./main.js";
 import { runChatCli } from "./chat.js";
+import { runHeadlessCli } from "./headless.js";
 import { runSessionCli } from "./session-command.js";
 
 try {
   const args = process.argv.slice(2);
-  if (args[0] === "chat") process.exitCode = await runChatCli(args.slice(1));
+  if (args[0] === "chat" && args.includes("--print")) {
+    process.exitCode = await runHeadlessCli(args.slice(1));
+  } else if (args.includes("--print")) {
+    process.exitCode = await runHeadlessCli(args);
+  } else if (args[0] === "chat") process.exitCode = await runChatCli(args.slice(1));
   else if (args[0] === "session") process.exitCode = await runSessionCli(args.slice(1));
   else if (args[0] === "--resume" || args[0] === "--fork-session") {
     process.exitCode = await runChatCli(args);

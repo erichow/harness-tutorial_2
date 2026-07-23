@@ -31,6 +31,36 @@ describe("built CLI", () => {
     expect(result.stderr).toContain("Unknown argument");
   });
 
+  it("routes piped JSONL input through headless mode without protocol noise", () => {
+    const sessionDirectory = mkdtempSync(join(tmpdir(), "agent-code-e2e-headless-"));
+    try {
+      const result = runCli(
+        [
+          "--print",
+          "--input-format", "jsonl",
+          "--output-format", "jsonl",
+          "--provider", "openai",
+          "--model", "offline-test",
+          "--session-dir", sessionDirectory,
+        ],
+        {
+          input: '{"protocolVersion":1,"type":"request","prompt":\n',
+          env: {
+            ...process.env,
+            OPENAI_API_KEY: "not-used",
+            AGENT_CODE_USER_CONFIG: join(sessionDirectory, "missing-config.json"),
+          },
+        },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("JSONL line 1 is not valid JSON");
+    } finally {
+      rmSync(sessionDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("runs slash commands in a non-TTY chat without contacting the provider", () => {
     const sessionDirectory = mkdtempSync(join(tmpdir(), "agent-code-e2e-session-"));
     const result = runCli(
