@@ -100,6 +100,7 @@ export class TerminalRenderer {
     switch (event.type) {
       case "turn_started":
       case "usage":
+      case "provider_request_started":
       case "provider_response":
         return;
       case "text_delta":

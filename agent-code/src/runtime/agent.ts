@@ -138,6 +138,11 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
         ? { transcript, report: undefined }
         : await options.context.prepare(transcript, testLoop.executor.definitions);
       contextReport = prepared.report;
+      await emit({
+        type: "provider_request_started",
+        provider: options.provider.name,
+        step: steps,
+      });
       const streamed = await consumeProviderResponse({
         provider: options.provider,
         transcript: prepared.transcript,
@@ -182,6 +187,7 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
       const results: ToolResultBlock[] = [];
       for (const call of streamed.toolCalls) {
         throwIfCancelled(signal);
+        await emit({ type: "tool_call_started", call });
         let result: ToolResultBlock;
         try {
           result = await testLoop.executor.execute(call, {
@@ -348,7 +354,6 @@ async function consumeEvent(
     case "tool_call":
       content.push(event.call);
       toolCalls.push(event.call);
-      await emit({ type: "tool_call_started", call: event.call });
       return;
     case "usage":
       await emit({

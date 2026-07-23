@@ -27,6 +27,7 @@ import { createShellTools } from "../tools/shell/index.js";
 import type { ProcessManagerOptions } from "../tools/shell/process-manager.js";
 import { createTestTools } from "../tools/testing/index.js";
 import type { SandboxStatus } from "../tools/shell/sandbox-runner.js";
+import { TraceRecorder, type TraceRecorderOptions } from "../observability/trace.js";
 import { runTurn, type RunTurnResult } from "./agent.js";
 import { RuntimeEventLog } from "./event-log.js";
 import type { RuntimeEvent } from "./events.js";
@@ -40,6 +41,7 @@ export interface CodingAgentRuntimeOptions {
   readonly context?: Omit<ContextManagerOptions, "instructions"> & {
     readonly instructions?: Omit<InstructionLoaderOptions, "workspaceRoot"> | undefined;
   } | undefined;
+  readonly observability?: TraceRecorderOptions | undefined;
   readonly extensions?: {
     readonly trust: WorkspaceTrust;
     readonly mcpServers?: Readonly<Record<string, McpServerConfiguration>> | undefined;
@@ -66,6 +68,7 @@ export interface CodingAgentTurnOptions {
 /** Owns the complete MVP runtime, including its event log and child processes. */
 export class CodingAgentRuntime {
   readonly eventLog = new RuntimeEventLog();
+  readonly trace: TraceRecorder;
   readonly sandboxStatus: SandboxStatus;
   readonly #provider: Provider;
   readonly #context: ContextManager;
@@ -91,6 +94,7 @@ export class CodingAgentRuntime {
     readonly beginCheckpoint: () => string;
     readonly attachCheckpoint: (checkpointId: string, turnId: string) => void;
     readonly finishCheckpoint: (checkpointId: string) => void;
+    readonly trace: TraceRecorder;
   }) {
     this.#provider = options.provider;
     this.#context = options.context;
@@ -103,6 +107,7 @@ export class CodingAgentRuntime {
     this.#beginCheckpoint = options.beginCheckpoint;
     this.#attachCheckpoint = options.attachCheckpoint;
     this.#finishCheckpoint = options.finishCheckpoint;
+    this.trace = options.trace;
   }
 
   static async create(options: CodingAgentRuntimeOptions): Promise<CodingAgentRuntime> {
@@ -116,6 +121,7 @@ export class CodingAgentRuntime {
       workspaceRoot: options.workspaceRoot,
     });
     let disposeMcp = async (): Promise<void> => undefined;
+    let createdRuntime: CodingAgentRuntime | undefined;
     try {
       const testTools = createTestTools(shell.processManager);
       const hooks = options.extensions === undefined
@@ -182,7 +188,9 @@ export class CodingAgentRuntime {
         attachCheckpoint: (checkpointId, turnId) =>
           fileToolset.checkpoints.attachTurn(checkpointId, turnId),
         finishCheckpoint: (checkpointId) => fileToolset.checkpoints.finishTurn(checkpointId),
+        trace: new TraceRecorder(options.observability),
       });
+      createdRuntime = runtime;
       await hooks?.notify("SessionStart", {
         workspaceRoot: options.workspaceRoot,
         mcpServers: [...mcp.connectedServers],
@@ -190,7 +198,11 @@ export class CodingAgentRuntime {
       }, AbortSignal.timeout(10_000));
       return runtime;
     } catch (error) {
-      await Promise.all([shell.processManager.dispose(), disposeMcp()]);
+      if (createdRuntime === undefined) {
+        await Promise.all([shell.processManager.dispose(), disposeMcp()]);
+      } else {
+        await createdRuntime.dispose();
+      }
       throw error;
     }
   }
@@ -209,6 +221,7 @@ export class CodingAgentRuntime {
         emit: async (event) => {
           this.#attachCheckpoint(checkpointId, event.turnId);
           this.eventLog.append(event);
+          this.trace.record(event);
           await options.emit?.(event);
         },
       });
@@ -238,6 +251,10 @@ export class CodingAgentRuntime {
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
-    await Promise.all([this.#disposeProcesses(), this.#disposeMcp()]);
+    try {
+      await Promise.all([this.#disposeProcesses(), this.#disposeMcp()]);
+    } finally {
+      this.trace.finish();
+    }
   }
 }

@@ -34,5 +34,6 @@ chapter-01 ... chapter-23
 - [x] 第 17 章：配置系统和策略层级
 - [x] 第 18 章：Headless 和 JSONL 协议
 - [x] 第 19 章：MCP、Hooks 和 Skills
+- [x] 第 20 章：可观测性和工作流 Eval
 
 其余章节见 [实战教程设计稿](./PRACTICAL_TUTORIAL.md)。

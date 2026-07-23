@@ -76,6 +76,14 @@ export const runtimeEventSchema = z.discriminatedUnion("type", [
   z
     .object({
       ...eventBase,
+      type: z.literal("provider_request_started"),
+      provider: z.string().min(1),
+      step: z.number().int().positive(),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBase,
       type: z.literal("provider_response"),
       provider: z.string().min(1),
       requestId: z.string().min(1),

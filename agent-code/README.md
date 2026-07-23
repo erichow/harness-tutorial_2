@@ -2,7 +2,7 @@
 
 `agent-code` 是《从零构建 Coding Agent CLI》实战教程的伴随项目。
 
-当前章节：第 19 章。
+当前章节：第 20 章。
 
 ```bash
 npm install
@@ -20,6 +20,18 @@ npm run test:mvp
 ```
 
 普通测试不访问模型 API，也不需要 API key。
+
+可观测性和工作流 Eval：
+
+```bash
+npm run test:eval
+```
+
+Runtime 通过 `runtime.trace.snapshot()` 提供 session、turn、Provider request
+和 tool call span，只记录耗时、token、错误类别和权限结论，不复制 prompt 或
+工具正文。`EvalRunner` 会为每次重复运行创建独立临时 Git 仓库，用真实测试、
+diff 和 Git status 评分，并返回正式的 `passed/total`、成功率和方差字段。完整
+设计与示例见[第 20 章](../docs/chapters/20-observability-workflow-eval.md)。
 
 Headless 单次执行：
 

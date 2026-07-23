@@ -59,6 +59,12 @@ export interface UsageEvent extends EventBase {
   readonly cachedInputTokens?: number | undefined;
 }
 
+export interface ProviderRequestStartedEvent extends EventBase {
+  readonly type: "provider_request_started";
+  readonly provider: string;
+  readonly step: number;
+}
+
 export interface ProviderResponseEvent extends EventBase {
   readonly type: "provider_response";
   readonly provider: string;
@@ -104,6 +110,7 @@ export type RuntimeEvent =
   | PermissionRequestedEvent
   | PermissionDecidedEvent
   | UsageEvent
+  | ProviderRequestStartedEvent
   | ProviderResponseEvent
   | ErrorEvent
   | TurnFinishedEvent;
