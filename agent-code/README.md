@@ -2,7 +2,7 @@
 
 `agent-code` 是《从零构建 Coding Agent CLI》实战教程的伴随项目。
 
-当前章节：第 20 章。
+当前章节：第 21 章。
 
 ```bash
 npm install
@@ -32,6 +32,18 @@ Runtime 通过 `runtime.trace.snapshot()` 提供 session、turn、Provider reque
 工具正文。`EvalRunner` 会为每次重复运行创建独立临时 Git 仓库，用真实测试、
 diff 和 Git status 评分，并返回正式的 `passed/total`、成功率和方差字段。完整
 设计与示例见[第 20 章](../docs/chapters/20-observability-workflow-eval.md)。
+
+Subagent 和 Worktree 隔离：
+
+```bash
+npm run test:subagents
+```
+
+`SubagentCoordinator` 为每个独立任务创建单独的 Transcript、受父任务约束的
+工具白名单和 Git worktree。实际变更会被检查并提交为 artifact；多个 artifact
+只会在临时集成 worktree 中解决冲突和运行测试，通过后才 fast-forward 父分支。
+父 Agent 只收到结构化摘要、trace 与 commit/diff 引用。完整设计见
+[第 21 章](../docs/chapters/21-subagent-worktree-isolation.md)。
 
 Headless 单次执行：
 

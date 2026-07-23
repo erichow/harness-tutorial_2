@@ -26,6 +26,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import { createShellTools } from "../tools/shell/index.js";
 import type { ProcessManagerOptions } from "../tools/shell/process-manager.js";
 import { createTestTools } from "../tools/testing/index.js";
+import type { Tool } from "../tools/tool.js";
 import type { SandboxStatus } from "../tools/shell/sandbox-runner.js";
 import { TraceRecorder, type TraceRecorderOptions } from "../observability/trace.js";
 import { runTurn, type RunTurnResult } from "./agent.js";
@@ -42,6 +43,13 @@ export interface CodingAgentRuntimeOptions {
     readonly instructions?: Omit<InstructionLoaderOptions, "workspaceRoot"> | undefined;
   } | undefined;
   readonly observability?: TraceRecorderOptions | undefined;
+  readonly tools?: {
+    /**
+     * Expose only these tools to the Provider and executor. Unknown names fail
+     * runtime construction so a misspelled capability cannot be silently widened.
+     */
+    readonly allowedNames?: readonly string[] | undefined;
+  } | undefined;
   readonly extensions?: {
     readonly trust: WorkspaceTrust;
     readonly mcpServers?: Readonly<Record<string, McpServerConfiguration>> | undefined;
@@ -165,17 +173,19 @@ export class CodingAgentRuntime {
         ...(options.context?.now === undefined ? {} : { now: options.context.now }),
       });
       const skillLoader = skills === undefined ? undefined : createSkillLoaderTool(skills);
+      const allTools: readonly Tool[] = [
+        ...fileToolset.tools,
+        ...gitTools,
+        ...shell.tools,
+        ...testTools,
+        ...mcp.tools,
+        ...(skillLoader === undefined ? [] : [skillLoader]),
+      ];
+      const tools = selectTools(allTools, options.tools?.allowedNames);
       const runtime = new CodingAgentRuntime({
         provider: options.provider,
         context,
-        registry: new ToolRegistry([
-          ...fileToolset.tools,
-          ...gitTools,
-          ...shell.tools,
-          ...testTools,
-          ...mcp.tools,
-          ...(skillLoader === undefined ? [] : [skillLoader]),
-        ], {
+        registry: new ToolRegistry(tools, {
           permissions: options.permissions,
           hooks,
         }),
@@ -257,4 +267,21 @@ export class CodingAgentRuntime {
       this.trace.finish();
     }
   }
+}
+
+function selectTools(
+  tools: readonly Tool[],
+  allowedNames: readonly string[] | undefined,
+): readonly Tool[] {
+  if (allowedNames === undefined) return tools;
+  const allowed = new Set(allowedNames);
+  if (allowed.size !== allowedNames.length) {
+    throw new TypeError("Tool allowlist contains duplicate names");
+  }
+  const available = new Set(tools.map((tool) => tool.definition.name));
+  const unknown = [...allowed].filter((name) => !available.has(name)).sort();
+  if (unknown.length > 0) {
+    throw new TypeError(`Unknown allowed tool names: ${unknown.join(", ")}`);
+  }
+  return tools.filter((tool) => allowed.has(tool.definition.name));
 }
