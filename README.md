@@ -27,5 +27,6 @@ chapter-01 ... chapter-23
 - [x] 第 10 章：MVP 端到端验收
 - [x] 第 11 章：真实 Diff、并发冲突和变更归属
 - [x] 第 12 章：Checkpoint 和 Undo
+- [x] 第 13 章：Git 工具和用户修改保护
 
 其余章节见 [实战教程设计稿](./PRACTICAL_TUTORIAL.md)。

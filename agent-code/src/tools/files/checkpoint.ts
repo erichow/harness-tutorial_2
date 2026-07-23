@@ -26,6 +26,12 @@ interface Checkpoint {
   state: "active" | "ready" | "undone";
 }
 
+export interface ActiveOwnedFile {
+  readonly path: string;
+  readonly version: WorkspaceFileVersion | null;
+  readonly chainIntact: boolean;
+}
+
 export type UndoResult =
   | {
       readonly status: "undone";
@@ -81,6 +87,17 @@ export class WorkspaceCheckpointManager implements WorkspaceMutationRecorder {
     const checkpoint = this.#requireActive(checkpointId);
     checkpoint.state = "ready";
     this.#active = undefined;
+  }
+
+  /** Files whose latest versions were produced by file tools in the running turn. */
+  activeOwnedFiles(): readonly ActiveOwnedFile[] {
+    const checkpoint = this.#active;
+    if (checkpoint === undefined) return Object.freeze([]);
+    return Object.freeze([...checkpoint.entries.values()].map((entry) => Object.freeze({
+      path: entry.path,
+      version: cloneVersion(entry.expected),
+      chainIntact: entry.chainIntact,
+    })));
   }
 
   prepareMutation(

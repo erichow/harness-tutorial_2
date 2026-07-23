@@ -3,6 +3,7 @@ import type { Provider } from "../providers/provider.js";
 import type { PermissionEngine } from "../security/permissions.js";
 import { createWorkspaceFileToolset } from "../tools/files/index.js";
 import type { UndoResult } from "../tools/files/checkpoint.js";
+import { createGitTools } from "../tools/git/index.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createShellTools } from "../tools/shell/index.js";
 import type { ProcessManagerOptions } from "../tools/shell/process-manager.js";
@@ -61,13 +62,17 @@ export class CodingAgentRuntime {
 
   static async create(options: CodingAgentRuntimeOptions): Promise<CodingAgentRuntime> {
     const fileToolset = await createWorkspaceFileToolset({ workspaceRoot: options.workspaceRoot });
+    const gitTools = await createGitTools({
+      workspaceRoot: options.workspaceRoot,
+      checkpoints: fileToolset.checkpoints,
+    });
     const shell = await createShellTools({
       ...options.shell,
       workspaceRoot: options.workspaceRoot,
     });
     return new CodingAgentRuntime({
       provider: options.provider,
-      registry: new ToolRegistry([...fileToolset.tools, ...shell.tools], {
+      registry: new ToolRegistry([...fileToolset.tools, ...gitTools, ...shell.tools], {
         permissions: options.permissions,
       }),
       sandboxStatus: shell.processManager.sandboxStatus,

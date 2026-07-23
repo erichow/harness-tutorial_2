@@ -95,7 +95,17 @@ const BUILTIN_MANAGED_RULES: readonly PermissionRule[] = Object.freeze([
   Object.freeze({
     id: "keep-file-tools-in-workspace",
     action: "deny",
-    tools: Object.freeze(["list_files", "search_text", "read_file", "apply_patch"]),
+    tools: Object.freeze([
+      "list_files",
+      "search_text",
+      "read_file",
+      "apply_patch",
+      "git_status",
+      "git_diff",
+      "git_log",
+      "git_prepare_commit",
+      "git_commit",
+    ]),
     resources: Object.freeze(["external:*"]),
     reason: "Workspace file tools cannot access paths outside the workspace.",
   }),
@@ -283,7 +293,7 @@ function discoverResources(
 
   visitJson(input, (key, value) => {
     if (typeof value !== "string") return;
-    if (key === "path" || key === "cwd") addPathResources(resources, value);
+    if (key === "path" || key === "paths" || key === "cwd") addPathResources(resources, value);
     for (const match of value.matchAll(/https?:\/\/([^\s/'"`]+)/giu)) {
       const host = match[1]?.split(":", 1)[0]?.toLowerCase();
       if (host !== undefined && host.length > 0) resources.add(`network:${host}`);
