@@ -13,7 +13,7 @@ const HELP = `agent-code ${VERSION}
 
 Usage:
   agent-code [options]
-  agent-code chat --provider <openai|deepseek> --model <model> [--workspace <path>]
+  agent-code chat [--provider <openai|deepseek>] [--model <model>] [--workspace <path>]
   agent-code --resume <session-id> [--session-dir <path>]
   agent-code --fork-session <session-id> [chat options]
   agent-code session export <session-id> [--session-dir <path>]
@@ -21,6 +21,10 @@ Usage:
 Options:
   -h, --help       Show this help message
   -V, --version    Show the version
+
+Configuration:
+  ~/.agent-code/config.json and trusted <workspace>/.agent-code/config*.json
+  CLI > AGENT_CODE_* > local > project > user > managed > defaults
 
 Interactive commands:
   /help  /status  /context  /permissions  /undo  /clear  /exit

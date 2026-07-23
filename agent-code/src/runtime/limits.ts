@@ -1,6 +1,6 @@
 export interface TurnLimits {
   /** Maximum provider responses in one user turn. */
-  readonly maxSteps: number;
+  readonly maxSteps?: number | undefined;
   /** Wall-clock budget for the complete turn, including tools. */
   readonly maxDurationMs?: number | undefined;
   /** Sum of provider-reported input tokens across the turn. */

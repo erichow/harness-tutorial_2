@@ -1,12 +1,13 @@
 import { resolve } from "node:path";
 
+import { loadConfiguration, type LoadedConfiguration } from "../config/loader.js";
 import { createPlatformSandboxRunner } from "../tools/shell/sandbox-runner.js";
 import { OpenAIResponsesProvider } from "../providers/openai-responses.js";
 import { DeepSeekChatProvider } from "../providers/deepseek-chat.js";
 import type { Provider } from "../providers/provider.js";
 import { CodingAgentRuntime } from "../runtime/coding-agent.js";
+import { resolveTurnLimits } from "../runtime/limits.js";
 import { PermissionEngine } from "../security/permissions.js";
-import { WorkspaceTrust } from "../security/trust.js";
 import { defaultSessionRoot, SessionStore, type SessionHandle } from "../sessions/store.js";
 import { NodeInputController } from "./input.js";
 import { createTerminalPermissionHandler } from "./permission-prompt.js";
@@ -23,15 +24,28 @@ export interface ChatCliOptions {
   readonly forkSessionId?: string | undefined;
 }
 
+export interface ChatConfigurationDefaults {
+  readonly provider?: "openai" | "deepseek" | undefined;
+  readonly model?: string | undefined;
+  readonly models?: Readonly<Partial<Record<"openai" | "deepseek", string | undefined>>> | undefined;
+  readonly sessionDirectory?: string | undefined;
+}
+
 export function parseChatArgs(
   args: readonly string[],
   environment: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
+  defaults: ChatConfigurationDefaults = {},
 ): ChatCliOptions {
   let provider: ChatCliOptions["provider"] | undefined;
   let model: string | undefined;
   let workspace: string | undefined;
-  let sessionDirectory = defaultSessionRoot(environment);
+  let sessionDirectory = resolve(
+    cwd,
+    environment.AGENT_CODE_SESSION_DIR?.trim() ||
+    defaults.sessionDirectory ||
+    defaultSessionRoot({}),
+  );
   let sessionName: string | undefined;
   let resumeSessionId: string | undefined;
   let forkSessionId: string | undefined;
@@ -73,11 +87,28 @@ export function parseChatArgs(
   if (resumeSessionId !== undefined && sessionName !== undefined) {
     throw new Error("--session-name can only be used for a new or forked session");
   }
+  if (resumeSessionId === undefined) {
+    const environmentProvider = environment.AGENT_CODE_PROVIDER?.trim();
+    if (
+      environmentProvider !== undefined &&
+      environmentProvider.length > 0 &&
+      environmentProvider !== "openai" &&
+      environmentProvider !== "deepseek"
+    ) {
+      throw new Error("AGENT_CODE_PROVIDER must be openai or deepseek");
+    }
+    provider ??= environmentProvider === "openai" || environmentProvider === "deepseek"
+      ? environmentProvider
+      : defaults.provider;
+    const environmentModel = environment.AGENT_CODE_MODEL?.trim();
+    if (provider !== undefined) {
+      model ??= environmentModel || defaults.model || defaults.models?.[provider];
+    }
+  }
   if (resumeSessionId === undefined && forkSessionId === undefined) {
     if (provider === undefined) throw new Error("chat requires --provider openai|deepseek");
-    model ??= environment[provider === "openai" ? "OPENAI_MODEL" : "DEEPSEEK_MODEL"]?.trim();
     if (model === undefined || model.length === 0) {
-      throw new Error("chat requires --model or the provider model environment variable");
+      throw new Error("chat requires --model, AGENT_CODE_MODEL, or a configured model for the provider");
     }
   }
   return {
@@ -95,7 +126,17 @@ export async function runChatCli(
   args: readonly string[],
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
-  const options = parseChatArgs(args, environment);
+  const initialWorkspace = explicitWorkspace(args, process.cwd()) ?? process.cwd();
+  const initialConfiguration = await loadConfiguration({
+    workspaceRoot: initialWorkspace,
+    environment,
+  });
+  const options = parseChatArgs(
+    args,
+    environment,
+    process.cwd(),
+    chatDefaults(initialConfiguration),
+  );
   if (
     options.resumeSessionId === undefined &&
     options.forkSessionId === undefined &&
@@ -108,10 +149,14 @@ export async function runChatCli(
   try {
     const apiKey = requireApiKey(context.provider, environment);
 
+    const configuration = resolve(context.workspace) === initialConfiguration.trust.workspaceRoot
+      ? initialConfiguration
+      : await loadConfiguration({ workspaceRoot: context.workspace, environment });
+
     const provider: Provider = context.provider === "openai"
       ? new OpenAIResponsesProvider({ apiKey, model: context.model })
       : new DeepSeekChatProvider({ apiKey, model: context.model });
-    const trust = await WorkspaceTrust.create({ workspaceRoot: context.workspace });
+    const trust = configuration.trust;
     const input = new NodeInputController();
     let runtime: CodingAgentRuntime | undefined;
 
@@ -119,6 +164,12 @@ export async function runChatCli(
       const renderer = new TerminalRenderer({ output: process.stdout });
       const permissions = new PermissionEngine({
         trust,
+        managedRules: configuration.permissions.managedRules,
+        userRules: configuration.permissions.userRules,
+        projectRules: configuration.permissions.projectRules,
+        ...(configuration.permissions.defaultDecision === undefined
+          ? {}
+          : { defaultDecision: configuration.permissions.defaultDecision }),
         decide: createTerminalPermissionHandler(input, renderer),
       });
       runtime = await CodingAgentRuntime.create({
@@ -132,6 +183,7 @@ export async function runChatCli(
             fallback: "closed",
           }),
         },
+        context: runtimeContext(configuration),
       });
       const activeRuntime = runtime;
       const sandbox = activeRuntime.sandboxStatus;
@@ -155,6 +207,7 @@ export async function runChatCli(
           transcript: request.transcript,
           signal: request.signal,
           emit: request.emit,
+          limits: resolveTurnLimits(configuration.turn),
         }),
         undo: async () => await activeRuntime.undoLastTurn(),
       });
@@ -224,12 +277,12 @@ async function resolveSessionContext(
     const provider = options.provider ?? source.metadata.provider;
     const changedProvider = provider !== source.metadata.provider;
     const environmentModel = changedProvider
-      ? environment[provider === "openai" ? "OPENAI_MODEL" : "DEEPSEEK_MODEL"]?.trim()
+      ? environment.AGENT_CODE_MODEL?.trim()
       : undefined;
     const model = options.model ?? environmentModel ?? source.metadata.model;
     if (changedProvider && options.model === undefined && !environmentModel) {
       throw new Error(
-        `Changing a fork from ${source.metadata.provider} to ${provider} requires --model or the provider model environment variable`,
+        `Changing a fork from ${source.metadata.provider} to ${provider} requires --model, AGENT_CODE_MODEL, or a configured model`,
       );
     }
     const workspace = options.workspace ?? source.metadata.projectPath;
@@ -264,6 +317,54 @@ async function resolveSessionContext(
     }),
     mode: "created",
   };
+}
+
+function chatDefaults(configuration: LoadedConfiguration): ChatConfigurationDefaults {
+  return {
+    ...(configuration.provider === undefined ? {} : { provider: configuration.provider }),
+    ...(configuration.model === undefined ? {} : { model: configuration.model }),
+    models: configuration.models,
+    ...(configuration.sessionDirectory === undefined
+      ? {}
+      : { sessionDirectory: configuration.sessionDirectory }),
+  };
+}
+
+function runtimeContext(configuration: LoadedConfiguration): {
+  maxTokens?: number;
+  instructions: {
+    userInstructionPath?: string;
+    maxFileBytes?: number;
+    maxTotalBytes?: number;
+  };
+} {
+  return {
+    ...(configuration.context.maxTokens === undefined
+      ? {}
+      : { maxTokens: configuration.context.maxTokens }),
+    instructions: {
+      ...(configuration.instructions.userPath === undefined
+        ? {}
+        : { userInstructionPath: configuration.instructions.userPath }),
+      ...(configuration.instructions.maxFileBytes === undefined
+        ? {}
+        : { maxFileBytes: configuration.instructions.maxFileBytes }),
+      ...(configuration.instructions.maxTotalBytes === undefined
+        ? {}
+        : { maxTotalBytes: configuration.instructions.maxTotalBytes }),
+    },
+  };
+}
+
+function explicitWorkspace(args: readonly string[], cwd: string): string | undefined {
+  let workspace: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--workspace" && args[index + 1] !== undefined) {
+      workspace = resolve(cwd, args[index + 1] as string);
+      index += 1;
+    }
+  }
+  return workspace;
 }
 
 function assertResumeMatch(

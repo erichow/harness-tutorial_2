@@ -162,7 +162,7 @@ npm run build
 
 OPENAI_API_KEY=... node dist/cli/bin.js chat \
   --provider openai \
-  --model gpt-5 \
+  --model gpt-5.6-sol \
   --workspace .
 ```
 
@@ -171,7 +171,7 @@ OPENAI_API_KEY=... node dist/cli/bin.js chat \
 ```bash
 DEEPSEEK_API_KEY=... node dist/cli/bin.js chat \
   --provider deepseek \
-  --model deepseek-chat \
+  --model deepseek-v4-pro \
   --workspace .
 ```
 

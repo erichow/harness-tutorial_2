@@ -202,7 +202,7 @@ CLI 从 metadata 恢复这些值，再根据 Provider 要求对应 API key。若
 ```bash
 agent-code --fork-session 7b6f... \
   --provider deepseek \
-  --model deepseek-chat \
+  --model deepseek-v4-pro \
   --session-name "try deepseek"
 ```
 
@@ -255,7 +255,7 @@ OPENAI_API_KEY=... agent-code --resume <session-id>
 ```bash
 DEEPSEEK_API_KEY=... agent-code --fork-session <session-id> \
   --provider deepseek \
-  --model deepseek-chat
+  --model deepseek-v4-pro
 ```
 
 导出不调用 Provider，也不需要 API key：

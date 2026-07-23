@@ -60,7 +60,7 @@ describe("chat arguments", () => {
   it("selects OpenAI or DeepSeek without reading a dotenv file", () => {
     expect(parseChatArgs(
       ["--provider", "openai", "--workspace", "project"],
-      { OPENAI_MODEL: "gpt-test" },
+      { AGENT_CODE_MODEL: "gpt-test" },
       "/tmp",
     )).toMatchObject({
       provider: "openai",
@@ -80,11 +80,38 @@ describe("chat arguments", () => {
       .toThrow("requires --model");
   });
 
+  it("uses CLI, product-prefixed environment, then file defaults", () => {
+    const defaults = {
+      provider: "openai" as const,
+      models: { openai: "file-model", deepseek: "file-deepseek" },
+      sessionDirectory: "/configured/sessions",
+    };
+    expect(parseChatArgs([], {}, "/workspace", defaults)).toMatchObject({
+      provider: "openai",
+      model: "file-model",
+      sessionDirectory: "/configured/sessions",
+    });
+    expect(parseChatArgs([], {
+      AGENT_CODE_PROVIDER: "deepseek",
+      AGENT_CODE_MODEL: "environment-model",
+    }, "/workspace", defaults)).toMatchObject({
+      provider: "deepseek",
+      model: "environment-model",
+    });
+    expect(parseChatArgs([
+      "--provider", "openai", "--model", "cli-model",
+    ], { AGENT_CODE_MODEL: "environment-model" }, "/workspace", defaults)).toMatchObject({
+      provider: "openai",
+      model: "cli-model",
+    });
+  });
+
   it("allows resume and fork modes to inherit stored provider configuration", () => {
     expect(parseChatArgs(
       ["--resume", "session-1", "--session-dir", "state"],
-      {},
+      { AGENT_CODE_PROVIDER: "deepseek", AGENT_CODE_MODEL: "ignored" },
       "/workspace",
+      { provider: "openai", models: { openai: "also-ignored" } },
     )).toEqual({
       resumeSessionId: "session-1",
       sessionDirectory: "/workspace/state",

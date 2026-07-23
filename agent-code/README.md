@@ -2,7 +2,7 @@
 
 `agent-code` 是《从零构建 Coding Agent CLI》实战教程的伴随项目。
 
-当前章节：第 16 章。
+当前章节：第 17 章。
 
 ```bash
 npm install
@@ -24,10 +24,35 @@ npm run test:mvp
 交互模式（不会自动读取 `.env.local`）：
 
 ```bash
-OPENAI_API_KEY=... node dist/cli/bin.js chat --provider openai --model gpt-5
+OPENAI_API_KEY=... node dist/cli/bin.js chat --provider openai --model gpt-5.6-sol
 # 或
-DEEPSEEK_API_KEY=... node dist/cli/bin.js chat --provider deepseek --model deepseek-chat
+DEEPSEEK_API_KEY=... node dist/cli/bin.js chat --provider deepseek --model deepseek-v4-pro
 ```
+
+也可以把 Provider 和模型集中写入 `~/.agent-code/config.json`：
+
+```json
+{
+  "provider": "openai",
+  "models": {
+    "openai": "gpt-5.6-sol",
+    "deepseek": "deepseek-v4-pro"
+  },
+  "trustedWorkspaces": ["/absolute/path/to/project"]
+}
+```
+
+配置完成后可直接运行 `node dist/cli/bin.js chat`。
+
+OpenAI 官方当前建议复杂推理和编码任务使用 `gpt-5.6-sol`；`gpt-5.6`
+是指向 Sol 的滚动别名。教程使用完整 model ID，便于明确记录 Session
+实际选择的模型层级。
+
+DeepSeek 官方将于 2026-07-24 15:59 UTC 停用旧的
+`deepseek-chat` / `deepseek-reasoner` 模型名，因此教程当前版本统一使用
+`deepseek-v4-pro`。Provider 类名中的 `Chat` 指 Chat Completions API，不是旧模型名。
+
+优先级为 CLI、`AGENT_CODE_*` 环境变量、local、project、user、managed、默认值。project/local 仅在 workspace 已由 managed/user 配置显式信任后读取；项目 allow 不能覆盖 managed deny。完整字段和合并规则见[第 17 章](../docs/chapters/17-configuration-policy-hierarchy.md)。API key 仍只使用 `OPENAI_API_KEY` / `DEEPSEEK_API_KEY`，不会写入配置或 Session。
 
 会话会默认保存到 `~/.agent-code/sessions`：
 

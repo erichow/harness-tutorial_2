@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 
+import { loadConfiguration } from "../config/loader.js";
 import { exportSessionMarkdown } from "../sessions/export.js";
 import { defaultSessionRoot, SessionStore } from "../sessions/store.js";
 import type { CliIO } from "./main.js";
@@ -15,7 +16,12 @@ export async function runSessionCli(
     return 2;
   }
   const sessionId = args[1];
-  let sessionDirectory = defaultSessionRoot(environment);
+  const configuration = await loadConfiguration({
+    workspaceRoot: cwd,
+    environment,
+    cwd,
+  });
+  let sessionDirectory = configuration.sessionDirectory ?? defaultSessionRoot(environment);
   for (let index = 2; index < args.length; index += 1) {
     if (args[index] === "--session-dir" && args[index + 1] !== undefined) {
       sessionDirectory = resolve(cwd, args[index + 1] as string);
