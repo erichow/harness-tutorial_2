@@ -103,6 +103,7 @@ export async function runChatCli(
       signal: request.signal,
       emit: request.emit,
     }),
+    undo: async () => await runtime.undoLastTurn(),
   });
 
   try {

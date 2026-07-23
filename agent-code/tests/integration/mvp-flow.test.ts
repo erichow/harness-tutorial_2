@@ -182,6 +182,14 @@ describe("MVP end-to-end acceptance", () => {
       expect(result.transcript.messages.at(-1)?.content).toEqual([
         { type: "text", text: "Updated timeout from 5000 to 10000. Tests passed with exit code 0." },
       ]);
+
+      const undone = await runtime.undoLastTurn();
+      expect(undone).toMatchObject({
+        status: "undone",
+        turnId: result.turnId,
+        paths: ["src/config.js"],
+      });
+      expect(await readFile(join(root, "src/config.js"), "utf8")).toBe(original);
     } finally {
       await runtime.dispose();
     }

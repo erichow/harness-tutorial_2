@@ -10,6 +10,7 @@ import {
   PATCH_FORMAT_GUIDE,
   WorkspaceMutationCoordinator,
 } from "./patch.js";
+import { WorkspaceCheckpointManager } from "./checkpoint.js";
 import { WorkspaceFilePolicy, type WorkspaceFilePolicyOptions } from "./policy.js";
 import { clipLine, decodeUtf8, sha256, splitLines } from "./text.js";
 
@@ -24,9 +25,20 @@ export interface WorkspaceFileToolsOptions extends WorkspaceFilePolicyOptions {
   readonly maxSearchFiles?: number | undefined;
 }
 
+export interface WorkspaceFileToolset {
+  readonly tools: readonly Tool[];
+  readonly checkpoints: WorkspaceCheckpointManager;
+}
+
 export async function createWorkspaceFileTools(
   options: WorkspaceFileToolsOptions,
 ): Promise<readonly Tool[]> {
+  return (await createWorkspaceFileToolset(options)).tools;
+}
+
+export async function createWorkspaceFileToolset(
+  options: WorkspaceFileToolsOptions,
+): Promise<WorkspaceFileToolset> {
   const maxFileBytes = positiveInteger(options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES, "maxFileBytes");
   const maxSearchFiles = positiveInteger(
     options.maxSearchFiles ?? DEFAULT_MAX_SEARCH_FILES,
@@ -39,13 +51,15 @@ export async function createWorkspaceFileTools(
   });
   const guard = await WorkspacePathGuard.create(options.workspaceRoot, policy);
   const mutations = new WorkspaceMutationCoordinator();
+  const checkpoints = new WorkspaceCheckpointManager(guard, mutations);
 
-  return Object.freeze([
+  const tools = Object.freeze([
     createListFilesTool(guard, policy),
     createSearchTextTool(guard, policy, maxFileBytes, maxSearchFiles),
     createReadFileTool(guard, maxFileBytes),
-    createApplyPatchTool(guard, mutations, maxFileBytes),
+    createApplyPatchTool(guard, mutations, checkpoints, maxFileBytes),
   ]);
+  return Object.freeze({ tools, checkpoints });
 }
 
 function createListFilesTool(guard: WorkspacePathGuard, policy: WorkspaceFilePolicy): Tool {
@@ -265,6 +279,7 @@ function createSearchTextTool(
 function createApplyPatchTool(
   guard: WorkspacePathGuard,
   mutations: WorkspaceMutationCoordinator,
+  checkpoints: WorkspaceCheckpointManager,
   maxFileBytes = DEFAULT_MAX_FILE_BYTES,
 ): Tool {
   return {
@@ -300,6 +315,7 @@ function createApplyPatchTool(
         maxFileBytes,
         context.signal,
         mutations,
+        checkpoints,
       );
     },
   };

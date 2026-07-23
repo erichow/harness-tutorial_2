@@ -20,6 +20,14 @@ export interface SessionTurnRequest {
 
 export type SessionTurnRunner = (request: SessionTurnRequest) => Promise<SessionTurnResult>;
 
+export interface SessionUndoResult {
+  readonly status: "undone" | "nothing_to_undo" | "conflict";
+  readonly paths?: readonly string[] | undefined;
+  readonly message?: string | undefined;
+}
+
+export type SessionUndoRunner = () => Promise<SessionUndoResult>;
+
 export interface SessionPermissionState {
   readonly auditLog: readonly PermissionAuditEntry[];
   clearSessionGrants(): void;
@@ -37,6 +45,7 @@ export interface CliSessionOptions {
   readonly input: InputController;
   readonly renderer: TerminalRenderer;
   readonly runTurn: SessionTurnRunner;
+  readonly undo?: SessionUndoRunner | undefined;
   readonly status: CliSessionStatus;
   readonly permissions?: SessionPermissionState | undefined;
   readonly now?: (() => Date) | undefined;
@@ -47,6 +56,7 @@ export class CliSession {
   readonly #input: InputController;
   readonly #renderer: TerminalRenderer;
   readonly #runTurn: SessionTurnRunner;
+  readonly #undo: SessionUndoRunner | undefined;
   readonly #status: CliSessionStatus;
   readonly #permissions: SessionPermissionState | undefined;
   readonly #now: () => Date;
@@ -59,6 +69,7 @@ export class CliSession {
     this.#input = options.input;
     this.#renderer = options.renderer;
     this.#runTurn = options.runTurn;
+    this.#undo = options.undo;
     this.#status = options.status;
     this.#permissions = options.permissions;
     this.#now = options.now ?? (() => new Date());
@@ -93,7 +104,7 @@ export class CliSession {
     const value = line.trim();
     if (value.length === 0) return;
     if (value.startsWith("/")) {
-      this.#handleCommand(value);
+      await this.#handleCommand(value);
       return;
     }
     if (this.#activeTurn !== undefined) {
@@ -151,10 +162,10 @@ export class CliSession {
     this.#input.close();
   }
 
-  #handleCommand(command: string): void {
+  async #handleCommand(command: string): Promise<void> {
     switch (command) {
       case "/help":
-        this.#renderer.notice("Commands: /help /status /permissions /clear /exit");
+        this.#renderer.notice("Commands: /help /status /permissions /undo /clear /exit");
         return;
       case "/status":
         this.#renderer.notice([
@@ -170,6 +181,26 @@ export class CliSession {
         const allowed = audit.filter((entry) => entry.decision === "allow").length;
         const denied = audit.length - allowed;
         this.#renderer.notice(`Permission decisions: ${audit.length} (${allowed} allowed, ${denied} denied).`);
+        return;
+      }
+      case "/undo": {
+        if (this.#activeTurn !== undefined) {
+          this.#renderer.notice("Cannot undo while a turn is running.");
+          return;
+        }
+        if (this.#undo === undefined) {
+          this.#renderer.notice("Undo is not available in this session.");
+          return;
+        }
+        const result = await this.#undo();
+        if (result.status === "undone") {
+          const paths = result.paths ?? [];
+          this.#renderer.notice(
+            `Undid Agent file changes${paths.length === 0 ? "" : `: ${paths.join(", ")}`}. Shell and other external side effects were not reverted.`,
+          );
+        } else {
+          this.#renderer.notice(result.message ?? "Nothing was undone.");
+        }
         return;
       }
       case "/clear":

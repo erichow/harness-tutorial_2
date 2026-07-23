@@ -56,6 +56,39 @@ export class WorkspaceMutationCoordinator {
       if (this.#tails.get(path) === tail) this.#tails.delete(path);
     }
   }
+
+  /** Hold several canonical paths in sorted order to avoid process-local deadlocks. */
+  async runExclusiveMany<T>(paths: readonly string[], task: () => Promise<T>): Promise<T> {
+    const unique = [...new Set(paths)].sort();
+    const acquire = async (index: number): Promise<T> => {
+      const path = unique[index];
+      if (path === undefined) return await task();
+      return await this.runExclusive(path, async () => await acquire(index + 1));
+    };
+    return await acquire(0);
+  }
+}
+
+export interface WorkspaceFileVersion {
+  readonly hash: string;
+  readonly mode: number;
+}
+
+export interface WorkspaceFileSnapshot {
+  readonly version: WorkspaceFileVersion | null;
+  readonly content: Buffer | null;
+}
+
+export interface WorkspaceMutationRecorder {
+  prepareMutation(
+    path: string,
+    before: WorkspaceFileSnapshot,
+  ): WorkspacePreparedMutation;
+}
+
+export interface WorkspacePreparedMutation {
+  commit(after: WorkspaceFileVersion | null): void;
+  abort(): void;
 }
 
 export async function applyWorkspacePatch(
@@ -65,6 +98,7 @@ export async function applyWorkspacePatch(
   maxFileBytes: number,
   signal: AbortSignal,
   coordinator = new WorkspaceMutationCoordinator(),
+  recorder?: WorkspaceMutationRecorder,
 ): Promise<{ readonly content: string; readonly data: JsonObject }> {
   signal.throwIfAborted();
   let patch: ParsedPatch;
@@ -86,8 +120,17 @@ export async function applyWorkspacePatch(
       if (target.exists) throw new Error(`Cannot add an existing file: ${path}`);
       const text = patch.lines.length === 0 ? "" : `${patch.lines.join("\n")}\n`;
       const bytes = encodeUtf8(text);
-      await atomicWrite(guard, path, bytes, undefined, null, signal);
-      const hash = sha256(bytes);
+      const recovery = recorder?.prepareMutation(path, { version: null, content: null });
+      let hash: string;
+      try {
+        await atomicWrite(guard, path, bytes, undefined, null, signal);
+        hash = sha256(bytes);
+        const mode = await fileMode(target.lexicalPath);
+        recovery?.commit({ hash, mode });
+      } catch (error) {
+        recovery?.abort();
+        throw error;
+      }
       const change = createUnifiedDiff(path, null, text);
       return {
         content: `Added ${path}\nsha256: ${hash}\n${change.diff}`,
@@ -109,9 +152,19 @@ export async function applyWorkspacePatch(
     const decoded = decodeUtf8(before.buffer);
 
     if (patch.operation === "delete") {
-      await revalidate(guard, path, baseHash);
-      signal.throwIfAborted();
-      await unlink(target.lexicalPath);
+      const recovery = recorder?.prepareMutation(
+        path,
+        snapshot(actualHash, before.mode, before.buffer),
+      );
+      try {
+        await revalidate(guard, path, baseHash);
+        signal.throwIfAborted();
+        await unlink(target.lexicalPath);
+        recovery?.commit(null);
+      } catch (error) {
+        recovery?.abort();
+        throw error;
+      }
       const change = createUnifiedDiff(path, decoded.text, null);
       return {
         content: `Deleted ${path}\nprevious sha256: ${actualHash}\n${change.diff}`,
@@ -124,8 +177,18 @@ export async function applyWorkspacePatch(
     const changedText = joinLines(changedLines, original.eol, original.trailingNewline);
     const changed = encodeUtf8(changedText, decoded.hasBom);
     if (sha256(changed) === actualHash) throw new Error("Patch does not change the file");
-    await atomicWrite(guard, path, changed, before.mode, baseHash, signal);
     const afterHash = sha256(changed);
+    const recovery = recorder?.prepareMutation(
+      path,
+      snapshot(actualHash, before.mode, before.buffer),
+    );
+    try {
+      await atomicWrite(guard, path, changed, before.mode, baseHash, signal);
+      recovery?.commit({ hash: afterHash, mode: permissions(before.mode) });
+    } catch (error) {
+      recovery?.abort();
+      throw error;
+    }
     const change = createUnifiedDiff(path, decoded.text, changedText);
     return {
       content: `Updated ${path}\nsha256: ${afterHash}\n${change.diff}`,
@@ -290,6 +353,21 @@ async function readRegularFile(path: string): Promise<{
   const metadata = await lstat(path);
   if (!metadata.isFile()) throw new Error("Patch target must be a regular file");
   return { buffer: await readFile(path), mode: metadata.mode };
+}
+
+function snapshot(hash: string, mode: number, content: Buffer): WorkspaceFileSnapshot {
+  return {
+    version: { hash, mode: permissions(mode) },
+    content: Buffer.from(content),
+  };
+}
+
+async function fileMode(path: string): Promise<number> {
+  return permissions((await lstat(path)).mode);
+}
+
+function permissions(mode: number): number {
+  return mode & 0o777;
 }
 
 function conflict(expected: string, actual: string): Error {

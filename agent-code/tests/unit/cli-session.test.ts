@@ -59,10 +59,38 @@ describe("CliSession", () => {
     await item.session.handleLine("/clear");
 
     expect(turns).toBe(0);
-    expect(item.text()).toContain("/help /status /permissions /clear /exit");
+    expect(item.text()).toContain("/help /status /permissions /undo /clear /exit");
     expect(item.text()).toContain("Provider: mock (fixture)");
     expect(item.text()).toContain("Permission decisions: 0");
     expect(item.permissionState.clears).toBe(1);
+  });
+
+  it("runs undo locally and reports that shell side effects are outside its scope", async () => {
+    const item = fixture(async ({ transcript }) => ({ transcript, reason: "completed" }));
+    const undoCalls: number[] = [];
+    const chunks: string[] = [];
+    const session = new CliSession({
+      input: item.input,
+      renderer: new TerminalRenderer({ output: { write: (chunk) => chunks.push(chunk), columns: 200 } }),
+      runTurn: async ({ transcript }) => ({ transcript, reason: "completed" }),
+      undo: async () => {
+        undoCalls.push(1);
+        return { status: "undone", paths: ["src/a.ts"] };
+      },
+      status: {
+        provider: "mock",
+        model: "fixture",
+        workspace: "/workspace",
+        trusted: false,
+        sandbox: "blocked",
+      },
+    });
+
+    await session.handleLine("/undo");
+
+    expect(undoCalls).toHaveLength(1);
+    expect(chunks.join("")).toContain("Undid Agent file changes: src/a.ts");
+    expect(chunks.join("")).toContain("Shell and other external side effects were not reverted");
   });
 
   it("first Ctrl-C cancels the active turn and idle Ctrl-C exits", async () => {

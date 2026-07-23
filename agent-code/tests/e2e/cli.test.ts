@@ -39,7 +39,7 @@ describe("built CLI", () => {
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("/help /status /permissions /clear /exit");
+    expect(result.stdout).toContain("/help /status /permissions /undo /clear /exit");
     expect(result.stdout).toContain("Provider: openai (offline-test)");
     expect(result.stdout).not.toMatch(/[\u001b\u0007\r]/u);
   });

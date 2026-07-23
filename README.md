@@ -26,5 +26,6 @@ chapter-01 ... chapter-23
 - [x] 第 9 章：CLI 交互、事件渲染和取消
 - [x] 第 10 章：MVP 端到端验收
 - [x] 第 11 章：真实 Diff、并发冲突和变更归属
+- [x] 第 12 章：Checkpoint 和 Undo
 
 其余章节见 [实战教程设计稿](./PRACTICAL_TUTORIAL.md)。
