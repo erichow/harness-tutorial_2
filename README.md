@@ -29,5 +29,6 @@ chapter-01 ... chapter-23
 - [x] 第 12 章：Checkpoint 和 Undo
 - [x] 第 13 章：Git 工具和用户修改保护
 - [x] 第 14 章：测试—诊断—修复循环
+- [x] 第 15 章：Session 持久化、恢复和分支
 
 其余章节见 [实战教程设计稿](./PRACTICAL_TUTORIAL.md)。

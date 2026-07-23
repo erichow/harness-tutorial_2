@@ -62,7 +62,7 @@ describe("chat arguments", () => {
       ["--provider", "openai", "--workspace", "project"],
       { OPENAI_MODEL: "gpt-test" },
       "/tmp",
-    )).toEqual({
+    )).toMatchObject({
       provider: "openai",
       model: "gpt-test",
       workspace: "/tmp/project",
@@ -78,5 +78,30 @@ describe("chat arguments", () => {
     expect(() => parseChatArgs([], {}, "/workspace")).toThrow("requires --provider");
     expect(() => parseChatArgs(["--provider", "openai"], {}, "/workspace"))
       .toThrow("requires --model");
+  });
+
+  it("allows resume and fork modes to inherit stored provider configuration", () => {
+    expect(parseChatArgs(
+      ["--resume", "session-1", "--session-dir", "state"],
+      {},
+      "/workspace",
+    )).toEqual({
+      resumeSessionId: "session-1",
+      sessionDirectory: "/workspace/state",
+    });
+    expect(parseChatArgs(
+      ["--fork-session", "session-1", "--provider", "deepseek", "--model", "new"],
+      {},
+      "/workspace",
+    )).toMatchObject({
+      forkSessionId: "session-1",
+      provider: "deepseek",
+      model: "new",
+    });
+    expect(() => parseChatArgs(
+      ["--resume", "one", "--fork-session", "two"],
+      {},
+      "/workspace",
+    )).toThrow("cannot be used together");
   });
 });

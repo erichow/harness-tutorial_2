@@ -129,4 +129,60 @@ describe("CliSession", () => {
     await item.session.handleLine("/exit");
     expect(item.session.closed).toBe(true);
   });
+
+  it("durably records user input before starting a turn and persists emitted events", async () => {
+    const order: string[] = [];
+    const item = fixture(async ({ transcript, emit }) => {
+      order.push("turn");
+      await emit({
+        protocolVersion: 1,
+        type: "turn_started",
+        turnId: "turn-1",
+        sequence: 0,
+        timestamp: "2026-07-23T00:00:00.000Z",
+      });
+      return { transcript, reason: "completed" };
+    });
+    const session = new CliSession({
+      input: item.input,
+      renderer: new TerminalRenderer({ output: { write: () => undefined, columns: 200 } }),
+      runTurn: async (request) => {
+        order.push("runner-entered");
+        return await (async () => {
+          await request.emit({
+            protocolVersion: 1,
+            type: "turn_started",
+            turnId: "turn-1",
+            sequence: 0,
+            timestamp: "2026-07-23T00:00:00.000Z",
+          });
+          return { transcript: request.transcript, reason: "completed" as const };
+        })();
+      },
+      persistence: {
+        async persistTranscript(transcript) {
+          order.push(`transcript:${transcript.messages.length}`);
+        },
+        async appendRuntimeEvent(event) {
+          order.push(`event:${event.type}`);
+        },
+      },
+      status: {
+        provider: "mock",
+        model: "fixture",
+        workspace: "/workspace",
+        trusted: false,
+        sandbox: "blocked",
+      },
+    });
+
+    await session.handleLine("persist me");
+
+    expect(order).toEqual([
+      "transcript:1",
+      "runner-entered",
+      "event:turn_started",
+      "transcript:1",
+    ]);
+  });
 });

@@ -15,7 +15,7 @@ export interface SessionTurnResult {
 export interface SessionTurnRequest {
   readonly transcript: Transcript;
   readonly signal: AbortSignal;
-  readonly emit: (event: RuntimeEvent) => void;
+  readonly emit: (event: RuntimeEvent) => void | Promise<void>;
 }
 
 export type SessionTurnRunner = (request: SessionTurnRequest) => Promise<SessionTurnResult>;
@@ -39,6 +39,13 @@ export interface CliSessionStatus {
   readonly workspace: string;
   readonly trusted: boolean;
   readonly sandbox: string;
+  readonly sessionId?: string | undefined;
+  readonly sessionName?: string | undefined;
+}
+
+export interface CliSessionPersistence {
+  persistTranscript(transcript: Transcript): Promise<void>;
+  appendRuntimeEvent(event: RuntimeEvent): Promise<void>;
 }
 
 export interface CliSessionOptions {
@@ -48,6 +55,8 @@ export interface CliSessionOptions {
   readonly undo?: SessionUndoRunner | undefined;
   readonly status: CliSessionStatus;
   readonly permissions?: SessionPermissionState | undefined;
+  readonly initialTranscript?: Transcript | undefined;
+  readonly persistence?: CliSessionPersistence | undefined;
   readonly now?: (() => Date) | undefined;
   readonly createId?: (() => string) | undefined;
 }
@@ -59,9 +68,10 @@ export class CliSession {
   readonly #undo: SessionUndoRunner | undefined;
   readonly #status: CliSessionStatus;
   readonly #permissions: SessionPermissionState | undefined;
+  readonly #persistence: CliSessionPersistence | undefined;
   readonly #now: () => Date;
   readonly #createId: () => string;
-  #transcript = createTranscript();
+  #transcript: Transcript;
   #activeTurn: AbortController | undefined;
   #closed = false;
 
@@ -72,8 +82,10 @@ export class CliSession {
     this.#undo = options.undo;
     this.#status = options.status;
     this.#permissions = options.permissions;
+    this.#persistence = options.persistence;
     this.#now = options.now ?? (() => new Date());
     this.#createId = options.createId ?? randomUUID;
+    this.#transcript = options.initialTranscript ?? createTranscript();
   }
 
   get transcript(): Transcript {
@@ -127,12 +139,18 @@ export class CliSession {
       ],
     };
     try {
+      // Persist the user's intent before any provider or tool side effect begins.
+      await this.#persistence?.persistTranscript(this.#transcript);
       const result = await this.#runTurn({
         transcript: this.#transcript,
         signal: controller.signal,
-        emit: (event) => this.#renderer.render(event),
+        emit: async (event) => {
+          this.#renderer.render(event);
+          await this.#persistence?.appendRuntimeEvent(event);
+        },
       });
       this.#transcript = result.transcript;
+      await this.#persistence?.persistTranscript(this.#transcript);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.#renderer.notice(`Turn failed: ${message}`);
@@ -173,6 +191,9 @@ export class CliSession {
           `Workspace: ${this.#status.workspace}`,
           `Trusted: ${this.#status.trusted ? "yes" : "no"}`,
           `Sandbox: ${this.#status.sandbox}`,
+          ...(this.#status.sessionId === undefined
+            ? []
+            : [`Session: ${this.#status.sessionName ?? this.#status.sessionId} (${this.#status.sessionId})`]),
           `Messages: ${this.#transcript.messages.length}`,
         ].join("\n"));
         return;
@@ -205,6 +226,7 @@ export class CliSession {
       }
       case "/clear":
         this.#transcript = createTranscript();
+        await this.#persistence?.persistTranscript(this.#transcript);
         this.#permissions?.clearSessionGrants();
         this.#renderer.notice("Conversation and session permission grants cleared.");
         return;

@@ -14,6 +14,9 @@ const HELP = `agent-code ${VERSION}
 Usage:
   agent-code [options]
   agent-code chat --provider <openai|deepseek> --model <model> [--workspace <path>]
+  agent-code --resume <session-id> [--session-dir <path>]
+  agent-code --fork-session <session-id> [chat options]
+  agent-code session export <session-id> [--session-dir <path>]
 
 Options:
   -h, --help       Show this help message

@@ -22,5 +22,6 @@ git switch --detach chapter-01
 | 12 | [Checkpoint 和 Undo](./12-checkpoint-undo.md) | `chapter-12` | 完成 |
 | 13 | [Git 工具和用户修改保护](./13-git-tools-user-changes.md) | `chapter-13` | 完成 |
 | 14 | [测试—诊断—修复循环](./14-test-diagnose-fix-loop.md) | `chapter-14` | 完成 |
+| 15 | [Session 持久化、恢复和分支](./15-session-persistence-resume-branch.md) | `chapter-15` | 完成 |
 
 后续章节按 [总体设计稿](../../PRACTICAL_TUTORIAL.md) 的顺序补充。
