@@ -63,6 +63,34 @@ const lspServerSchema = executableExtensionSchema.extend({
   enabled: z.boolean().optional(),
 }).strict();
 
+const teamPolicySchema = z.object({
+  plugins: z.object({
+    allowedIds: z.array(z.string().trim().min(1)).optional(),
+    deniedCapabilities: z.array(z.enum([
+      "renderer",
+      "ide_transport",
+      "websocket_transport",
+      "tool",
+      "provider",
+      "event_exporter",
+    ])).optional(),
+  }).strict().optional(),
+  hosts: z.object({
+    allowedKinds: z.array(z.enum(["cli", "ide", "websocket"])).min(1).optional(),
+  }).strict().optional(),
+  audit: z.object({
+    endpoint: z.string().url().refine((value) => new URL(value).protocol === "https:", {
+      message: "remote audit endpoint must use https",
+    }),
+    headersFrom: z.record(
+      z.string().trim().min(1),
+      z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u),
+    ).optional(),
+    timeoutMs: z.number().int().positive().optional(),
+    failureMode: z.enum(["open", "closed"]).optional(),
+  }).strict().optional(),
+}).strict();
+
 export const configurationSchema = z.object({
   version: z.literal(1).optional(),
   provider: z.enum(["openai", "deepseek"]).optional(),
@@ -107,6 +135,8 @@ export const configurationSchema = z.object({
     userDirectory: z.string().trim().min(1).optional(),
     maxFileBytes: z.number().int().positive().optional(),
   }).strict().optional(),
+  /** Organization-owned controls; the loader accepts this field only in managed config. */
+  teamPolicy: teamPolicySchema.optional(),
 }).strict();
 
 export type Configuration = z.infer<typeof configurationSchema>;

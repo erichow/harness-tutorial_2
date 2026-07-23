@@ -37,5 +37,6 @@ chapter-01 ... chapter-23
 - [x] 第 20 章：可观测性和工作流 Eval
 - [x] 第 21 章：Subagent 和 Worktree 隔离
 - [x] 第 22 章：LSP 作为可选插件
+- [x] 第 23 章：插件、IDE、Web 和团队策略
 
-其余章节见 [实战教程设计稿](./PRACTICAL_TUTORIAL.md)。
+23 章实战内容已全部完成。各章范围见 [实战教程设计稿](./PRACTICAL_TUTORIAL.md)。

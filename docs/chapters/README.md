@@ -30,5 +30,6 @@ git switch --detach chapter-01
 | 20 | [可观测性和工作流 Eval](./20-observability-workflow-eval.md) | `chapter-20` | 完成 |
 | 21 | [Subagent 和 Worktree 隔离](./21-subagent-worktree-isolation.md) | `chapter-21` | 完成 |
 | 22 | [LSP 作为可选插件](./22-lsp-optional-plugin.md) | `chapter-22` | 完成 |
+| 23 | [插件、IDE、Web 和团队策略](./23-plugin-ide-web-team-policy.md) | `chapter-23` | 完成 |
 
-后续章节按 [总体设计稿](../../PRACTICAL_TUTORIAL.md) 的顺序补充。
+23 章实战教程已全部完成；设计依据见[总体设计稿](../../PRACTICAL_TUTORIAL.md)。

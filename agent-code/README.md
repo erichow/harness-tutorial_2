@@ -2,7 +2,7 @@
 
 `agent-code` 是《从零构建 Coding Agent CLI》实战教程的伴随项目。
 
-当前章节：第 22 章。
+当前章节：第 23 章，实战教程已完成。
 
 ```bash
 npm install
@@ -129,6 +129,19 @@ server、六类生命周期 Hook 和 Skills。MCP 工具继续经过统一权限
 ```
 
 语言服务器进程默认不会继承 Provider API key；项目配置仍需先通过 workspace trust。
+
+插件、IDE/Web 宿主与团队策略：
+
+```bash
+npm run test:hosts
+```
+
+`RuntimeRenderer`、版本化 `HostSessionAdapter` 和 public event projection 让 CLI、IDE
+与 WebSocket 宿主复用同一个 Runtime，同时删除跨宿主工具 input/output 和错误正文。
+插件 manifest 在执行代码前接受 schema 与 managed allowlist/capability 检查。
+`teamPolicy` 只能出现在 managed 配置；它还可以限制宿主类型，并配置只发送元数据的
+HTTPS 远程审计 exporter。完整契约见
+[第 23 章](../docs/chapters/23-plugin-ide-web-team-policy.md)。
 
 OpenAI 官方当前建议复杂推理和编码任务使用 `gpt-5.6-sol`；`gpt-5.6`
 是指向 Sol 的滚动别名。教程使用完整 model ID，便于明确记录 Session

@@ -13,13 +13,20 @@ export interface TerminalRendererOptions {
   readonly useColor?: boolean | undefined;
 }
 
+/** Host-neutral rendering boundary used by the interactive CLI. */
+export interface RuntimeRenderer {
+  render(event: RuntimeEvent): void;
+  notice(message: string): void;
+  finish(): void;
+}
+
 type StreamKind = "text" | "summary";
 type DeferredOutput =
   | { readonly kind: "event"; readonly event: RuntimeEvent }
   | { readonly kind: "notice"; readonly message: string };
 
 /** A single state machine renders model, tool, and permission activity. */
-export class TerminalRenderer {
+export class TerminalRenderer implements RuntimeRenderer {
   readonly #output: TerminalOutput;
   readonly #useColor: boolean;
   readonly #toolNames = new Map<string, string>();

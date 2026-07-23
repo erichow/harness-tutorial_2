@@ -11,6 +11,10 @@ import {
 } from "../runtime/coding-agent.js";
 import { resolveTurnLimits } from "../runtime/limits.js";
 import { PermissionEngine } from "../security/permissions.js";
+import {
+  assertHostAllowed,
+  createManagedAuditExporter,
+} from "../security/team-policy.js";
 import { defaultSessionRoot, SessionStore, type SessionHandle } from "../sessions/store.js";
 import { NodeInputController } from "./input.js";
 import { createTerminalPermissionHandler } from "./permission-prompt.js";
@@ -155,6 +159,7 @@ export async function runChatCli(
     const configuration = resolve(context.workspace) === initialConfiguration.trust.workspaceRoot
       ? initialConfiguration
       : await loadConfiguration({ workspaceRoot: context.workspace, environment });
+    assertHostAllowed(configuration, "cli");
 
     const provider: Provider = context.provider === "openai"
       ? new OpenAIResponsesProvider({ apiKey, model: context.model })
@@ -187,6 +192,15 @@ export async function runChatCli(
           }),
         },
         context: runtimeContext(configuration),
+        observability: {
+          sessionId: context.handle.metadata.sessionId,
+          auditExporter: createManagedAuditExporter({
+            configuration,
+            environment,
+            sessionId: context.handle.metadata.sessionId,
+            diagnostic: (message) => renderer.notice(message),
+          }),
+        },
         extensions: runtimeExtensions(
           configuration,
           environment,

@@ -11,6 +11,10 @@ import type { RunTurnResult } from "../runtime/agent.js";
 import type { RuntimeEvent } from "../runtime/events.js";
 import { resolveTurnLimits } from "../runtime/limits.js";
 import { PermissionEngine } from "../security/permissions.js";
+import {
+  assertHostAllowed,
+  createManagedAuditExporter,
+} from "../security/team-policy.js";
 import { SessionStore } from "../sessions/store.js";
 import { createPlatformSandboxRunner } from "../tools/shell/sandbox-runner.js";
 import {
@@ -197,6 +201,7 @@ export async function runHeadlessCli(
     const configuration = resolve(context.workspace) === initialConfiguration.trust.workspaceRoot
       ? initialConfiguration
       : await loadConfiguration({ workspaceRoot: context.workspace, environment, cwd });
+    assertHostAllowed(configuration, "cli");
     const provider = dependencies.createProvider?.({
       provider: context.provider,
       model: context.model,
@@ -229,6 +234,15 @@ export async function runHeadlessCli(
         }),
       },
       context: runtimeContext(configuration),
+      observability: {
+        sessionId: activeHandle.metadata.sessionId,
+        auditExporter: createManagedAuditExporter({
+          configuration,
+          environment,
+          sessionId: activeHandle.metadata.sessionId,
+          diagnostic: (message) => io.stderr.write(`${message}\n`),
+        }),
+      },
       extensions: runtimeExtensions(
         configuration,
         environment,

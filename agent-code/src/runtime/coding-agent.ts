@@ -34,6 +34,11 @@ import { createTestTools } from "../tools/testing/index.js";
 import type { Tool } from "../tools/tool.js";
 import type { SandboxStatus } from "../tools/shell/sandbox-runner.js";
 import { TraceRecorder, type TraceRecorderOptions } from "../observability/trace.js";
+import {
+  createAuditRecord,
+  isAuditableRuntimeEvent,
+  type AuditExporter,
+} from "../observability/exporter.js";
 import { runTurn, type RunTurnResult } from "./agent.js";
 import { RuntimeEventLog } from "./event-log.js";
 import type { RuntimeEvent } from "./events.js";
@@ -47,7 +52,9 @@ export interface CodingAgentRuntimeOptions {
   readonly context?: Omit<ContextManagerOptions, "instructions"> & {
     readonly instructions?: Omit<InstructionLoaderOptions, "workspaceRoot"> | undefined;
   } | undefined;
-  readonly observability?: TraceRecorderOptions | undefined;
+  readonly observability?: (TraceRecorderOptions & {
+    readonly auditExporter?: AuditExporter | undefined;
+  }) | undefined;
   readonly tools?: {
     /**
      * Expose only these tools to the Provider and executor. Unknown names fail
@@ -95,6 +102,7 @@ export class CodingAgentRuntime {
   readonly #disposeProcesses: () => Promise<void>;
   readonly #disposeMcp: () => Promise<void>;
   readonly #disposeLsp: () => Promise<void>;
+  readonly #auditExporter: AuditExporter | undefined;
   readonly #hooks: HookRunner | undefined;
   #disposed = false;
 
@@ -112,6 +120,7 @@ export class CodingAgentRuntime {
     readonly attachCheckpoint: (checkpointId: string, turnId: string) => void;
     readonly finishCheckpoint: (checkpointId: string) => void;
     readonly trace: TraceRecorder;
+    readonly auditExporter?: AuditExporter | undefined;
   }) {
     this.#provider = options.provider;
     this.#context = options.context;
@@ -126,6 +135,7 @@ export class CodingAgentRuntime {
     this.#attachCheckpoint = options.attachCheckpoint;
     this.#finishCheckpoint = options.finishCheckpoint;
     this.trace = options.trace;
+    this.#auditExporter = options.auditExporter;
   }
 
   static async create(options: CodingAgentRuntimeOptions): Promise<CodingAgentRuntime> {
@@ -202,6 +212,7 @@ export class CodingAgentRuntime {
         ...(skillLoader === undefined ? [] : [skillLoader]),
       ];
       const tools = selectTools(allTools, options.tools?.allowedNames);
+      const trace = new TraceRecorder(options.observability);
       const runtime = new CodingAgentRuntime({
         provider: options.provider,
         context,
@@ -219,7 +230,8 @@ export class CodingAgentRuntime {
         attachCheckpoint: (checkpointId, turnId) =>
           fileToolset.checkpoints.attachTurn(checkpointId, turnId),
         finishCheckpoint: (checkpointId) => fileToolset.checkpoints.finishTurn(checkpointId),
-        trace: new TraceRecorder(options.observability),
+        trace,
+        auditExporter: options.observability?.auditExporter,
       });
       createdRuntime = runtime;
       await hooks?.notify("SessionStart", {
@@ -254,6 +266,12 @@ export class CodingAgentRuntime {
           this.#attachCheckpoint(checkpointId, event.turnId);
           this.eventLog.append(event);
           this.trace.record(event);
+          if (this.#auditExporter !== undefined && isAuditableRuntimeEvent(event)) {
+            await this.#auditExporter.export(
+              createAuditRecord(this.trace.sessionId, event),
+              options.signal ?? new AbortController().signal,
+            );
+          }
           await options.emit?.(event);
         },
       });
@@ -284,7 +302,12 @@ export class CodingAgentRuntime {
     if (this.#disposed) return;
     this.#disposed = true;
     try {
-      await Promise.all([this.#disposeProcesses(), this.#disposeMcp(), this.#disposeLsp()]);
+      await Promise.all([
+        this.#disposeProcesses(),
+        this.#disposeMcp(),
+        this.#disposeLsp(),
+        this.#auditExporter?.close?.(),
+      ]);
     } finally {
       this.trace.finish();
     }

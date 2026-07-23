@@ -53,6 +53,7 @@ export interface LoadedConfiguration {
   readonly lspServers: Readonly<NonNullable<Configuration["lspServers"]>>;
   readonly hooks: Readonly<NonNullable<Configuration["hooks"]>>;
   readonly skills: Readonly<NonNullable<Configuration["skills"]>>;
+  readonly teamPolicy: Readonly<NonNullable<Configuration["teamPolicy"]>>;
   readonly loadedFiles: readonly LoadedConfigurationFile[];
   readonly skippedFiles: readonly SkippedConfigurationFile[];
 }
@@ -132,6 +133,7 @@ export async function loadConfiguration(
     lspServers: Object.freeze({ ...merged.lspServers }),
     hooks: freezeHooks(merged.hooks),
     skills: Object.freeze({ ...merged.skills }),
+    teamPolicy: freezeTeamPolicy(merged.teamPolicy),
     loadedFiles: Object.freeze(documents.map(({ layer, path }) => ({ layer, path }))),
     skippedFiles: Object.freeze(skippedFiles),
   };
@@ -228,6 +230,13 @@ async function readConfiguration(
       );
     }
   }
+  if (candidate.layer !== "managed" && result.data.teamPolicy !== undefined) {
+    throw new ConfigurationError(
+      candidate.path,
+      "teamPolicy",
+      "only managed configuration may set organization policy",
+    );
+  }
   return {
     ...candidate,
     path: canonicalPath,
@@ -283,6 +292,13 @@ function mergeConfiguration(base: Configuration, override: Configuration): Confi
     lspServers: { ...base.lspServers, ...override.lspServers },
     hooks: mergeHooks(base.hooks, override.hooks),
     skills: { ...base.skills, ...override.skills },
+    teamPolicy: {
+      ...base.teamPolicy,
+      ...override.teamPolicy,
+      plugins: { ...base.teamPolicy?.plugins, ...override.teamPolicy?.plugins },
+      hosts: { ...base.teamPolicy?.hosts, ...override.teamPolicy?.hosts },
+      audit: override.teamPolicy?.audit ?? base.teamPolicy?.audit,
+    },
     ...(base.trustedWorkspaces === undefined && override.trustedWorkspaces === undefined
       ? {}
       : {
@@ -311,6 +327,54 @@ function freezeHooks(
     const commands = hooks?.[event];
     return commands === undefined ? [] : [[event, Object.freeze([...commands])]];
   })) as NonNullable<Configuration["hooks"]>);
+}
+
+function freezeTeamPolicy(
+  policy: Configuration["teamPolicy"],
+): Readonly<NonNullable<Configuration["teamPolicy"]>> {
+  const output: NonNullable<Configuration["teamPolicy"]> = {
+    ...(policy?.plugins === undefined
+      ? {}
+      : {
+          plugins: {
+            ...(policy.plugins.allowedIds === undefined
+              ? {}
+              : { allowedIds: [...policy.plugins.allowedIds] }),
+            ...(policy.plugins.deniedCapabilities === undefined
+              ? {}
+              : { deniedCapabilities: [...policy.plugins.deniedCapabilities] }),
+          },
+        }),
+    ...(policy?.hosts === undefined
+      ? {}
+      : {
+          hosts: {
+            ...(policy.hosts.allowedKinds === undefined
+              ? {}
+              : { allowedKinds: [...policy.hosts.allowedKinds] }),
+          },
+        }),
+    ...(policy?.audit === undefined
+      ? {}
+      : {
+          audit: {
+            ...policy.audit,
+            ...(policy.audit.headersFrom === undefined
+              ? {}
+              : { headersFrom: { ...policy.audit.headersFrom } }),
+          },
+        }),
+  };
+  if (output.plugins?.allowedIds !== undefined) Object.freeze(output.plugins.allowedIds);
+  if (output.plugins?.deniedCapabilities !== undefined) {
+    Object.freeze(output.plugins.deniedCapabilities);
+  }
+  if (output.plugins !== undefined) Object.freeze(output.plugins);
+  if (output.hosts?.allowedKinds !== undefined) Object.freeze(output.hosts.allowedKinds);
+  if (output.hosts !== undefined) Object.freeze(output.hosts);
+  if (output.audit?.headersFrom !== undefined) Object.freeze(output.audit.headersFrom);
+  if (output.audit !== undefined) Object.freeze(output.audit);
+  return Object.freeze(output);
 }
 
 function collectPermissionRules(documents: readonly LayerDocument[]): {
