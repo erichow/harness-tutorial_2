@@ -5,7 +5,7 @@ import type { ZodIssue } from "zod";
 
 import type { PermissionRule } from "../security/permissions.js";
 import { WorkspaceTrust } from "../security/trust.js";
-import { configurationSchema, type Configuration } from "./schema.js";
+import { configurationSchema, hookEventNames, type Configuration } from "./schema.js";
 
 export type ConfigurationLayer = "managed" | "user" | "project" | "local";
 
@@ -49,6 +49,9 @@ export interface LoadedConfiguration {
     readonly userRules: readonly PermissionRule[];
     readonly projectRules: readonly PermissionRule[];
   };
+  readonly mcpServers: Readonly<NonNullable<Configuration["mcpServers"]>>;
+  readonly hooks: Readonly<NonNullable<Configuration["hooks"]>>;
+  readonly skills: Readonly<NonNullable<Configuration["skills"]>>;
   readonly loadedFiles: readonly LoadedConfigurationFile[];
   readonly skippedFiles: readonly SkippedConfigurationFile[];
 }
@@ -124,6 +127,9 @@ export async function loadConfiguration(
       userRules: Object.freeze(rules.user),
       projectRules: Object.freeze(rules.project),
     }),
+    mcpServers: Object.freeze({ ...merged.mcpServers }),
+    hooks: freezeHooks(merged.hooks),
+    skills: Object.freeze({ ...merged.skills }),
     loadedFiles: Object.freeze(documents.map(({ layer, path }) => ({ layer, path }))),
     skippedFiles: Object.freeze(skippedFiles),
   };
@@ -209,6 +215,7 @@ async function readConfiguration(
       ...(result.data.trustedWorkspaces === undefined ? [] : ["trustedWorkspaces"]),
       ...(result.data.sessionDirectory === undefined ? [] : ["sessionDirectory"]),
       ...(result.data.instructions?.userPath === undefined ? [] : ["instructions.userPath"]),
+      ...(result.data.skills?.userDirectory === undefined ? [] : ["skills.userDirectory"]),
     ];
     const field = globalOnly[0];
     if (field !== undefined) {
@@ -243,6 +250,14 @@ function normalizePaths(value: Configuration, baseDirectory: string): Configurat
             userPath: resolveFrom(baseDirectory, value.instructions.userPath),
           },
         }),
+    ...(value.skills?.userDirectory === undefined
+      ? {}
+      : {
+          skills: {
+            ...value.skills,
+            userDirectory: resolveFrom(baseDirectory, value.skills.userDirectory),
+          },
+        }),
   };
 }
 
@@ -262,6 +277,9 @@ function mergeConfiguration(base: Configuration, override: Configuration): Confi
     instructions: { ...base.instructions, ...override.instructions },
     turn: { ...base.turn, ...override.turn },
     permissions: { ...base.permissions, ...override.permissions },
+    mcpServers: { ...base.mcpServers, ...override.mcpServers },
+    hooks: mergeHooks(base.hooks, override.hooks),
+    skills: { ...base.skills, ...override.skills },
     ...(base.trustedWorkspaces === undefined && override.trustedWorkspaces === undefined
       ? {}
       : {
@@ -271,6 +289,25 @@ function mergeConfiguration(base: Configuration, override: Configuration): Confi
           ]),
         }),
   };
+}
+
+function mergeHooks(
+  base: Configuration["hooks"],
+  override: Configuration["hooks"],
+): NonNullable<Configuration["hooks"]> {
+  return Object.fromEntries(hookEventNames.flatMap((event) => {
+    const commands = [...(base?.[event] ?? []), ...(override?.[event] ?? [])];
+    return commands.length === 0 ? [] : [[event, commands]];
+  })) as NonNullable<Configuration["hooks"]>;
+}
+
+function freezeHooks(
+  hooks: Configuration["hooks"],
+): Readonly<NonNullable<Configuration["hooks"]>> {
+  return Object.freeze(Object.fromEntries(hookEventNames.flatMap((event) => {
+    const commands = hooks?.[event];
+    return commands === undefined ? [] : [[event, Object.freeze([...commands])]];
+  })) as NonNullable<Configuration["hooks"]>);
 }
 
 function collectPermissionRules(documents: readonly LayerDocument[]): {

@@ -17,6 +17,40 @@ const permissionRuleSchema = z.object({
   reason: z.string().trim().min(1).optional(),
 }).strict();
 
+export const hookEventNames = [
+  "SessionStart",
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PermissionRequest",
+  "Stop",
+] as const;
+
+const executableExtensionSchema = z.object({
+  command: z.string().trim().min(1),
+  args: z.array(z.string()).optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  envFrom: z.record(
+    z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u),
+    z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u),
+  ).optional(),
+}).strict();
+
+const hookSchema = executableExtensionSchema.extend({
+  matcher: z.string().trim().min(1).optional(),
+}).strict();
+
+const mcpServerSchema = executableExtensionSchema.extend({
+  transport: z.literal("stdio").optional(),
+  enabled: z.boolean().optional(),
+  sideEffects: z.array(z.enum([
+    "read_workspace",
+    "write_workspace",
+    "execute_process",
+    "network",
+  ])).min(1).optional(),
+}).strict();
+
 export const configurationSchema = z.object({
   version: z.literal(1).optional(),
   provider: z.enum(["openai", "deepseek"]).optional(),
@@ -45,6 +79,17 @@ export const configurationSchema = z.object({
   permissions: z.object({
     defaultDecision: z.enum(["allow", "ask", "deny"]).optional(),
     rules: z.array(permissionRuleSchema).optional(),
+  }).strict().optional(),
+  mcpServers: z.record(
+    z.string().trim().regex(/^[A-Za-z0-9_-]+$/u),
+    mcpServerSchema,
+  ).optional(),
+  hooks: z.object(Object.fromEntries(
+    hookEventNames.map((event) => [event, z.array(hookSchema).optional()]),
+  ) as { [Event in typeof hookEventNames[number]]: z.ZodOptional<z.ZodArray<typeof hookSchema>> }).strict().optional(),
+  skills: z.object({
+    userDirectory: z.string().trim().min(1).optional(),
+    maxFileBytes: z.number().int().positive().optional(),
   }).strict().optional(),
 }).strict();
 

@@ -70,6 +70,13 @@ export type PermissionAuthorizationObserver = (
   event: PermissionAuthorizationEvent,
 ) => void | Promise<void>;
 
+/** Returns a reason to add a deny, or undefined to preserve the policy result. */
+export type PermissionRequestGuard = (
+  request: NormalizedPermissionRequest,
+  reason: string,
+  signal: AbortSignal,
+) => string | undefined | Promise<string | undefined>;
+
 export interface PermissionEngineOptions {
   readonly trust: WorkspaceTrust;
   readonly managedRules?: readonly PermissionRule[] | undefined;
@@ -155,6 +162,7 @@ export class PermissionEngine {
     request: PermissionRequest,
     signal: AbortSignal,
     observe?: PermissionAuthorizationObserver,
+    guard?: PermissionRequestGuard,
   ): Promise<PermissionDecision> {
     signal.throwIfAborted();
     const normalized = normalizePermissionRequest(request);
@@ -201,6 +209,14 @@ export class PermissionEngine {
     }
 
     await observe?.({ type: "permission_requested", request: normalized, reason: initial.reason });
+    const guardedReason = await guard?.(normalized, initial.reason, signal);
+    signal.throwIfAborted();
+    if (guardedReason !== undefined) {
+      const reason = `PermissionRequest hook denied the request: ${guardedReason}`;
+      this.#record(normalized, "deny", reason);
+      await observe?.({ type: "permission_decided", request: normalized, decision: "deny", reason });
+      return { kind: "deny", reason };
+    }
     const answer = await this.#decide(normalized, initial.reason, signal);
     signal.throwIfAborted();
     if (answer === "deny") {

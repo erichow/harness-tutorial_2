@@ -26,5 +26,6 @@ git switch --detach chapter-01
 | 16 | [上下文预算、压缩和项目指令](./16-context-budget-compression-instructions.md) | `chapter-16` | 完成 |
 | 17 | [配置系统和策略层级](./17-configuration-policy-hierarchy.md) | `chapter-17` | 完成 |
 | 18 | [Headless 和 JSONL 协议](./18-headless-jsonl-protocol.md) | `chapter-18` | 完成 |
+| 19 | [MCP、Hooks 和 Skills](./19-mcp-hooks-skills.md) | `chapter-19` | 完成 |
 
 后续章节按 [总体设计稿](../../PRACTICAL_TUTORIAL.md) 的顺序补充。

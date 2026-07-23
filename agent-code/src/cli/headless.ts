@@ -20,6 +20,7 @@ import {
   requireApiKey,
   resolveSessionContext,
   runtimeContext,
+  runtimeExtensions,
   type ChatCliOptions,
   type ChatConfigurationDefaults,
 } from "./chat.js";
@@ -228,6 +229,11 @@ export async function runHeadlessCli(
         }),
       },
       context: runtimeContext(configuration),
+      extensions: runtimeExtensions(
+        configuration,
+        environment,
+        (message) => io.stderr.write(`${message}\n`),
+      ),
     });
     const activeRuntime = runtime;
     return await runHeadless({

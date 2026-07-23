@@ -5,7 +5,10 @@ import { createPlatformSandboxRunner } from "../tools/shell/sandbox-runner.js";
 import { OpenAIResponsesProvider } from "../providers/openai-responses.js";
 import { DeepSeekChatProvider } from "../providers/deepseek-chat.js";
 import type { Provider } from "../providers/provider.js";
-import { CodingAgentRuntime } from "../runtime/coding-agent.js";
+import {
+  CodingAgentRuntime,
+  type CodingAgentRuntimeOptions,
+} from "../runtime/coding-agent.js";
 import { resolveTurnLimits } from "../runtime/limits.js";
 import { PermissionEngine } from "../security/permissions.js";
 import { defaultSessionRoot, SessionStore, type SessionHandle } from "../sessions/store.js";
@@ -184,6 +187,11 @@ export async function runChatCli(
           }),
         },
         context: runtimeContext(configuration),
+        extensions: runtimeExtensions(
+          configuration,
+          environment,
+          (message) => renderer.notice(message),
+        ),
       });
       const activeRuntime = runtime;
       const sandbox = activeRuntime.sandboxStatus;
@@ -354,6 +362,21 @@ export function runtimeContext(configuration: LoadedConfiguration): {
         ? {}
         : { maxTotalBytes: configuration.instructions.maxTotalBytes }),
     },
+  };
+}
+
+export function runtimeExtensions(
+  configuration: LoadedConfiguration,
+  environment: NodeJS.ProcessEnv,
+  diagnostic?: (message: string) => void,
+): NonNullable<CodingAgentRuntimeOptions["extensions"]> {
+  return {
+    trust: configuration.trust,
+    mcpServers: configuration.mcpServers,
+    hooks: configuration.hooks,
+    skills: configuration.skills,
+    environment,
+    ...(diagnostic === undefined ? {} : { diagnostic }),
   };
 }
 

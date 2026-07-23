@@ -118,6 +118,61 @@ describe("layered configuration", () => {
     expect(configuration.skippedFiles[0]?.reason).toContain("until the workspace is trusted");
   });
 
+  it("merges MCP, Hooks, and Skills only from configuration layers that passed trust", async () => {
+    const { root, paths } = await fixture();
+    await json(paths.user, {
+      trustedWorkspaces: [root],
+      mcpServers: {
+        docs: {
+          command: "node",
+          args: ["user-server.mjs"],
+          envFrom: { AUTH_TOKEN: "DOCS_TOKEN" },
+          timeoutMs: 5_000,
+        },
+      },
+      hooks: {
+        PreToolUse: [{ command: "user-policy", matcher: "run_shell" }],
+      },
+      skills: {
+        userDirectory: "global-skills",
+        maxFileBytes: 40_000,
+      },
+    });
+    await json(paths.project, {
+      mcpServers: {
+        issues: {
+          command: "node",
+          args: ["project-server.mjs"],
+          sideEffects: ["network"],
+        },
+      },
+      hooks: {
+        PreToolUse: [{ command: "project-policy", matcher: "*" }],
+        Stop: [{ command: "turn-finished" }],
+      },
+      skills: { maxFileBytes: 32_000 },
+    });
+
+    const configuration = await loadConfiguration({
+      workspaceRoot: root,
+      environment: {},
+      paths,
+    });
+
+    expect(configuration.mcpServers).toMatchObject({
+      docs: { command: "node", envFrom: { AUTH_TOKEN: "DOCS_TOKEN" } },
+      issues: { command: "node", sideEffects: ["network"] },
+    });
+    expect(configuration.hooks.PreToolUse?.map(({ command }) => command))
+      .toEqual(["user-policy", "project-policy"]);
+    expect(configuration.hooks.Stop?.map(({ command }) => command))
+      .toEqual(["turn-finished"]);
+    expect(configuration.skills).toEqual({
+      userDirectory: join(await realpath(root), "global-skills"),
+      maxFileBytes: 32_000,
+    });
+  });
+
   it("rejects project attempts to establish their own trust", async () => {
     const { root, paths } = await fixture();
     await json(paths.user, { trustedWorkspaces: [root] });

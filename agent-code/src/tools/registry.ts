@@ -7,6 +7,7 @@ import {
 import type { ToolCallBlock, ToolResultBlock } from "../messages/blocks.js";
 import type { JsonObject, JsonValue } from "../protocol/json.js";
 import type { PermissionEngine } from "../security/permissions.js";
+import { HookBlockedError, HookRunner } from "../extensions/hooks.js";
 import type { ToolExecutionContext, ToolExecutor } from "./executor.js";
 import {
   createToolErrorResult,
@@ -22,6 +23,7 @@ export interface ToolRegistryOptions {
   /** Maximum executions of the same tool + canonical input in one executor. */
   readonly maxIdenticalCalls?: number | undefined;
   readonly permissions?: PermissionEngine | undefined;
+  readonly hooks?: HookRunner | undefined;
 }
 
 interface RegisteredTool {
@@ -35,6 +37,7 @@ export class ToolRegistry {
   readonly #maxOutputBytes: number;
   readonly #maxIdenticalCalls: number;
   readonly #permissions: PermissionEngine | undefined;
+  readonly #hooks: HookRunner | undefined;
 
   constructor(tools: readonly Tool[], options: ToolRegistryOptions = {}) {
     this.#maxOutputBytes = positiveInteger(
@@ -46,6 +49,7 @@ export class ToolRegistry {
       "maxIdenticalCalls",
     );
     this.#permissions = options.permissions;
+    this.#hooks = options.hooks;
 
     const ajv = new Ajv2020({ allErrors: true, strict: true });
     const registered = new Map<string, RegisteredTool>();
@@ -140,7 +144,24 @@ export class ToolRegistry {
             ...(event.scope === undefined ? {} : { scope: event.scope }),
           });
         }
-      });
+      }, this.#hooks === undefined
+        ? undefined
+        : async (request, reason, signal) => {
+            try {
+              await this.#hooks?.runGate("PermissionRequest", {
+                toolName: request.toolName,
+                input: request.input,
+                sideEffects: [...request.sideEffects],
+                resources: [...request.resources],
+                fingerprint: request.fingerprint,
+                reason,
+              }, signal);
+              return undefined;
+            } catch (error) {
+              if (error instanceof HookBlockedError) return error.message;
+              throw error;
+            }
+          });
       if (decision.kind !== "allow") {
         return createToolErrorResult(
           call.id,
@@ -164,23 +185,55 @@ export class ToolRegistry {
     }
 
     try {
-      const output: unknown = await registered.tool.handler(call.input, {
-        signal: context.signal,
-        maxOutputBytes: this.#maxOutputBytes,
-      });
-      assertHandlerOutput(output, call.name);
-      return createToolSuccessResult(call.id, output, {
-        maxOutputBytes: this.#maxOutputBytes,
-      });
+      await this.#hooks?.runGate("PreToolUse", {
+        toolCallId: call.id,
+        toolName: call.name,
+        input: call.input,
+        sideEffects: [...registered.tool.sideEffects],
+      }, context.signal);
     } catch (error) {
       if (context.signal.aborted) throw error;
       const message = error instanceof Error ? error.message : String(error);
       return createToolErrorResult(
         call.id,
+        "permission_denied",
+        message,
+        { maxOutputBytes: this.#maxOutputBytes },
+      );
+    }
+
+    try {
+      const output: unknown = await registered.tool.handler(call.input, {
+        signal: context.signal,
+        maxOutputBytes: this.#maxOutputBytes,
+      });
+      assertHandlerOutput(output, call.name);
+      const result = createToolSuccessResult(call.id, output, {
+        maxOutputBytes: this.#maxOutputBytes,
+      });
+      await this.#hooks?.notify("PostToolUse", {
+        toolCallId: call.id,
+        toolName: call.name,
+        input: call.input,
+        result: structuredClone(result) as unknown as JsonObject,
+      }, context.signal);
+      return result;
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      const result = createToolErrorResult(
+        call.id,
         "execution_failed",
         `Tool ${call.name} failed: ${message}`,
         { maxOutputBytes: this.#maxOutputBytes },
       );
+      await this.#hooks?.notify("PostToolUseFailure", {
+        toolCallId: call.id,
+        toolName: call.name,
+        input: call.input,
+        result: structuredClone(result) as unknown as JsonObject,
+      }, context.signal);
+      return result;
     }
   }
 }

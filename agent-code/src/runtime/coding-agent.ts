@@ -7,6 +7,18 @@ import {
 import { InstructionLoader, type InstructionLoaderOptions } from "../context/instructions.js";
 import type { Provider } from "../providers/provider.js";
 import type { PermissionEngine } from "../security/permissions.js";
+import type { WorkspaceTrust } from "../security/trust.js";
+import {
+  HookRunner,
+  type HookCommandExecutor,
+  type HookConfiguration,
+} from "../extensions/hooks.js";
+import {
+  createMcpToolset,
+  type McpServerConfiguration,
+  type McpTransportFactory,
+} from "../extensions/mcp.js";
+import { createSkillLoaderTool, SkillCatalog } from "../extensions/skills.js";
 import { createWorkspaceFileToolset } from "../tools/files/index.js";
 import type { UndoResult } from "../tools/files/checkpoint.js";
 import { createGitTools } from "../tools/git/index.js";
@@ -27,6 +39,20 @@ export interface CodingAgentRuntimeOptions {
   readonly shell?: Omit<ProcessManagerOptions, "workspaceRoot"> | undefined;
   readonly context?: Omit<ContextManagerOptions, "instructions"> & {
     readonly instructions?: Omit<InstructionLoaderOptions, "workspaceRoot"> | undefined;
+  } | undefined;
+  readonly extensions?: {
+    readonly trust: WorkspaceTrust;
+    readonly mcpServers?: Readonly<Record<string, McpServerConfiguration>> | undefined;
+    readonly hooks?: HookConfiguration | undefined;
+    readonly skills?: {
+      readonly userDirectory?: string | undefined;
+      readonly maxFileBytes?: number | undefined;
+    } | undefined;
+    readonly environment?: NodeJS.ProcessEnv | undefined;
+    readonly diagnostic?: ((message: string) => void) | undefined;
+    /** Test seams; normal callers should leave these unset. */
+    readonly createMcpTransport?: McpTransportFactory | undefined;
+    readonly executeHook?: HookCommandExecutor | undefined;
   } | undefined;
 }
 
@@ -49,6 +75,8 @@ export class CodingAgentRuntime {
   readonly #attachCheckpoint: (checkpointId: string, turnId: string) => void;
   readonly #finishCheckpoint: (checkpointId: string) => void;
   readonly #disposeProcesses: () => Promise<void>;
+  readonly #disposeMcp: () => Promise<void>;
+  readonly #hooks: HookRunner | undefined;
   #disposed = false;
 
   private constructor(options: {
@@ -57,6 +85,8 @@ export class CodingAgentRuntime {
     readonly registry: ToolRegistry;
     readonly sandboxStatus: SandboxStatus;
     readonly disposeProcesses: () => Promise<void>;
+    readonly disposeMcp: () => Promise<void>;
+    readonly hooks?: HookRunner | undefined;
     readonly undo: () => Promise<UndoResult>;
     readonly beginCheckpoint: () => string;
     readonly attachCheckpoint: (checkpointId: string, turnId: string) => void;
@@ -67,6 +97,8 @@ export class CodingAgentRuntime {
     this.#registry = options.registry;
     this.sandboxStatus = options.sandboxStatus;
     this.#disposeProcesses = options.disposeProcesses;
+    this.#disposeMcp = options.disposeMcp;
+    this.#hooks = options.hooks;
     this.#undo = options.undo;
     this.#beginCheckpoint = options.beginCheckpoint;
     this.#attachCheckpoint = options.attachCheckpoint;
@@ -83,38 +115,91 @@ export class CodingAgentRuntime {
       ...options.shell,
       workspaceRoot: options.workspaceRoot,
     });
-    const testTools = createTestTools(shell.processManager);
-    const instructions = await InstructionLoader.create({
-      workspaceRoot: options.workspaceRoot,
-      ...options.context?.instructions,
-    });
-    const context = new ContextManager({
-      instructions,
-      ...(options.context?.maxTokens === undefined ? {} : { maxTokens: options.context.maxTokens }),
-      ...(options.context?.systemPrompt === undefined ? {} : { systemPrompt: options.context.systemPrompt }),
-      ...(options.context?.now === undefined ? {} : { now: options.context.now }),
-    });
-    return new CodingAgentRuntime({
-      provider: options.provider,
-      context,
-      registry: new ToolRegistry([...fileToolset.tools, ...gitTools, ...shell.tools, ...testTools], {
-        permissions: options.permissions,
-      }),
-      sandboxStatus: shell.processManager.sandboxStatus,
-      disposeProcesses: async () => await shell.processManager.dispose(),
-      undo: async () => await fileToolset.checkpoints.undoLatest(),
-      beginCheckpoint: () => fileToolset.checkpoints.beginTurn(),
-      attachCheckpoint: (checkpointId, turnId) =>
-        fileToolset.checkpoints.attachTurn(checkpointId, turnId),
-      finishCheckpoint: (checkpointId) => fileToolset.checkpoints.finishTurn(checkpointId),
-    });
+    let disposeMcp = async (): Promise<void> => undefined;
+    try {
+      const testTools = createTestTools(shell.processManager);
+      const hooks = options.extensions === undefined
+        ? undefined
+        : new HookRunner({
+            workspaceRoot: options.workspaceRoot,
+            hooks: options.extensions.hooks,
+            environment: options.extensions.environment,
+            execute: options.extensions.executeHook,
+            diagnostic: options.extensions.diagnostic,
+          });
+      const mcp = await createMcpToolset({
+        workspaceRoot: options.workspaceRoot,
+        servers: options.extensions?.mcpServers,
+        environment: options.extensions?.environment,
+        createTransport: options.extensions?.createMcpTransport,
+        diagnostic: options.extensions?.diagnostic,
+      });
+      disposeMcp = async () => await mcp.dispose();
+      const skills = options.extensions === undefined
+        ? undefined
+        : await SkillCatalog.create({
+            workspaceRoot: options.workspaceRoot,
+            trust: options.extensions.trust,
+            userDirectory: options.extensions.skills?.userDirectory,
+            maxFileBytes: options.extensions.skills?.maxFileBytes,
+          });
+      const instructions = await InstructionLoader.create({
+        workspaceRoot: options.workspaceRoot,
+        ...options.context?.instructions,
+      });
+      const context = new ContextManager({
+        instructions,
+        skills,
+        ...(options.context?.maxTokens === undefined
+          ? {}
+          : { maxTokens: options.context.maxTokens }),
+        ...(options.context?.systemPrompt === undefined
+          ? {}
+          : { systemPrompt: options.context.systemPrompt }),
+        ...(options.context?.now === undefined ? {} : { now: options.context.now }),
+      });
+      const skillLoader = skills === undefined ? undefined : createSkillLoaderTool(skills);
+      const runtime = new CodingAgentRuntime({
+        provider: options.provider,
+        context,
+        registry: new ToolRegistry([
+          ...fileToolset.tools,
+          ...gitTools,
+          ...shell.tools,
+          ...testTools,
+          ...mcp.tools,
+          ...(skillLoader === undefined ? [] : [skillLoader]),
+        ], {
+          permissions: options.permissions,
+          hooks,
+        }),
+        sandboxStatus: shell.processManager.sandboxStatus,
+        disposeProcesses: async () => await shell.processManager.dispose(),
+        disposeMcp: async () => await mcp.dispose(),
+        hooks,
+        undo: async () => await fileToolset.checkpoints.undoLatest(),
+        beginCheckpoint: () => fileToolset.checkpoints.beginTurn(),
+        attachCheckpoint: (checkpointId, turnId) =>
+          fileToolset.checkpoints.attachTurn(checkpointId, turnId),
+        finishCheckpoint: (checkpointId) => fileToolset.checkpoints.finishTurn(checkpointId),
+      });
+      await hooks?.notify("SessionStart", {
+        workspaceRoot: options.workspaceRoot,
+        mcpServers: [...mcp.connectedServers],
+        skills: skills?.entries.map(({ name, source, path }) => ({ name, source, path })) ?? [],
+      }, AbortSignal.timeout(10_000));
+      return runtime;
+    } catch (error) {
+      await Promise.all([shell.processManager.dispose(), disposeMcp()]);
+      throw error;
+    }
   }
 
   async runTurn(options: CodingAgentTurnOptions): Promise<RunTurnResult> {
     if (this.#disposed) throw new Error("CodingAgentRuntime is disposed");
     const checkpointId = this.#beginCheckpoint();
     try {
-      return await runTurn({
+      const result = await runTurn({
         provider: this.#provider,
         transcript: options.transcript,
         tools: this.#registry.createExecutor(),
@@ -127,6 +212,12 @@ export class CodingAgentRuntime {
           await options.emit?.(event);
         },
       });
+      await this.#hooks?.notify("Stop", {
+        turnId: result.turnId,
+        reason: result.reason,
+        steps: result.steps,
+      }, AbortSignal.timeout(10_000));
+      return result;
     } finally {
       this.#finishCheckpoint(checkpointId);
     }
@@ -147,6 +238,6 @@ export class CodingAgentRuntime {
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
-    await this.#disposeProcesses();
+    await Promise.all([this.#disposeProcesses(), this.#disposeMcp()]);
   }
 }

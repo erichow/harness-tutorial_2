@@ -2,7 +2,7 @@
 
 `agent-code` 是《从零构建 Coding Agent CLI》实战教程的伴随项目。
 
-当前章节：第 18 章。
+当前章节：第 19 章。
 
 ```bash
 npm install
@@ -68,6 +68,12 @@ DEEPSEEK_API_KEY=... node dist/cli/bin.js chat --provider deepseek --model deeps
 ```
 
 配置完成后可直接运行 `node dist/cli/bin.js chat`。
+
+可在 user 配置或已信任项目的 `.agent-code/config.json` 中配置 stdio MCP
+server、六类生命周期 Hook 和 Skills。MCP 工具继续经过统一权限检查；外部返回
+内容会标记为不可信。Skill 只发布目录，正文通过 `load_skill` 按需读取，兄弟脚本
+不会自动执行。完整配置和安全边界见
+[第 19 章](../docs/chapters/19-mcp-hooks-skills.md)。
 
 OpenAI 官方当前建议复杂推理和编码任务使用 `gpt-5.6-sol`；`gpt-5.6`
 是指向 Sol 的滚动别名。教程使用完整 model ID，便于明确记录 Session

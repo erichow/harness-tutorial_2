@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -280,6 +280,45 @@ describe("headless protocol", () => {
     expect(exitCode).toBe(2);
     expect(output.stdout).toEqual([]);
     expect(output.stderr.join("")).toContain("OPENAI_API_KEY is required");
+  });
+
+  it("keeps MCP bootstrap diagnostics on stderr and JSON protocol on stdout", async () => {
+    const workspace = await temporaryDirectory();
+    const output = memoryIO("");
+    const userConfig = join(workspace, "config.json");
+    await writeFile(userConfig, JSON.stringify({
+      mcpServers: {
+        broken: { command: join(workspace, "missing-mcp-server") },
+      },
+    }));
+    const provider = new MockProvider([{
+      events: [
+        { type: "text_delta", delta: "completed without the unavailable extension" },
+        { type: "response_completed", finishReason: "stop" },
+      ],
+    }]);
+
+    const exitCode = await runHeadlessCli([
+      "--print", "continue",
+      "--provider", "openai",
+      "--model", "offline",
+      "--output-format", "json",
+      "--session-dir", join(workspace, "sessions"),
+    ], {
+      OPENAI_API_KEY: "not-used",
+      AGENT_CODE_USER_CONFIG: userConfig,
+    }, {
+      cwd: workspace,
+      io: output.io,
+      createProvider: () => provider,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(output.stdout.join(""))).toMatchObject({
+      type: "batch_result",
+      exitCode: 0,
+    });
+    expect(output.stderr.join("")).toContain("MCP server broken unavailable");
   });
 
   it("denies interactive permission requests safely through the complete runtime", async () => {

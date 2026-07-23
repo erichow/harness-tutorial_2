@@ -2,6 +2,7 @@ import type { ContentBlock, ToolCallBlock, ToolResultBlock } from "../messages/b
 import { createTranscript, type Transcript, type TranscriptMessage } from "../messages/transcript.js";
 import type { ToolDefinition } from "../tools/executor.js";
 import { collectActivePaths, InstructionLoader, type InstructionDocument } from "./instructions.js";
+import type { SkillCatalog } from "../extensions/skills.js";
 
 export const DEFAULT_CONTEXT_TOKEN_BUDGET = 32_000;
 export const DEFAULT_SYSTEM_PROMPT = [
@@ -39,6 +40,7 @@ export interface ContextPreparer {
 
 export interface ContextManagerOptions {
   readonly instructions: InstructionLoader;
+  readonly skills?: SkillCatalog | undefined;
   readonly maxTokens?: number | undefined;
   readonly systemPrompt?: string | undefined;
   readonly now?: (() => Date) | undefined;
@@ -47,6 +49,7 @@ export interface ContextManagerOptions {
 /** Builds a bounded provider view while leaving the durable transcript untouched. */
 export class ContextManager implements ContextPreparer {
   readonly #instructions: InstructionLoader;
+  readonly #skills: SkillCatalog | undefined;
   readonly #maxTokens: number;
   readonly #systemPrompt: string;
   readonly #now: () => Date;
@@ -54,6 +57,7 @@ export class ContextManager implements ContextPreparer {
 
   constructor(options: ContextManagerOptions) {
     this.#instructions = options.instructions;
+    this.#skills = options.skills;
     this.#maxTokens = positiveInteger(options.maxTokens ?? DEFAULT_CONTEXT_TOKEN_BUDGET, "maxTokens");
     this.#systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     this.#now = options.now ?? (() => new Date());
@@ -66,13 +70,23 @@ export class ContextManager implements ContextPreparer {
   async prepare(transcript: Transcript, tools: readonly ToolDefinition[]): Promise<PreparedContext> {
     const activePaths = collectActivePaths(transcript);
     const instructions = await this.#instructions.load(activePaths);
+    const skillCatalog = this.#skills?.renderCatalog();
     const systemMessage = message("context-system", this.#systemPrompt, this.#now());
     const instructionMessage = instructions.length === 0
       ? undefined
       : message("context-instructions", renderInstructions(instructions), this.#now());
-    const fixedMessages = [systemMessage, ...(instructionMessage === undefined ? [] : [instructionMessage])];
+    const skillMessage = skillCatalog === undefined
+      ? undefined
+      : message("context-skills", skillCatalog, this.#now());
+    const fixedMessages = [
+      systemMessage,
+      ...(instructionMessage === undefined ? [] : [instructionMessage]),
+      ...(skillMessage === undefined ? [] : [skillMessage]),
+    ];
     const systemTokens = estimateMessageTokens(systemMessage);
-    const instructionTokens = instructionMessage === undefined ? 0 : estimateMessageTokens(instructionMessage);
+    const instructionTokens =
+      (instructionMessage === undefined ? 0 : estimateMessageTokens(instructionMessage)) +
+      (skillMessage === undefined ? 0 : estimateMessageTokens(skillMessage));
     const toolTokens = estimateTokens(JSON.stringify(tools));
     const fixedTokens = systemTokens + instructionTokens + toolTokens;
     if (fixedTokens >= this.#maxTokens) {
@@ -120,7 +134,11 @@ export class ContextManager implements ContextPreparer {
       instructionFiles: instructions.map(({ path, scope, level }) => ({ path, scope, level })),
       components: [
         { component: "system", estimatedTokens: systemTokens, detail: "base agent prompt" },
-        { component: "instructions", estimatedTokens: instructionTokens, detail: `${instructions.length} file(s)` },
+        {
+          component: "instructions",
+          estimatedTokens: instructionTokens,
+          detail: `${instructions.length} file(s), ${this.#skills?.entries.length ?? 0} Skill(s)`,
+        },
         { component: "tool_schemas", estimatedTokens: toolTokens, detail: `${tools.length} tool(s)` },
         {
           component: "summary",
