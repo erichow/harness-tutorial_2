@@ -1,4 +1,10 @@
 import type { Transcript } from "../messages/transcript.js";
+import {
+  ContextManager,
+  type ContextManagerOptions,
+  type ContextReport,
+} from "../context/manager.js";
+import { InstructionLoader, type InstructionLoaderOptions } from "../context/instructions.js";
 import type { Provider } from "../providers/provider.js";
 import type { PermissionEngine } from "../security/permissions.js";
 import { createWorkspaceFileToolset } from "../tools/files/index.js";
@@ -19,6 +25,9 @@ export interface CodingAgentRuntimeOptions {
   readonly workspaceRoot: string;
   readonly permissions?: PermissionEngine | undefined;
   readonly shell?: Omit<ProcessManagerOptions, "workspaceRoot"> | undefined;
+  readonly context?: Omit<ContextManagerOptions, "instructions"> & {
+    readonly instructions?: Omit<InstructionLoaderOptions, "workspaceRoot"> | undefined;
+  } | undefined;
 }
 
 export interface CodingAgentTurnOptions {
@@ -33,6 +42,7 @@ export class CodingAgentRuntime {
   readonly eventLog = new RuntimeEventLog();
   readonly sandboxStatus: SandboxStatus;
   readonly #provider: Provider;
+  readonly #context: ContextManager;
   readonly #registry: ToolRegistry;
   readonly #undo: () => Promise<UndoResult>;
   readonly #beginCheckpoint: () => string;
@@ -43,6 +53,7 @@ export class CodingAgentRuntime {
 
   private constructor(options: {
     readonly provider: Provider;
+    readonly context: ContextManager;
     readonly registry: ToolRegistry;
     readonly sandboxStatus: SandboxStatus;
     readonly disposeProcesses: () => Promise<void>;
@@ -52,6 +63,7 @@ export class CodingAgentRuntime {
     readonly finishCheckpoint: (checkpointId: string) => void;
   }) {
     this.#provider = options.provider;
+    this.#context = options.context;
     this.#registry = options.registry;
     this.sandboxStatus = options.sandboxStatus;
     this.#disposeProcesses = options.disposeProcesses;
@@ -72,8 +84,19 @@ export class CodingAgentRuntime {
       workspaceRoot: options.workspaceRoot,
     });
     const testTools = createTestTools(shell.processManager);
+    const instructions = await InstructionLoader.create({
+      workspaceRoot: options.workspaceRoot,
+      ...options.context?.instructions,
+    });
+    const context = new ContextManager({
+      instructions,
+      ...(options.context?.maxTokens === undefined ? {} : { maxTokens: options.context.maxTokens }),
+      ...(options.context?.systemPrompt === undefined ? {} : { systemPrompt: options.context.systemPrompt }),
+      ...(options.context?.now === undefined ? {} : { now: options.context.now }),
+    });
     return new CodingAgentRuntime({
       provider: options.provider,
+      context,
       registry: new ToolRegistry([...fileToolset.tools, ...gitTools, ...shell.tools, ...testTools], {
         permissions: options.permissions,
       }),
@@ -95,6 +118,7 @@ export class CodingAgentRuntime {
         provider: this.#provider,
         transcript: options.transcript,
         tools: this.#registry.createExecutor(),
+        context: this.#context,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
         ...(options.limits === undefined ? {} : { limits: options.limits }),
         emit: async (event) => {
@@ -106,6 +130,12 @@ export class CodingAgentRuntime {
     } finally {
       this.#finishCheckpoint(checkpointId);
     }
+  }
+
+  /** Returns the exact estimated provider context for the current durable transcript. */
+  async inspectContext(transcript: Transcript): Promise<ContextReport> {
+    if (this.#disposed) throw new Error("CodingAgentRuntime is disposed");
+    return (await this.#context.prepare(transcript, this.#registry.definitions)).report;
   }
 
   /** Undo only the latest turn's file-tool writes after conflict preflight. */

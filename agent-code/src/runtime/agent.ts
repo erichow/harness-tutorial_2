@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { ContentBlock, ToolCallBlock, ToolResultBlock } from "../messages/blocks.js";
 import type { Transcript, TranscriptMessage } from "../messages/transcript.js";
+import type { ContextPreparer, ContextReport } from "../context/manager.js";
 import {
   ProviderError,
   type Provider,
@@ -29,6 +30,7 @@ export interface RunTurnOptions {
   readonly tools: ToolExecutor;
   readonly signal?: AbortSignal | undefined;
   readonly limits?: TurnLimits | undefined;
+  readonly context?: ContextPreparer | undefined;
   readonly emit?: ((event: RuntimeEvent) => void | Promise<void>) | undefined;
   /** Test seams; normal callers should leave these unset. */
   readonly now?: (() => Date) | undefined;
@@ -41,6 +43,7 @@ export interface RunTurnResult {
   readonly steps: number;
   readonly turnId: string;
   readonly tests: TestRunSummary;
+  readonly context?: ContextReport | undefined;
 }
 
 type RuntimeEventPayload = RuntimeEvent extends infer Event
@@ -91,6 +94,7 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
   let inputTokens = 0;
   let outputTokens = 0;
   let transcript = options.transcript;
+  let contextReport: ContextReport | undefined;
   const testLoop = createTestLoopExecutor(options.tools, limits);
 
   const emit = async (
@@ -113,7 +117,14 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
   const finish = async (reason: TurnFinishReason): Promise<RunTurnResult> => {
     const tests = testLoop.summary();
     await emit({ type: "turn_finished", reason, tests });
-    return { transcript, reason, steps, turnId, tests };
+    return {
+      transcript,
+      reason,
+      steps,
+      turnId,
+      tests,
+      ...(contextReport === undefined ? {} : { context: contextReport }),
+    };
   };
 
   await emit({ type: "turn_started" });
@@ -123,9 +134,13 @@ export async function runTurn(options: RunTurnOptions): Promise<RunTurnResult> {
       throwIfCancelled(signal);
       steps += 1;
 
+      const prepared = options.context === undefined
+        ? { transcript, report: undefined }
+        : await options.context.prepare(transcript, testLoop.executor.definitions);
+      contextReport = prepared.report;
       const streamed = await consumeProviderResponse({
         provider: options.provider,
-        transcript,
+        transcript: prepared.transcript,
         tools: testLoop.executor,
         signal,
         emit,

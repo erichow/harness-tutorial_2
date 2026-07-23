@@ -150,6 +150,7 @@ export async function runChatCli(
         },
         initialTranscript: context.handle.transcript,
         persistence: context.handle,
+        inspectContext: async (transcript) => await activeRuntime.inspectContext(transcript),
         runTurn: async (request) => await activeRuntime.runTurn({
           transcript: request.transcript,
           signal: request.signal,

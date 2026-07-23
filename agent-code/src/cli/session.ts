@@ -4,6 +4,7 @@ import { createTranscript, type Transcript } from "../messages/transcript.js";
 import type { RuntimeEvent } from "../runtime/events.js";
 import type { TurnFinishReason } from "../runtime/events.js";
 import type { PermissionAuditEntry } from "../security/permissions.js";
+import type { ContextReport } from "../context/manager.js";
 import type { InputController } from "./input.js";
 import type { TerminalRenderer } from "./renderer.js";
 
@@ -57,6 +58,7 @@ export interface CliSessionOptions {
   readonly permissions?: SessionPermissionState | undefined;
   readonly initialTranscript?: Transcript | undefined;
   readonly persistence?: CliSessionPersistence | undefined;
+  readonly inspectContext?: ((transcript: Transcript) => Promise<ContextReport>) | undefined;
   readonly now?: (() => Date) | undefined;
   readonly createId?: (() => string) | undefined;
 }
@@ -69,6 +71,7 @@ export class CliSession {
   readonly #status: CliSessionStatus;
   readonly #permissions: SessionPermissionState | undefined;
   readonly #persistence: CliSessionPersistence | undefined;
+  readonly #inspectContext: ((transcript: Transcript) => Promise<ContextReport>) | undefined;
   readonly #now: () => Date;
   readonly #createId: () => string;
   #transcript: Transcript;
@@ -83,6 +86,7 @@ export class CliSession {
     this.#status = options.status;
     this.#permissions = options.permissions;
     this.#persistence = options.persistence;
+    this.#inspectContext = options.inspectContext;
     this.#now = options.now ?? (() => new Date());
     this.#createId = options.createId ?? randomUUID;
     this.#transcript = options.initialTranscript ?? createTranscript();
@@ -183,8 +187,22 @@ export class CliSession {
   async #handleCommand(command: string): Promise<void> {
     switch (command) {
       case "/help":
-        this.#renderer.notice("Commands: /help /status /permissions /undo /clear /exit");
+        this.#renderer.notice("Commands: /help /status /context /permissions /undo /clear /exit");
         return;
+      case "/context": {
+        if (this.#inspectContext === undefined) {
+          this.#renderer.notice("Context inspection is not available in this session.");
+          return;
+        }
+        try {
+          const report = await this.#inspectContext(this.#transcript);
+          this.#renderer.notice(renderContextReport(report));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.#renderer.notice(`Context inspection failed: ${message}`);
+        }
+        return;
+      }
       case "/status":
         this.#renderer.notice([
           `Provider: ${this.#status.provider} (${this.#status.model})`,
@@ -238,4 +256,17 @@ export class CliSession {
         this.#renderer.notice(`Unknown command: ${command}. Type /help.`);
     }
   }
+}
+
+export function renderContextReport(report: ContextReport): string {
+  return [
+    `Context: ~${report.estimatedTokens}/${report.maxTokens} tokens (${report.compressed ? "compressed" : "full history"})`,
+    ...report.components.map(
+      (item) => `  ${item.component}: ~${item.estimatedTokens} (${item.detail})`,
+    ),
+    `Messages: ${report.includedMessages}/${report.originalMessages} included; ${report.omittedMessages} summarized`,
+    `Instructions: ${report.instructionFiles.length === 0
+      ? "none"
+      : report.instructionFiles.map((item) => `${item.path} [${item.scope}]`).join(", ")}`,
+  ].join("\n");
 }

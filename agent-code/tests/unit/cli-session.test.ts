@@ -59,10 +59,50 @@ describe("CliSession", () => {
     await item.session.handleLine("/clear");
 
     expect(turns).toBe(0);
-    expect(item.text()).toContain("/help /status /permissions /undo /clear /exit");
+    expect(item.text()).toContain("/help /status /context /permissions /undo /clear /exit");
     expect(item.text()).toContain("Provider: mock (fixture)");
     expect(item.text()).toContain("Permission decisions: 0");
     expect(item.permissionState.clears).toBe(1);
+  });
+
+  it("renders an estimated context component breakdown without invoking the model", async () => {
+    const chunks: string[] = [];
+    let turns = 0;
+    const session = new CliSession({
+      input: new FakeInput(),
+      renderer: new TerminalRenderer({ output: { write: (chunk) => chunks.push(chunk), columns: 200 } }),
+      runTurn: async ({ transcript }) => {
+        turns += 1;
+        return { transcript, reason: "completed" };
+      },
+      inspectContext: async () => ({
+        maxTokens: 1_000,
+        estimatedTokens: 240,
+        compressed: true,
+        originalMessages: 9,
+        includedMessages: 3,
+        omittedMessages: 6,
+        activePaths: ["src/index.ts"],
+        instructionFiles: [{ path: "/workspace/AGENTS.md", scope: ".", level: "project" }],
+        components: [
+          { component: "system", estimatedTokens: 40, detail: "base agent prompt" },
+          { component: "conversation", estimatedTokens: 200, detail: "3/9 message(s)" },
+        ],
+      }),
+      status: {
+        provider: "mock",
+        model: "fixture",
+        workspace: "/workspace",
+        trusted: false,
+        sandbox: "blocked",
+      },
+    });
+
+    await session.handleLine("/context");
+
+    expect(turns).toBe(0);
+    expect(chunks.join("")).toContain("Context: ~240/1000 tokens (compressed)");
+    expect(chunks.join("")).toContain("/workspace/AGENTS.md [.]");
   });
 
   it("runs undo locally and reports that shell side effects are outside its scope", async () => {

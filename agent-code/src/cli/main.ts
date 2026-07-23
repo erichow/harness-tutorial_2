@@ -23,7 +23,7 @@ Options:
   -V, --version    Show the version
 
 Interactive commands:
-  /help  /status  /permissions  /clear  /exit
+  /help  /status  /context  /permissions  /undo  /clear  /exit
 `;
 
 export function checkNodeVersion(version: string): string | undefined {

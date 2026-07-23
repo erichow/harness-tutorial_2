@@ -98,6 +98,59 @@ describe("runTurn", () => {
     expect(new Set(events.map((event) => event.turnId))).toEqual(new Set(["id-0"]));
   });
 
+  it("sends a derived context to the provider but appends output to the durable transcript", async () => {
+    const provider = new MockProvider([
+      response(
+        { type: "text_delta", delta: "bounded" },
+        { type: "response_completed", finishReason: "stop" },
+      ),
+    ]);
+    const durable = createTranscript([{
+      id: "user-1",
+      role: "user",
+      content: [{ type: "text", text: "original goal" }],
+      createdAt: "2026-07-23T00:00:00.000Z",
+    }]);
+    const context = {
+      async prepare() {
+        return {
+          transcript: createTranscript([{
+            id: "derived-system",
+            role: "system",
+            content: [{ type: "text", text: "derived context" }],
+            createdAt: "2026-07-23T00:00:00.000Z",
+          }, ...durable.messages]),
+          report: {
+            maxTokens: 100,
+            estimatedTokens: 20,
+            compressed: false,
+            originalMessages: 1,
+            includedMessages: 1,
+            omittedMessages: 0,
+            activePaths: [],
+            instructionFiles: [],
+            components: [],
+          },
+        };
+      },
+    };
+
+    const result = await runTurn({
+      provider,
+      transcript: durable,
+      tools: noTools,
+      context,
+      now: fixedNow,
+      createId: scriptedIds(),
+    });
+
+    expect(provider.requests[0]?.transcript.messages.map((item) => item.role))
+      .toEqual(["system", "user"]);
+    expect(result.transcript.messages.map((item) => item.role)).toEqual(["user", "assistant"]);
+    expect(result.transcript.messages.some((item) => item.id === "derived-system")).toBe(false);
+    expect(result.context).toMatchObject({ estimatedTokens: 20, originalMessages: 1 });
+  });
+
   it("executes a tool and sends its result to the next provider step", async () => {
     const provider = new MockProvider([
       response(

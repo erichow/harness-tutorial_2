@@ -41,7 +41,7 @@ describe("built CLI", () => {
         "--session-dir", sessionDirectory,
       ],
       {
-        input: "/help\n/status\n/exit\n",
+        input: "/help\n/status\n/context\n/exit\n",
         env: { ...process.env, OPENAI_API_KEY: "not-used" },
       },
     );
@@ -49,8 +49,9 @@ describe("built CLI", () => {
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("/help /status /permissions /undo /clear /exit");
+    expect(result.stdout).toContain("/help /status /context /permissions /undo /clear /exit");
     expect(result.stdout).toContain("Provider: openai (offline-test)");
+    expect(result.stdout).toContain("Context: ~");
     expect(result.stdout).toContain("Created session");
     expect(result.stdout).not.toMatch(/[\u001b\u0007\r]/u);
   });
