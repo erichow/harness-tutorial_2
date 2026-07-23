@@ -10,6 +10,17 @@ export interface LoggedFileChange {
   readonly path: string;
   readonly beforeHash: string | null;
   readonly afterHash: string | null;
+  readonly diff: string;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
+export interface TurnFileChanges {
+  readonly turnId: string;
+  readonly files: readonly string[];
+  readonly changes: readonly LoggedFileChange[];
+  readonly additions: number;
+  readonly deletions: number;
 }
 
 interface TurnLogState {
@@ -67,11 +78,17 @@ export class RuntimeEventLog {
       const path = data.path;
       const beforeHash = data.beforeHash;
       const afterHash = data.afterHash;
+      const diff = data.diff;
+      const additions = data.additions;
+      const deletions = data.deletions;
       if (
         (operation !== "add" && operation !== "update" && operation !== "delete") ||
         typeof path !== "string" ||
         !isHashOrNull(beforeHash) ||
-        !isHashOrNull(afterHash)
+        !isHashOrNull(afterHash) ||
+        typeof diff !== "string" ||
+        !isNonnegativeInteger(additions) ||
+        !isNonnegativeInteger(deletions)
       ) continue;
       changes.push(Object.freeze({
         turnId: event.turnId,
@@ -81,9 +98,24 @@ export class RuntimeEventLog {
         path,
         beforeHash,
         afterHash,
+        diff,
+        additions,
+        deletions,
       }));
     }
     return Object.freeze(changes);
+  }
+
+  /** Summarize the files and line-level diffs produced by one agent turn. */
+  changesForTurn(turnId: string): TurnFileChanges {
+    const changes = this.fileChanges.filter((change) => change.turnId === turnId);
+    return Object.freeze({
+      turnId,
+      files: Object.freeze([...new Set(changes.map((change) => change.path))]),
+      changes: Object.freeze(changes),
+      additions: changes.reduce((total, change) => total + change.additions, 0),
+      deletions: changes.reduce((total, change) => total + change.deletions, 0),
+    });
   }
 
   toJSONLines(): string {
@@ -97,6 +129,10 @@ function isObject(value: JsonValue | undefined): value is Record<string, JsonVal
 
 function isHashOrNull(value: JsonValue | undefined): value is string | null {
   return value === null || (typeof value === "string" && /^sha256:[a-f0-9]{64}$/u.test(value));
+}
+
+function isNonnegativeInteger(value: JsonValue | undefined): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function deepFreeze<T>(value: T): T {

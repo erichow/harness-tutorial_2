@@ -28,6 +28,9 @@ describe("RuntimeEventLog", () => {
             path: "src/config.js",
             beforeHash: `sha256:${"a".repeat(64)}`,
             afterHash: `sha256:${"b".repeat(64)}`,
+            diff: "--- a/src/config.js\n+++ b/src/config.js\n@@ -1,1 +1,1 @@\n-old\n+new",
+            additions: 1,
+            deletions: 1,
           },
           output: { contentBytes: 7, totalContentBytes: 7, truncated: false },
         },
@@ -45,6 +48,13 @@ describe("RuntimeEventLog", () => {
         path: "src/config.js",
       }),
     ]);
+    expect(log.changesForTurn("turn-1")).toEqual({
+      turnId: "turn-1",
+      files: ["src/config.js"],
+      changes: log.fileChanges,
+      additions: 1,
+      deletions: 1,
+    });
     expect(log.toJSONLines().split("\n")).toHaveLength(3);
     expect(Object.isFrozen(log.entries[1])).toBe(true);
   });
@@ -60,5 +70,50 @@ describe("RuntimeEventLog", () => {
     finished.append({ ...base, sequence: 1, type: "turn_finished", reason: "completed" });
     expect(() => finished.append({ ...base, sequence: 2, type: "text_delta", delta: "late" }))
       .toThrow("already finished");
+  });
+
+  it("deduplicates the per-turn file set while retaining each line-level change", () => {
+    const log = new RuntimeEventLog();
+    log.append({ ...base, sequence: 0, type: "turn_started" });
+    for (const [index, hashes] of [
+      ["a", "b"],
+      ["b", "c"],
+    ].entries()) {
+      log.append({
+        ...base,
+        sequence: index + 1,
+        type: "tool_call_finished",
+        result: {
+          type: "tool_result",
+          toolCallId: `patch-${index + 1}`,
+          status: "success",
+          content: "updated",
+          data: {
+            operation: "update",
+            path: "same.txt",
+            beforeHash: `sha256:${(hashes[0] ?? "a").repeat(64)}`,
+            afterHash: `sha256:${(hashes[1] ?? "b").repeat(64)}`,
+            diff: `diff-${index + 1}`,
+            additions: index + 1,
+            deletions: 1,
+          },
+          output: { contentBytes: 7, totalContentBytes: 7, truncated: false },
+        },
+      });
+    }
+
+    expect(log.changesForTurn("turn-1")).toMatchObject({
+      files: ["same.txt"],
+      additions: 3,
+      deletions: 2,
+      changes: [{ toolCallId: "patch-1" }, { toolCallId: "patch-2" }],
+    });
+    expect(log.changesForTurn("missing")).toEqual({
+      turnId: "missing",
+      files: [],
+      changes: [],
+      additions: 0,
+      deletions: 0,
+    });
   });
 });

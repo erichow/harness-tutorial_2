@@ -5,7 +5,11 @@ import type { JsonObject } from "../../protocol/json.js";
 import type { Tool } from "../tool.js";
 import { decodeCursor, encodeCursor, paginateLines } from "./cursor.js";
 import { WorkspacePathGuard } from "./path-guard.js";
-import { applyWorkspacePatch, PATCH_FORMAT_GUIDE } from "./patch.js";
+import {
+  applyWorkspacePatch,
+  PATCH_FORMAT_GUIDE,
+  WorkspaceMutationCoordinator,
+} from "./patch.js";
 import { WorkspaceFilePolicy, type WorkspaceFilePolicyOptions } from "./policy.js";
 import { clipLine, decodeUtf8, sha256, splitLines } from "./text.js";
 
@@ -34,12 +38,13 @@ export async function createWorkspaceFileTools(
       : { dependencyDirectories: options.dependencyDirectories }),
   });
   const guard = await WorkspacePathGuard.create(options.workspaceRoot, policy);
+  const mutations = new WorkspaceMutationCoordinator();
 
   return Object.freeze([
     createListFilesTool(guard, policy),
     createSearchTextTool(guard, policy, maxFileBytes, maxSearchFiles),
     createReadFileTool(guard, maxFileBytes),
-    createApplyPatchTool(guard, maxFileBytes),
+    createApplyPatchTool(guard, mutations, maxFileBytes),
   ]);
 }
 
@@ -139,6 +144,7 @@ function createReadFileTool(guard: WorkspacePathGuard, maxFileBytes: number): To
         data: {
           path: resolved.relativePath,
           sha256: hash,
+          version: { algorithm: "sha256", value: hash },
           totalLines: lines.length,
           startLine: lines.length === 0 ? 0 : offset + 1,
           endLine: offset + consumed,
@@ -256,7 +262,11 @@ function createSearchTextTool(
   };
 }
 
-function createApplyPatchTool(guard: WorkspacePathGuard, maxFileBytes = DEFAULT_MAX_FILE_BYTES): Tool {
+function createApplyPatchTool(
+  guard: WorkspacePathGuard,
+  mutations: WorkspaceMutationCoordinator,
+  maxFileBytes = DEFAULT_MAX_FILE_BYTES,
+): Tool {
   return {
     definition: {
       name: "apply_patch",
@@ -289,6 +299,7 @@ function createApplyPatchTool(guard: WorkspacePathGuard, maxFileBytes = DEFAULT_
         input.baseHash === null ? null : stringValue(input, "baseHash"),
         maxFileBytes,
         context.signal,
+        mutations,
       );
     },
   };

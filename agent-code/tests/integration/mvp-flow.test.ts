@@ -161,8 +161,16 @@ describe("MVP end-to-end acceptance", () => {
           path: "src/config.js",
           beforeHash: baseHash,
           afterHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+          diff: expect.stringContaining("-export const config = { timeout: 5000 };"),
+          additions: 1,
+          deletions: 1,
         }),
       ]);
+      expect(runtime.eventLog.changesForTurn(result.turnId)).toMatchObject({
+        files: ["src/config.js"],
+        additions: 1,
+        deletions: 1,
+      });
 
       const shellResult = runtime.eventLog.entries.find(
         (event) => event.type === "tool_call_finished" && event.result.toolCallId === "test-1",

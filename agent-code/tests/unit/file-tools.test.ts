@@ -135,6 +135,9 @@ describe("workspace file tools", () => {
 
     expect(unicode.content).toContain("你好 🙂");
     expect(unicode.content).toMatch(/sha256:[a-f0-9]{64}/);
+    expect(unicode).toMatchObject({
+      data: { version: { algorithm: "sha256", value: expect.stringMatching(/^sha256:/u) } },
+    });
     expect(empty).toMatchObject({ status: "success", data: { totalLines: 0 } });
     expect(binary.content).toContain("Binary files");
     expect(invalidUtf8.content).toContain("not valid UTF-8");
@@ -186,6 +189,12 @@ describe("workspace file tools", () => {
       ].join("\n"),
     });
     expect(update.status).toBe("success");
+    expect(update.data).toMatchObject({
+      additions: 1,
+      deletions: 1,
+      diff: expect.stringContaining("@@ -1,2 +1,2 @@"),
+    });
+    expect(update.content).toContain("-beta\n+你好");
     await expect(readFile(join(workspace, "greeting.txt"), "utf8")).resolves.toBe("alpha\n你好\n");
 
     const deleteHash = sha256(await readFile(join(workspace, "greeting.txt")));
@@ -226,14 +235,16 @@ describe("workspace file tools", () => {
     expect(malformed.content).toContain("*** Update File: path/to/file");
   });
 
-  it("rejects stale hashes and context mismatches without changing the file", async () => {
+  it("rejects a stale version when the user edits while the agent is thinking", async () => {
     const path = join(workspace, "shared.txt");
     await writeFile(path, "first\n");
-    const staleHash = sha256(await readFile(path));
+    const read = await execute("read_file", { path: "shared.txt" });
+    const staleHash = (read.data as JsonObject).sha256;
+    expect(staleHash).toBeTypeOf("string");
     await writeFile(path, "changed elsewhere\n");
 
     const stale = await execute("apply_patch", {
-      baseHash: staleHash,
+      baseHash: staleHash as string,
       patch: [
         "*** Begin Patch",
         "*** Update File: shared.txt",
@@ -258,9 +269,122 @@ describe("workspace file tools", () => {
         "*** End Patch",
       ].join("\n"),
     });
-    expect(mismatch.content).toContain("Patch context does not match");
+    expect(mismatch.content).toContain("Patch context matched 0 locations");
     await expect(readFile(path, "utf8")).resolves.toBe("changed elsewhere\n");
     expect((await readdir(workspace)).some((name) => name.includes(".agent-code-") && name.endsWith(".tmp"))).toBe(false);
+  });
+
+  it("accepts one patch context match and rejects zero or multiple matches", async () => {
+    const path = join(workspace, "matches.txt");
+    await writeFile(path, "first\ntarget\nlast\n");
+    const once = await execute("apply_patch", {
+      baseHash: sha256(await readFile(path)),
+      patch: [
+        "*** Begin Patch",
+        "*** Update File: matches.txt",
+        "@@ -99,1 +99,1 @@",
+        "-target",
+        "+changed",
+        "*** End Patch",
+      ].join("\n"),
+    });
+    expect(once.status).toBe("success");
+    await expect(readFile(path, "utf8")).resolves.toBe("first\nchanged\nlast\n");
+
+    await writeFile(path, "same\nmiddle\nsame\n");
+    const multiple = await execute("apply_patch", {
+      baseHash: sha256(await readFile(path)),
+      patch: [
+        "*** Begin Patch",
+        "*** Update File: matches.txt",
+        "@@ -1,1 +1,1 @@",
+        "-same",
+        "+changed",
+        "*** End Patch",
+      ].join("\n"),
+    });
+    expect(multiple.status).toBe("error");
+    expect(multiple.content).toContain("matched 2 locations");
+    await expect(readFile(path, "utf8")).resolves.toBe("same\nmiddle\nsame\n");
+  });
+
+  it("does not record a textual no-op as a file modification", async () => {
+    const path = join(workspace, "same.txt");
+    await writeFile(path, "unchanged\n");
+    const result = await execute("apply_patch", {
+      baseHash: sha256(await readFile(path)),
+      patch: [
+        "*** Begin Patch",
+        "*** Update File: same.txt",
+        "@@ -1,1 +1,1 @@",
+        "-unchanged",
+        "+unchanged",
+        "*** End Patch",
+      ].join("\n"),
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.content).toContain("Patch does not change the file");
+    await expect(readFile(path, "utf8")).resolves.toBe("unchanged\n");
+  });
+
+  it("serializes concurrent edits so only one tool can commit the same base version", async () => {
+    const path = join(workspace, "concurrent.txt");
+    await writeFile(path, "original\n");
+    const baseHash = sha256(await readFile(path));
+    const executor = await tools();
+    const call = (id: string, replacement: string, patchPath: string) => executor.execute({
+      type: "tool_call" as const,
+      id,
+      name: "apply_patch",
+      input: {
+        baseHash,
+        patch: [
+          "*** Begin Patch",
+          `*** Update File: ${patchPath}`,
+          "@@ -1,1 +1,1 @@",
+          "-original",
+          `+${replacement}`,
+          "*** End Patch",
+        ].join("\n"),
+      },
+    }, { signal });
+
+    const results = await Promise.all([
+      call("writer-a", "alpha", "concurrent.txt"),
+      call("writer-b", "beta", "./concurrent.txt"),
+    ]);
+    expect(results.filter((result) => result.status === "success")).toHaveLength(1);
+    expect(results.find((result) => result.status === "success")?.data)
+      .toMatchObject({ path: "concurrent.txt" });
+    const rejected = results.find((result) => result.status === "error");
+    expect(rejected?.content).toContain("File changed after it was read");
+    expect(["alpha\n", "beta\n"]).toContain(await readFile(path, "utf8"));
+  });
+
+  it("applies multiple uniquely matched hunks against the same base version", async () => {
+    const path = join(workspace, "multi.txt");
+    await writeFile(path, "alpha\nbetween\ngamma\n");
+    const result = await execute("apply_patch", {
+      baseHash: sha256(await readFile(path)),
+      patch: [
+        "*** Begin Patch",
+        "*** Update File: multi.txt",
+        "@@ -1,1 +1,2 @@",
+        "-alpha",
+        "+alpha-one",
+        "+alpha-two",
+        "@@ -3,1 +4,1 @@",
+        "-gamma",
+        "+gamma-changed",
+        "*** End Patch",
+      ].join("\n"),
+    });
+
+    expect(result.status).toBe("success");
+    await expect(readFile(path, "utf8"))
+      .resolves.toBe("alpha-one\nalpha-two\nbetween\ngamma-changed\n");
+    expect(result.data).toMatchObject({ additions: 3, deletions: 2 });
   });
 
   it("preserves a UTF-8 BOM, CRLF style, and trailing newline when updating", async () => {

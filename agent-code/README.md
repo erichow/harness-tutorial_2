@@ -2,7 +2,7 @@
 
 `agent-code` 是《从零构建 Coding Agent CLI》实战教程的伴随项目。
 
-当前章节：第 10 章。
+当前章节：第 11 章。
 
 ```bash
 npm install
