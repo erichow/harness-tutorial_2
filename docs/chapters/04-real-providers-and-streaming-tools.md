@@ -67,7 +67,7 @@ DeepSeek Chat SSE ─────► DeepSeekChatProvider ─────┘
 
 这里不能假设“Node 内置 fetch 会自动读取 shell 代理变量”。如果开发机访问厂商 API 必须经过代理，忽略这一层会表现为连接超时，即使同一把 key 用 `curl` 能正常访问。
 
-查看 [`http.ts`](../../agent-code/src/providers/http.ts) 和 [`sse.ts`](../../agent-code/src/providers/sse.ts)。
+查看 [`http.ts`](../../dugsyn/src/providers/http.ts) 和 [`sse.ts`](../../dugsyn/src/providers/sse.ts)。
 
 ## 5. OpenAI Responses Provider
 
@@ -121,7 +121,7 @@ OpenAI 官方文档要求 reasoning model 在工具回合中保留对应 reasoni
 
 只有 `response.reasoning_summary_text.delta` 会成为 `reasoning_summary_delta`。原始 `response.reasoning_text.delta` 被忽略。
 
-查看 [`openai-responses.ts`](../../agent-code/src/providers/openai-responses.ts)。
+查看 [`openai-responses.ts`](../../dugsyn/src/providers/openai-responses.ts)。
 
 ## 6. DeepSeek Chat Provider
 
@@ -158,7 +158,7 @@ DeepSeek 的 `reasoning_content` 是原始 thinking，不是面向用户生成�
 
 thinking 模式产生工具调用时，适配器会在内存中暂存该字段，只回填给紧接着的 DeepSeek 工具续接请求。它不会进入 Transcript、日志或 CLI 事件。Provider 实例丢失后这段暂存状态也会丢失，因此会话恢复需要在后续章节设计独立的私有 Provider state。
 
-查看 [`deepseek-chat.ts`](../../agent-code/src/providers/deepseek-chat.ts)。
+查看 [`deepseek-chat.ts`](../../dugsyn/src/providers/deepseek-chat.ts)。
 
 ## 7. Provider 元数据事件
 
@@ -210,7 +210,7 @@ Agent Loop 把它转换为可序列化的 `provider_response` RuntimeEvent：
 - 跨多个 delta 的 `{"city":"Shenzhen"}` 参数。
 - input/output/cache token usage。
 
-[`provider-adapters.test.ts`](../../agent-code/tests/unit/provider-adapters.test.ts) 对两个 Provider 运行同一份归一化契约断言：
+[`provider-adapters.test.ts`](../../dugsyn/tests/unit/provider-adapters.test.ts) 对两个 Provider 运行同一份归一化契约断言：
 
 ```text
 text_delta
@@ -226,7 +226,7 @@ text_delta
 不要把 key 写入源码、fixture、Git 配置或教程命令历史。当前 `.gitignore` 已排除 `.env` 和 `.env.*`（但允许无密钥的 `.env.example`）。先创建只属于本机的配置：
 
 ```bash
-cd agent-code
+cd dugsyn
 cp .env.example .env.local
 chmod 600 .env.local
 ```
@@ -244,7 +244,7 @@ npm run test:smoke:local
 只测试 GPT：
 
 ```bash
-cd agent-code
+cd dugsyn
 read -s OPENAI_API_KEY
 export OPENAI_API_KEY
 export OPENAI_MODEL='<model-id-available-to-you>'
@@ -255,7 +255,7 @@ unset OPENAI_API_KEY OPENAI_MODEL
 只测试 DeepSeek：
 
 ```bash
-cd agent-code
+cd dugsyn
 read -s DEEPSEEK_API_KEY
 export DEEPSEEK_API_KEY
 export DEEPSEEK_MODEL='<model-id-available-to-you>'
@@ -305,7 +305,7 @@ git tag -a chapter-04 -m "Chapter 04: add GPT and DeepSeek providers"
 离线验收：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build

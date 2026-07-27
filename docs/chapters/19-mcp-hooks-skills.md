@@ -1,6 +1,6 @@
 # 第 19 章：MCP、Hooks 和 Skills
 
-到第 18 章，`agent-code` 已经能在交互终端和 CI 中完成同一套 Coding Agent
+到第 18 章，`dugsyn` 已经能在交互终端和 CI 中完成同一套 Coding Agent
 循环。本章开始处理扩展性，但目标不是“让插件绕开核心”，而是让扩展继续服从
 已有的 trust、permission、sandbox、结果信封和取消协议。
 
@@ -30,7 +30,7 @@
 
 ## 2. 配置 schema
 
-在 user 配置或已经信任的项目 `.agent-code/config.json` 中可以写：
+在 user 配置或已经信任的项目 `.dugsyn/config.json` 中可以写：
 
 ```json
 {
@@ -63,7 +63,7 @@
     ]
   },
   "skills": {
-    "userDirectory": "/home/you/.agent-code/skills",
+    "userDirectory": "/home/you/.dugsyn/skills",
     "maxFileBytes": 65536
   }
 }
@@ -102,13 +102,13 @@ managed + user
 项目 Skill 的固定位置是：
 
 ```text
-.agent-code/skills/<skill-name>/SKILL.md
+.dugsyn/skills/<skill-name>/SKILL.md
 ```
 
 用户 Skill 默认位于：
 
 ```text
-~/.agent-code/skills/<skill-name>/SKILL.md
+~/.dugsyn/skills/<skill-name>/SKILL.md
 ```
 
 项目 Skill 的真实路径必须仍在 canonical workspace 内。指向工作区外部的
@@ -312,7 +312,7 @@ managed deny
 ```text
 [Available Skills — metadata only]
 - release (user): /.../release/SKILL.md
-- review (project): /workspace/.agent-code/skills/review/SKILL.md
+- review (project): /workspace/.dugsyn/skills/review/SKILL.md
 [End available Skills]
 ```
 
@@ -389,7 +389,7 @@ MCP server、Hook 和 Skill 都不会读取 `.env.local`。需要凭证时，调
 运行：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build

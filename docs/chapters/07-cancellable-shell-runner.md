@@ -53,7 +53,7 @@ await shell.processManager.dispose();
 
 `ProcessManager` 为每次执行创建 job id。前台调用等待完成后返回，记录仍短暂保留，因此它和后台任务一样能用 `read_job` 继续读取分页输出。默认最多保留 64 条记录；到达上限时先淘汰已完成记录。如果 64 个任务仍都在运行，则拒绝继续启动，而不是无限积累进程引用。
 
-查看 [`process-manager.ts`](../../agent-code/src/tools/shell/process-manager.ts)。
+查看 [`process-manager.ts`](../../dugsyn/src/tools/shell/process-manager.ts)。
 
 ## 3. 四个正式工具
 
@@ -71,7 +71,7 @@ await shell.processManager.dispose();
 ```json
 {
   "command": "npm test -- --run tests/unit/example.test.ts",
-  "cwd": "agent-code",
+  "cwd": "dugsyn",
   "timeoutMs": 120000
 }
 ```
@@ -92,7 +92,7 @@ ls && some-destructive-command
 
 第 8 章的权限层会据此询问或拒绝，但不会尝试用命令前缀充当安全边界。
 
-查看 [`index.ts`](../../agent-code/src/tools/shell/index.ts)。
+查看 [`index.ts`](../../dugsyn/src/tools/shell/index.ts)。
 
 ## 4. cwd 仍受 workspace 边界约束
 
@@ -194,7 +194,7 @@ taskkill /pid <pid> /T /F
 
 这比只截取前 100 KB 更有用：错误通常出现在输出尾部，同时开头仍保留命令初始化信息。它也准确承认被丢弃的中间内容无法恢复。
 
-查看 [`output.ts`](../../agent-code/src/tools/shell/output.ts)。
+查看 [`output.ts`](../../dugsyn/src/tools/shell/output.ts)。
 
 ## 9. 后台任务的查询、停止与回收
 
@@ -260,11 +260,11 @@ warning: OS sandbox unavailable: command runs on the host and network access is 
 
 它不通过禁止 `curl`、`wget` 来声称网络已关闭，因为 Node、Python、Git 或任意二进制都可以发网络请求。只有第 8 章接入的 OS sandbox runner 才能把 `network` 状态标成 `isolated`。
 
-查看 [`sandbox-runner.ts`](../../agent-code/src/tools/shell/sandbox-runner.ts)。
+查看 [`sandbox-runner.ts`](../../dugsyn/src/tools/shell/sandbox-runner.ts)。
 
 ## 11. 测试策略
 
-[`shell-tools.test.ts`](../../agent-code/tests/unit/shell-tools.test.ts) 使用真实 shell 和真实 Node 子进程覆盖：
+[`shell-tools.test.ts`](../../dugsyn/tests/unit/shell-tools.test.ts) 使用真实 shell 和真实 Node 子进程覆盖：
 
 - timeout 终止 POSIX shell、子进程和孙进程。
 - AbortSignal 清理当前命令，manager 随后仍可复用。
@@ -304,7 +304,7 @@ tests/unit/
 ## 13. 完成检查
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build

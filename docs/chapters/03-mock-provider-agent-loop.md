@@ -82,7 +82,7 @@ interface Provider {
 
 最后一个事件是必要的。AsyncIterable 自然结束只能说明网络流关闭，不能说明模型正常完成。`response_completed.finishReason` 必须是 `stop` 或 `tool_calls`；下一章的真实适配器负责把各家 finish reason 翻译成这两个内部值。
 
-查看 [`provider.ts`](../../agent-code/src/providers/provider.ts)。
+查看 [`provider.ts`](../../dugsyn/src/providers/provider.ts)。
 
 ## 6. 可编排的 Mock Provider
 
@@ -117,7 +117,7 @@ const provider = new MockProvider([
 
 特殊脚本事件 `wait_for_abort` 只属于 Mock，不会进入公共 Provider 协议。它让取消测试可以稳定地停在一个未完成的流上，而不依赖计时器和真实网络。
 
-查看 [`mock.ts`](../../agent-code/src/providers/mock.ts)。
+查看 [`mock.ts`](../../dugsyn/src/providers/mock.ts)。
 
 ## 7. 最小工具执行端口
 
@@ -143,7 +143,7 @@ interface ToolExecutor {
 
 这些是工具结果，不会直接终止 turn。相比“遇到异常就退出”，把错误送回模型能支持修正参数或选择另一工具。取消是例外：检测到 signal 已中止后，运行时不会把取消伪装成普通工具错误。
 
-查看 [`executor.ts`](../../agent-code/src/tools/executor.ts)。
+查看 [`executor.ts`](../../dugsyn/src/tools/executor.ts)。
 
 ## 8. 实现 `runTurn()`
 
@@ -175,7 +175,7 @@ const result = await runTurn({
 
 Provider 声称 `tool_calls` 却没有发出工具，或发出了工具却声称 `stop`，都会变成 `provider` 类错误。这让适配器 bug 尽早暴露，不会悄悄生成错误会话状态。
 
-查看 [`agent.ts`](../../agent-code/src/runtime/agent.ts)、[`limits.ts`](../../agent-code/src/runtime/limits.ts) 和 [`cancellation.ts`](../../agent-code/src/runtime/cancellation.ts)。
+查看 [`agent.ts`](../../dugsyn/src/runtime/agent.ts)、[`limits.ts`](../../dugsyn/src/runtime/limits.ts) 和 [`cancellation.ts`](../../dugsyn/src/runtime/cancellation.ts)。
 
 ## 9. 从第 2 章迁移
 
@@ -208,7 +208,7 @@ git tag -a chapter-03 -m "Chapter 03: mock provider and minimal agent loop"
 
 ## 10. 测试
 
-[`agent-loop.test.ts`](../../agent-code/tests/unit/agent-loop.test.ts) 覆盖：
+[`agent-loop.test.ts`](../../dugsyn/tests/unit/agent-loop.test.ts) 覆盖：
 
 - 纯文本 delta 聚合、usage 和事件序号。
 - 一次工具调用后回答。
@@ -231,7 +231,7 @@ git tag -a chapter-03 -m "Chapter 03: mock provider and minimal agent loop"
 ## 12. 完成检查
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build

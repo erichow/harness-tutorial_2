@@ -13,13 +13,13 @@
 本章结束后，用户能观察到：
 
 ```bash
-$ agent-code --help
-agent-code 0.1.0
+$ dugsyn --help
+dugsyn 0.1.0
 
 Usage:
-  agent-code [options]
+  dugsyn [options]
 
-$ agent-code --unknown
+$ dugsyn --unknown
 Unknown argument: --unknown
 # exit code: 2
 ```
@@ -61,10 +61,10 @@ function main(
 
 ## 5. 完整实现
 
-源码都在 `agent-code/`。关键目录是：
+源码都在 `dugsyn/`。关键目录是：
 
 ```text
-agent-code/
+dugsyn/
 ├── package.json
 ├── tsconfig.json
 ├── tsconfig.build.json
@@ -86,11 +86,11 @@ agent-code/
 
 完整实现不在文档中维护第二份副本，请直接查看这些真实文件：
 
-- [`package.json`](../../agent-code/package.json)
-- [`src/cli/main.ts`](../../agent-code/src/cli/main.ts)
-- [`src/cli/bin.ts`](../../agent-code/src/cli/bin.ts)
-- [`tests/unit/cli-main.test.ts`](../../agent-code/tests/unit/cli-main.test.ts)
-- [`tests/e2e/cli.test.ts`](../../agent-code/tests/e2e/cli.test.ts)
+- [`package.json`](../../dugsyn/package.json)
+- [`src/cli/main.ts`](../../dugsyn/src/cli/main.ts)
+- [`src/cli/bin.ts`](../../dugsyn/src/cli/bin.ts)
+- [`tests/unit/cli-main.test.ts`](../../dugsyn/tests/unit/cli-main.test.ts)
+- [`tests/e2e/cli.test.ts`](../../dugsyn/tests/e2e/cli.test.ts)
 
 这样修复代码时不会忘记同步一段已经过时的教程代码。
 
@@ -99,7 +99,7 @@ agent-code/
 在仓库根目录执行：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm install
 npm run typecheck
 npm test

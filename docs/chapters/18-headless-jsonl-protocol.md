@@ -3,7 +3,7 @@
 交互式终端适合人直接使用，但 CI、编辑器、脚本和上层编排器需要另一种接口：
 输入必须可管道化，输出必须能稳定解析，权限请求不能等待一个永远不会出现的人。
 
-本章在同一个 `agent-code` Runtime 上增加 Headless 模式。它不是第二套 Agent
+本章在同一个 `dugsyn` Runtime 上增加 Headless 模式。它不是第二套 Agent
 实现；交互模式和 Headless 模式共享 Provider、工具、权限、上下文、预算、
 Checkpoint 和 Session。
 
@@ -60,7 +60,7 @@ Headless 层只负责协议和进程语义，不重新解释工具结果或 Prov
 直接传入单个 prompt：
 
 ```bash
-OPENAI_API_KEY=... agent-code \
+OPENAI_API_KEY=... dugsyn \
   --print "检查当前项目并给出最重要的三个问题" \
   --provider openai \
   --model gpt-5.6-sol
@@ -69,7 +69,7 @@ OPENAI_API_KEY=... agent-code \
 也可以保留显式的 `chat` 子命令：
 
 ```bash
-DEEPSEEK_API_KEY=... agent-code chat \
+DEEPSEEK_API_KEY=... dugsyn chat \
   --print "解释 package.json" \
   --provider deepseek \
   --model deepseek-v4-pro
@@ -79,7 +79,7 @@ DEEPSEEK_API_KEY=... agent-code chat \
 
 ```bash
 printf '%s\n' '总结当前项目结构' |
-  OPENAI_API_KEY=... agent-code \
+  OPENAI_API_KEY=... dugsyn \
     --print \
     --provider openai \
     --model gpt-5.6-sol
@@ -96,12 +96,12 @@ Provider、模型、workspace、Session 目录、resume 和 fork 仍使用前面
 下面两条命令等价：
 
 ```bash
-agent-code --print "describe src" --provider openai --model gpt-5.6-sol
+dugsyn --print "describe src" --provider openai --model gpt-5.6-sol
 ```
 
 ```bash
 printf 'describe src\n' |
-  agent-code --print --provider openai --model gpt-5.6-sol
+  dugsyn --print --provider openai --model gpt-5.6-sol
 ```
 
 空 prompt 和空 stdin 是输入错误，退出码为 `2`。
@@ -118,7 +118,7 @@ JSONL 每行是一个完整 JSON 对象。空行被忽略。当前协议版本�
 调用方式：
 
 ```bash
-agent-code \
+dugsyn \
   --print \
   --input-format jsonl \
   --output-format jsonl \
@@ -308,13 +308,13 @@ Headless 与交互模式使用同一个 `SessionStore`：
 可以继续使用：
 
 ```bash
-agent-code --print "继续检查" --resume <session-id>
+dugsyn --print "继续检查" --resume <session-id>
 ```
 
 或：
 
 ```bash
-agent-code --print "尝试另一种方案" --fork-session <session-id>
+dugsyn --print "尝试另一种方案" --fork-session <session-id>
 ```
 
 resume 保留原 Session 的 Provider、模型和 workspace；fork 沿用第 15 章的覆盖
@@ -338,7 +338,7 @@ Headless 启动路径监听 SIGINT，并把它转换成 AbortSignal。Runtime �
 本章新增：
 
 ```text
-agent-code/src/cli/
+dugsyn/src/cli/
 ├── headless-protocol.ts  # 输入 schema、输出类型、版本和退出码
 └── headless.ts           # 参数、stdin、协议渲染和 Runtime 启动
 ```
@@ -376,7 +376,7 @@ agent-code/src/cli/
 运行：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build
@@ -391,13 +391,13 @@ npm run test:e2e
 
 ```bash
 # 原交互模式
-agent-code chat
+dugsyn chat
 
 # 单次非交互模式
-agent-code --print "review this repository"
+dugsyn --print "review this repository"
 
 # 流式机器协议
-agent-code --print --input-format jsonl --output-format jsonl
+dugsyn --print --input-format jsonl --output-format jsonl
 ```
 
 不要把终端输出抓取脚本继续扩展成正则解析器。自动化调用从本章开始应使用

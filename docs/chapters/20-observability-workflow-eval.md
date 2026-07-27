@@ -1,6 +1,6 @@
 # 第 20 章：可观测性和工作流 Eval
 
-前面的章节已经让 `agent-code` 能运行、修改文件、执行测试、持久化 Session，并通过
+前面的章节已经让 `dugsyn` 能运行、修改文件、执行测试、持久化 Session，并通过
 MCP、Hooks 和 Skills 扩展能力。但“能运行”不等于“知道运行得怎么样”：
 
 - 一次 turn 为什么慢？
@@ -388,7 +388,7 @@ rm -rf <字符串>
 它只删除 `mkdtemp()` 直接返回的准确目录：
 
 ```ts
-const createdRoot = await mkdtemp(join(tempRoot, "agent-code-eval-"));
+const createdRoot = await mkdtemp(join(tempRoot, "dugsyn-eval-"));
 
 try {
   // seed, Agent, test, score
@@ -426,7 +426,7 @@ preserveWorkspaces: "failures"
 运行：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm run test:eval
 npm test
@@ -435,5 +435,5 @@ npm run test:e2e
 npm run test:mvp
 ```
 
-这一章没有调用真实模型 API。完成后，`agent-code` 不仅能执行 Coding Agent
+这一章没有调用真实模型 API。完成后，`dugsyn` 不仅能执行 Coding Agent
 工作流，还能用可检查、可重复的证据回答它执行得是否正确、稳定和安全。

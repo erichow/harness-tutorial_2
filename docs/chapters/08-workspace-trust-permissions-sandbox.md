@@ -44,7 +44,7 @@ permission_rules
 
 这里的含义不是“不读任何项目文件”，而是不能执行项目提供的代码，也不能让项目配置放宽安全边界。CLI 将来的 `/status` 应显示 trust 状态，并让用户通过明确交互更改持久配置；不能因为仓库里存在一个 `trusted: true` 就相信它。
 
-查看 [`trust.ts`](../../agent-code/src/security/trust.ts)。
+查看 [`trust.ts`](../../dugsyn/src/security/trust.ts)。
 
 ## 3. PermissionDecision 与执行位置
 
@@ -164,7 +164,7 @@ network:*
 
 审计记录保存 timestamp、tool、resource、decision、scope、reason 和完整请求的 fingerprint，不默认重复保存可能含 token 的原始命令。交互 handler 会收到完整结构化请求，以便 CLI 生成准确确认内容。
 
-查看 [`permissions.ts`](../../agent-code/src/security/permissions.ts)。
+查看 [`permissions.ts`](../../dugsyn/src/security/permissions.ts)。
 
 ## 7. 默认策略与读取秘密
 
@@ -206,7 +206,7 @@ const shell = await createShellTools({ workspaceRoot, runner });
 
 当前章节只实现并测试 macOS。Linux 应加入 bubblewrap / Landlock 等独立 runner，Windows 应加入 AppContainer 或受限 token 实现；在这些实现完成前不能把普通 child process 标成 sandboxed。
 
-查看 [`sandbox-runner.ts`](../../agent-code/src/tools/shell/sandbox-runner.ts)。
+查看 [`sandbox-runner.ts`](../../dugsyn/src/tools/shell/sandbox-runner.ts)。
 
 ## 9. fail-closed 与 fail-open 必须明确配置
 
@@ -252,7 +252,7 @@ fail-closed runner 的命令没有启动，所以文件与网络状态都是 `bl
 
 ## 11. 测试策略
 
-[`security-permissions.test.ts`](../../agent-code/tests/unit/security-permissions.test.ts) 覆盖：
+[`security-permissions.test.ts`](../../dugsyn/tests/unit/security-permissions.test.ts) 覆盖：
 
 - trust 使用 canonical path，未信任 workspace 禁用 Hooks/MCP/project rules。
 - `.env`、SSH、AWS 和 key 文件在 prompt 前被拒绝。
@@ -262,7 +262,7 @@ fail-closed runner 的命令没有启动，所以文件与网络状态都是 `bl
 - workspace 外路径与网络域名进入同一资源模型。
 - Schema 校验、权限和 handler 的执行顺序。
 
-[`sandbox-runner.test.ts`](../../agent-code/tests/unit/sandbox-runner.test.ts) 覆盖 fail-open、fail-closed，以及在当前进程允许应用 Seatbelt 时的真实 workspace 写入和外部读取拒绝。如果测试进程已经处于不可嵌套的 OS 沙箱，真实 Seatbelt case 会跳过；probe 和 fail-closed 测试仍会确认实现不会谎报隔离状态。
+[`sandbox-runner.test.ts`](../../dugsyn/tests/unit/sandbox-runner.test.ts) 覆盖 fail-open、fail-closed，以及在当前进程允许应用 Seatbelt 时的真实 workspace 写入和外部读取拒绝。如果测试进程已经处于不可嵌套的 OS 沙箱，真实 Seatbelt case 会跳过；probe 和 fail-closed 测试仍会确认实现不会谎报隔离状态。
 
 ## 12. 从第 7 章迁移
 
@@ -296,7 +296,7 @@ tests/unit/
 ## 13. 完成检查
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build

@@ -32,7 +32,7 @@ Workspace 文件本身已经在磁盘上，因此不复制进 Session。恢复�
 每个 session 有独立目录：
 
 ```text
-~/.agent-code/sessions/
+~/.dugsyn/sessions/
 └── 7b6f.../
     ├── metadata.json
     ├── transcript.jsonl
@@ -45,13 +45,13 @@ Workspace 文件本身已经在磁盘上，因此不复制进 Session。恢复�
 测试、容器或多配置场景可以覆盖位置：
 
 ```bash
-agent-code chat \
+dugsyn chat \
   --provider openai \
   --model gpt-test \
-  --session-dir /tmp/agent-code-sessions
+  --session-dir /tmp/dugsyn-sessions
 ```
 
-也可以设置 `AGENT_CODE_SESSION_DIR`。命令行参数优先；所有测试都使用临时目录，不会读取真实用户会话。
+每个会话还有一个 `provider-transcript.jsonl`，记录模型实际看到的 transcript——包含系统指令、压缩摘要和已 offload 的文件内容。与 `transcript.jsonl`（完整原始内容）对比，可以验证 offload 是否生效。
 
 ## 3. 元数据为什么单独保存
 
@@ -172,8 +172,8 @@ RuntimeEvent 在运行时发出时立即追加，因而异常退出前已经完�
 恢复命令可以省略 Provider、模型和 workspace：
 
 ```bash
-agent-code --resume 7b6f... \
-  --session-dir /tmp/agent-code-sessions
+dugsyn --resume 7b6f... \
+  --session-dir /tmp/dugsyn-sessions
 ```
 
 CLI 从 metadata 恢复这些值，再根据 Provider 要求对应 API key。若显式参数与 metadata 不同，命令拒绝执行并提示使用 fork。例如旧会话属于 `/work/a`，不能用 `--resume` 悄悄改成 `/work/b`。
@@ -200,7 +200,7 @@ CLI 从 metadata 恢复这些值，再根据 Provider 要求对应 API key。若
 新 metadata 记录 `parentSessionId`。源 RuntimeEvent 不复制到分支，因为那些事件发生在父会话中；父 ID 已提供审计链接。
 
 ```bash
-agent-code --fork-session 7b6f... \
+dugsyn --fork-session 7b6f... \
   --provider deepseek \
   --model deepseek-v4-pro \
   --session-name "try deepseek"
@@ -213,7 +213,7 @@ agent-code --fork-session 7b6f... \
 JSONL 适合可靠写入和机器重放，不适合直接阅读。导出命令只读 Session，生成 Markdown 到 stdout：
 
 ```bash
-agent-code session export 7b6f... > session.md
+dugsyn session export 7b6f... > session.md
 ```
 
 输出包含 metadata、按角色排列的对话、工具调用/结果和 RuntimeEvent 时间线。源文件不被改写，Markdown 也不是恢复输入；唯一权威状态仍是经过 schema 验证的 metadata 和 JSONL。
@@ -237,7 +237,7 @@ agent-code session export 7b6f... > session.md
 创建命名会话：
 
 ```bash
-OPENAI_API_KEY=... agent-code chat \
+OPENAI_API_KEY=... dugsyn chat \
   --provider openai \
   --model gpt-test \
   --workspace . \
@@ -247,13 +247,13 @@ OPENAI_API_KEY=... agent-code chat \
 恢复：
 
 ```bash
-OPENAI_API_KEY=... agent-code --resume <session-id>
+OPENAI_API_KEY=... dugsyn --resume <session-id>
 ```
 
 从旧对话分支并换模型：
 
 ```bash
-DEEPSEEK_API_KEY=... agent-code --fork-session <session-id> \
+DEEPSEEK_API_KEY=... dugsyn --fork-session <session-id> \
   --provider deepseek \
   --model deepseek-v4-pro
 ```
@@ -261,7 +261,7 @@ DEEPSEEK_API_KEY=... agent-code --fork-session <session-id> \
 导出不调用 Provider，也不需要 API key：
 
 ```bash
-agent-code session export <session-id>
+dugsyn session export <session-id>
 ```
 
 CLI 仍不会自动读取 `.env.local`。Session metadata 只保存 Provider 名称和模型名称，绝不保存 API key。
@@ -284,7 +284,7 @@ CLI 仍不会自动读取 `.env.local`。Session metadata 只保存 Provider 名
 运行本章验收：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build
@@ -319,11 +319,24 @@ metadata 的原子 rename 避免半文件，但本章没有对每次 rename 后�
 - [x] 支持只读 Markdown 导出。
 - [x] 所有验收测试离线运行。
 
-## 17. 与原教程的关系
+
+## 17. 上下文压缩策略（offload + filter + truncate）
+
+当对话增长到接近上下文预算时，dugsyn 使用三层降级策略：
+
+1. **Offload（每轮后）** — 超过 `offloadAfterTurns`（默认 2）轮的 `read_file` 结果被替换为 `[File offloaded. Recover with read_file: 路径 ]` 占位符，释放大部分上下文。
+2. **Filter（压缩时）** — 如果仍然超过 `compressAt`（默认 64K），先丢弃低信号消息（"hi"、"好的"、"ok" 等无意义问候和确认）。
+3. **Truncate（压缩时）** — 还不够就丢弃最早的消息，只保留最近的可放入预算的消息。
+
+三层策略都不编造摘要：消息结构始终保留，要么在、要么不在。与旧版 `buildCompressionSummary`（生成摘要文本）不同，新方案不会引入幻觉风险。
+
+`provider-transcript.jsonl` 记录了模型实际看到的最终上下文，可对比 `transcript.jsonl` 验证各层是否生效。
+
+## 18. 与原教程的关系
 
 本章对应原教程 ch9 的外部状态与 ch21 的 checkpoint/resume 思想。实战实现把“持久化”放在现有 Transcript、RuntimeEvent、CLI Session 和权限边界之间，没有引入第二套 Agent 状态机，也没有把审计事件误当成可直接重放的命令。
 
-## 18. 下一章留下的问题
+## 19. 下一章留下的问题
 
 Session 能恢复完整历史，但对话越来越长时，直接把全部 Transcript 发送给模型会变慢、变贵并最终超过上下文窗口；项目还缺少用户级、仓库级和目录级指令加载。
 

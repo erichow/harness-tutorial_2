@@ -28,7 +28,7 @@ Agent 内核已经产生 `RuntimeEvent`。CLI 不应再次猜测模型正在做�
 
 ## 2. 全程只有一个 InputController
 
-[`input.ts`](../../agent-code/src/cli/input.ts) 定义唯一输入边界：
+[`input.ts`](../../dugsyn/src/cli/input.ts) 定义唯一输入边界：
 
 ```ts
 interface InputController {
@@ -48,7 +48,7 @@ interface InputController {
 
 ## 3. Renderer 是终端状态机
 
-[`renderer.ts`](../../agent-code/src/cli/renderer.ts) 维护三类状态：
+[`renderer.ts`](../../dugsyn/src/cli/renderer.ts) 维护三类状态：
 
 ```text
 当前是否正在输出 text / summary
@@ -86,7 +86,7 @@ hidden reasoning   Provider/模型内部状态，不进入 RuntimeEvent
 
 ## 5. 权限提示期间暂停事件渲染
 
-[`permission-prompt.ts`](../../agent-code/src/cli/permission-prompt.ts) 把第 8 章的 `InteractivePermissionHandler` 接到相同的 InputController 和 Renderer：
+[`permission-prompt.ts`](../../dugsyn/src/cli/permission-prompt.ts) 把第 8 章的 `InteractivePermissionHandler` 接到相同的 InputController 和 Renderer：
 
 ```text
 ? Permission requested by run_shell
@@ -108,7 +108,7 @@ Allow? [y] once / [a] session / [n] deny:
 
 ## 6. Ctrl-C 是状态相关的
 
-[`session.ts`](../../agent-code/src/cli/session.ts) 保存当前 turn 的 `AbortController`：
+[`session.ts`](../../dugsyn/src/cli/session.ts) 保存当前 turn 的 `AbortController`：
 
 ```text
 running / permission prompt + Ctrl-C
@@ -157,7 +157,7 @@ idle + Ctrl-C
 本章新增真实入口：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run build
 
 OPENAI_API_KEY=... node dist/cli/bin.js chat \
@@ -179,7 +179,7 @@ DEEPSEEK_API_KEY=... node dist/cli/bin.js chat \
 
 CLI 故意不自动读取 `.env.local`。这避免库代码擅自读取凭据文件，也保持“哪些环境变量会进入进程”清晰可见。若本地密钥保存在 `.env.local`，可由 shell 或受信任的启动脚本先加载；不要提交该文件。
 
-[`chat.ts`](../../agent-code/src/cli/chat.ts) 负责组合：
+[`chat.ts`](../../dugsyn/src/cli/chat.ts) 负责组合：
 
 ```text
 Provider
@@ -193,7 +193,7 @@ Provider
 
 ## 10. 为什么默认 shell 仍可能被阻止
 
-`agent-code chat` 使用第 8 章的 `createPlatformSandboxRunner()`，配置是：
+`dugsyn chat` 使用第 8 章的 `createPlatformSandboxRunner()`，配置是：
 
 ```ts
 {
@@ -206,7 +206,7 @@ Provider
 
 ## 11. 测试策略
 
-[`cli-renderer.test.ts`](../../agent-code/tests/unit/cli-renderer.test.ts) 覆盖：
+[`cli-renderer.test.ts`](../../dugsyn/tests/unit/cli-renderer.test.ts) 覆盖：
 
 - 文本流、工具开始、真实工具结果和后续文本交错。
 - 不把原始工具 output 默认打印到终端。
@@ -214,13 +214,13 @@ Provider
 - 权限提示期间事件排队，回答后顺序恢复。
 - 非法确认答案会重试，且一直复用同一个 InputController。
 
-[`cli-session.test.ts`](../../agent-code/tests/unit/cli-session.test.ts) 覆盖：
+[`cli-session.test.ts`](../../dugsyn/tests/unit/cli-session.test.ts) 覆盖：
 
 - 五个本地命令不调用模型。
 - 第一次 Ctrl-C 取消 active turn，空闲 Ctrl-C 退出。
 - `/clear` 同时清理 transcript 和 session grant。
 
-[`cli.test.ts`](../../agent-code/tests/e2e/cli.test.ts) 使用构建后的 CLI 和管道 stdin 验证非 TTY 交互。它提供一个不会被使用的测试 key，只执行本地命令后退出，因此不访问 OpenAI/DeepSeek API。
+[`cli.test.ts`](../../dugsyn/tests/e2e/cli.test.ts) 使用构建后的 CLI 和管道 stdin 验证非 TTY 交互。它提供一个不会被使用的测试 key，只执行本地命令后退出，因此不访问 OpenAI/DeepSeek API。
 
 ## 12. 从第 8 章迁移
 
@@ -250,7 +250,7 @@ tests/unit/
 ## 13. 完成检查
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build

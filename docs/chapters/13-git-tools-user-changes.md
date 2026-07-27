@@ -245,7 +245,7 @@ commit 使用 `--no-gpg-sign` 避免交互签名卡住 CLI，并使用 `--no-ver
 运行本章验收：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build

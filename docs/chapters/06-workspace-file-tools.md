@@ -46,7 +46,7 @@ const executor = registry.createExecutor();
 
 `workspaceRoot` 在创建阶段经过一次 `realpath`，之后只读。工具参数中的路径一律使用相对于这个根目录的正斜杠路径。绝对路径、反斜杠、NUL 和解析后仍以 `../` 开头的路径都被拒绝。
 
-查看 [`index.ts`](../../agent-code/src/tools/files/index.ts) 和 [`path-guard.ts`](../../agent-code/src/tools/files/path-guard.ts)。
+查看 [`index.ts`](../../dugsyn/src/tools/files/index.ts) 和 [`path-guard.ts`](../../dugsyn/src/tools/files/path-guard.ts)。
 
 ## 3. realpath 与符号链接规则
 
@@ -87,7 +87,7 @@ safe-name.txt -> .env.local
 
 二进制与尺寸不是路径策略：它们在真正读取内容时单独检查。文本必须是不含 NUL 的合法 UTF-8，默认单文件上限为 1 MiB。这样“隐藏路径”“依赖噪声”“二进制内容”和“过大文本”不会被混成一个含糊的 ignore 规则。
 
-查看 [`policy.ts`](../../agent-code/src/tools/files/policy.ts) 和 [`text.ts`](../../agent-code/src/tools/files/text.ts)。
+查看 [`policy.ts`](../../dugsyn/src/tools/files/policy.ts) 和 [`text.ts`](../../dugsyn/src/tools/files/text.ts)。
 
 ## 5. `list_files`：先发现，不读取内容
 
@@ -100,7 +100,7 @@ safe-name.txt -> .env.local
 }
 ```
 
-结果按每层文件名稳定排序，目录以 `/` 结尾，symlink 标记为 `[symlink]`。它不会读取文件内容，也不会跟随目录 symlink。`maxDepth` 范围是 1–8；一次发现最多保留 20,000 个条目。
+结果按每层文件名稳定排序，目录以 `/` 结尾，symlink 标记为 `[symlink]`。输出页头中列出条目总数以及文件和目录的分别计数，例如 `entries: 15 (11 files, 4 dirs)`。它不会读取文件内容，也不会跟随目录 symlink。`maxDepth` 范围是 1–8；一次发现最多保留 20,000 个条目。
 
 当输出超过本回合的 `maxOutputBytes` 时，工具按完整行分页并给出 opaque `nextCursor`。下一次调用必须保持相同的 `path` 和 `maxDepth`：
 
@@ -128,7 +128,7 @@ cursor 是工具内部状态，不应由模型修改或解释。
 返回内容把路径、整个文件的 SHA-256 和总行数放在模型可见的 header 中，然后提供带行号的 viewport：
 
 ```text
-path: src/main.ts
+path: src/main.ts (L1-3/37)
 sha256: sha256:7f2d...
 lines: 37
      1 import { run } from "./run.js";
@@ -138,11 +138,82 @@ lines: 37
 
 hash 必须基于原始字节，而不是规范化后的字符串，因此 UTF-8 BOM、CRLF 与 LF 的区别都能触发冲突。工具同时在本地 `data` 中返回 hash 和 viewport 范围。
 
-`maxLines` 最大 400；普通长行会在 2,000 字符处明确标记裁剪。输出仍过大时使用 cursor 继续读取。cursor 绑定路径、hash 和 `maxLines`，文件发生变化后旧 cursor 会返回 `Invalid or stale cursor`，而不是把两个版本拼成一个 viewport。
+`maxLines` 可省略——省略时读取全文。普通长行会在 2,000 字符处明确标记裁剪。输出超过 64 KiB 上限时使用 cursor 自动分页继续读取。cursor 绑定路径、hash 和 `maxLines`，文件发生变化后旧 cursor 会返回 `Invalid or stale cursor`，而不是把两个版本拼成一个 viewport。
 
 空文件合法，返回 `lines: 0`。二进制、非法 UTF-8 和超过限制的文件会被明确拒绝。
 
-## 7. `search_text`：有界的字面量搜索
+
+## 7. `stat_file`：存在性与文件大小
+
+`read_file` 会在文件不存在时抛 `✗ (failed)`，但模型没有低成本的「文件在不在」检查手段。用 `list_files` 太重（全目录扫描），直接 `read_file` 又太鲁莽。
+
+`stat_file` 只做一次 `stat` 系统调用，不读文件内容：
+
+```json
+{
+  "path": "src/config.ts"
+}
+```
+
+返回文件类型和大小，通过常规权限检查：
+
+```typescript
+function createStatFileTool(guard: WorkspacePathGuard): Tool {
+  return {
+    definition: {
+      name: "stat_file",
+      description: [
+        "Check whether a workspace path exists, its type, and file size",
+        "without reading contents. Call to get file size before read_file",
+        "so you can decide whether to paginate with maxLines.",
+      ].join(" "),
+      inputSchema: objectSchema({
+        path: { type: "string", minLength: 1, maxLength: 4_096 },
+      }, ["path"]),
+    },
+    sideEffects: ["read_workspace"],
+    async handler(input, context) {
+      context.signal.throwIfAborted();
+      const requestedPath = stringValue(input, "path");
+      try {
+        const resolved = await guard.resolveExisting(requestedPath, true);
+        const metadata = await stat(resolved.realPath);
+        const kind = metadata.isDirectory() ? "directory"
+          : metadata.isFile() ? "file"
+          : metadata.isSymbolicLink() ? "symlink"
+          : "other";
+        return {
+          content: `${kind}: ${resolved.relativePath || "."}`,
+          data: { exists: true, kind, path: resolved.relativePath || ".",
+            size: metadata.size },
+        };
+      } catch {
+        return {
+          content: `not found: ${requestedPath}`,
+          data: { exists: false, path: requestedPath },
+        };
+      }
+    },
+  };
+}
+```
+
+成功时终端显示 `✓ stat_file (file src/config.ts, 3.2KB)`，不存在时显示 `✓ stat_file (not found)`。
+
+### 与 `list_files` 的关系
+
+`stat_file` 和 `list_files` 都向 hard 约束提供存在性确认。`list_files` 返回的文件路径会被自动标记为"已确认"，无需额外调用 `stat_file` 即可 `read_file`。`stat_file` 的独特价值在于返回**文件大小**——模型据此判断是否需要 `maxLines` 分页，而不是盲目猜测。
+
+### 与硬约束的关系
+
+第 5 章的 `enforceStatBeforeRead` 机制在工具执行层拦截未确认路径的 `read_file` 调用。`stat_file` 成功返回后记录路径，`list_files` 返回的文件列表同样被记录——两者都让后续的 `read_file` 通过拦截。这意味着：
+
+- `list_files` → `read_file`：直接放行，文件已在列表中
+- `stat_file` → `read_file`：放行，且模型已知文件大小
+- 直接 `read_file` 未确认路径：`✗ (denied)`，模型被迫先确认
+
+
+## 8. `search_text`：有界的字面量搜索
 
 第一版有意只提供字面量搜索，不在同一个参数里混入正则表达式语法：
 
@@ -164,7 +235,7 @@ src/runtime/agent.ts:42:17: const tools = registry.createExecutor();
 
 当前实现使用 Node 文件 API，便于完整展示边界语义。生产版本可将扫描器替换为 `rg`，但替换后仍要保留相同的 PathGuard、策略、取消、尺寸和结果信封契约，不能把 shell 转义当成路径安全。
 
-## 8. 为什么没有 `create_file`
+## 9. 为什么没有 `create_file`
 
 一个接受 `path + content` 的覆盖式工具很容易把“新建”悄悄变成“覆盖”。本章把三种写操作都放进 `apply_patch`，并要求每个调用只处理一个文件：
 
@@ -185,9 +256,9 @@ src/runtime/agent.ts:42:17: const tools = registry.createExecutor();
 }
 ```
 
-每行前面的 `+` 是 patch 标记，不进入文件。非空新文件默认以 LF 结尾；空的 Add File body 创建真正的零字节文件。父目录必须已经存在，工具不会暗中创建目录树。
+每行前面的 `+` 是 patch 标记，不进入文件。非空新文件默认以 LF 结尾；空的 Add File body 创建真正的零字节文件。`apply_patch` 的 Add File 操作会自动创建父目录（`mkdir -p`），无需先调用 `run_shell mkdir`。
 
-## 9. 带 base hash 的修改
+## 10. 带 base hash 的修改
 
 修改前必须先调用 `read_file`，再把它返回的完整 hash 原样放入 `baseHash`：
 
@@ -211,7 +282,7 @@ Update hunk 使用标准的行范围 header：
 
 hash 防止的是正常协作冲突：如果用户、编辑器或另一个 Agent 在读取后修改了文件，本次写入失败并要求重新读取。它不是恶意本机进程下的锁，也不是跨多个文件的事务。
 
-## 10. 删除仍然是 checked patch
+## 11. 删除仍然是 checked patch
 
 删除也必须携带当前 hash：
 
@@ -224,11 +295,11 @@ hash 防止的是正常协作冲突：如果用户、编辑器或另一个 Agent
 
 Delete body 不能包含 hunk。工具再次确认目标是工作区内、非 symlink、非敏感、未变化的 UTF-8 普通文件后才调用原子 `unlink`。第 9 章会在写入前增加 checkpoint，从而提供按回合恢复；本章本身不承诺撤销已成功的删除。
 
-查看 [`patch.ts`](../../agent-code/src/tools/files/patch.ts)。
+查看 [`patch.ts`](../../dugsyn/src/tools/files/patch.ts)。
 
-## 11. 测试策略
+## 12. 测试策略
 
-[`file-tools.test.ts`](../../agent-code/tests/unit/file-tools.test.ts) 使用真实临时目录覆盖：
+[`file-tools.test.ts`](../../dugsyn/tests/unit/file-tools.test.ts) 使用真实临时目录覆盖：
 
 - 稳定排序以及 `.git`、依赖目录、敏感文件排除。
 - `../`、POSIX/Windows 绝对路径和工作区外 symlink。
@@ -243,7 +314,7 @@ Delete body 不能包含 hunk。工具再次确认目标是工作区内、非 sy
 
 这些测试通过正式 Tool Registry 执行，因此同时覆盖 schema、结果信封和 handler 失败不会击穿 Agent Loop 的行为。
 
-## 12. 从第 5 章迁移
+## 13. 从第 5 章迁移
 
 查看完整差异：
 
@@ -268,10 +339,10 @@ tests/unit/
 
 没有新增运行时依赖。
 
-## 13. 完成检查
+## 14. 完成检查
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build
@@ -286,7 +357,7 @@ npm run test:e2e
 git tag -a chapter-06 -m "Chapter 06: add guarded workspace file tools"
 ```
 
-## 14. 动手实验
+## 15. 动手实验
 
 先读取一个文件并保存 hash，然后在编辑器里修改它，再尝试使用旧 hash 应用 patch。确认工具拒绝覆盖，并且编辑器中的版本保持不变。
 
@@ -294,6 +365,6 @@ git tag -a chapter-06 -m "Chapter 06: add guarded workspace file tools"
 
 最后把 Registry 的 `maxOutputBytes` 临时调小，搜索一个常见词并沿 `nextCursor` 翻页。修改一个命中文件后重用旧 cursor，确认它因结果集合变化而失效。
 
-## 15. 下一章留下的问题
+## 16. 下一章留下的问题
 
 Agent 现在可以检查并修改项目，但还不能运行构建或测试。下一章会实现一个可取消的 Shell 执行器，统一处理前台命令、后台 job、timeout、输出分页和进程树清理。

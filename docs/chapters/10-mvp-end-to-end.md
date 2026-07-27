@@ -219,7 +219,7 @@ turn_finished(completed)
 
 - `runTurn` 以 `error` 结束；
 - 原文件逐字节保持原样；
-- 目录里没有 `.agent-code-*.tmp` 临时文件；
+- 目录里没有 `.dugsyn-*.tmp` 临时文件；
 - EventLog 没有虚假的 `fileChanges`；
 - 调用 `runtime.dispose()` 后，后台进程 PID 不再存活。
 
@@ -232,7 +232,7 @@ turn_finished(completed)
 普通测试不读取 `.env.local`，也不访问网络：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run test:mvp
 ```
 
@@ -251,7 +251,7 @@ npm run test:e2e
 
 离线 Mock 验收负责确定性，真实 Provider smoke test 负责验证模型确实会遵守工具协议。它默认跳过，只有显式选择 Provider 时才运行，避免普通 `npm test` 消耗额度。
 
-如果 key 和 model 已放进 `agent-code/.env.local`：
+如果 key 和 model 已放进 `dugsyn/.env.local`：
 
 ```bash
 npm run test:mvp:live:local -- openai

@@ -267,7 +267,7 @@ turn wall clock   → 回合 max_duration
 运行本章验收：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build

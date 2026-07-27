@@ -233,7 +233,7 @@ initialize 请求同时设置旧服务器常用的 `rootUri` 和支持 workspace
 ```ts
 {
   processId: process.pid,
-  clientInfo: { name: "agent-code", version: "0.1.0" },
+  clientInfo: { name: "dugsyn", version: "0.1.0" },
   rootUri: workspaceUri,
   capabilities: {
     workspace: {

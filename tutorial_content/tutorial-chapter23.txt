@@ -274,7 +274,7 @@ export function cliEventHandler(event: StreamEvent): void {
         <p>让它跑一次。不用复杂任务，先问一个简单问题——让 agent 读自己的源码：</p>
 
         <CodeBlock filename="shell" lang="shell">{`# 假设 package.json 的 bin 字段配好了
-npx agent-code
+npx dugsyn
 
 # 或者直接在开发模式下
 npx tsx src/cli/main.ts`}</CodeBlock>
@@ -330,7 +330,7 @@ npx tsx src/cli/main.ts`}</CodeBlock>
         <div className="cards cols-3">
           <Card title="① 跑通一个回合">复制本章的 main.ts，连上 mock provider，让 agent 做一个 read_file 然后回到文本。确认每一段代码都不报错。</Card>
           <Card title="② 自定义事件渲染">修改 cliEventHandler 中的 tool_result 预览长度，并用颜色（ANSI escape codes）区分文本/工具/错误。</Card>
-          <Card title="③ 思考产品的命名">产品叫什么？"agent-code"？记住这个名字会在 ch32 的 package.json、README、终端提示里出现。</Card>
+          <Card title="③ 思考产品的命名">产品叫什么？"dugsyn"？记住这个名字会在 ch32 的 package.json、README、终端提示里出现。</Card>
         </div>
       </Section>
 

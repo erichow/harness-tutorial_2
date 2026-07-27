@@ -253,7 +253,7 @@ Agent 写 B，用户写 U，Agent 基于 U 再写 C。即使最终文件仍等�
 运行完整验收：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build

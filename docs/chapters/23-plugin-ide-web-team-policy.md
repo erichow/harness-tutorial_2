@@ -369,7 +369,7 @@ npm run test:hosts
 
 ### 实验二：用项目配置放宽团队策略
 
-在受信任项目的 `.agent-code/config.json` 写入：
+在受信任项目的 `.dugsyn/config.json` 写入：
 
 ```json
 {

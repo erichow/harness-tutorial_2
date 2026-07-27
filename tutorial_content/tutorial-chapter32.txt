@@ -58,12 +58,12 @@ function Chapter32() {
         <p>让全世界（或者你团队）能用 <code>npx your-agent-name</code> 运行它。</p>
 
         <CodeBlock filename="package.json" lang="json">{`{
-  "name": "@your-username/agent-code",
+  "name": "@your-username/dugsyn",
   "version": "0.1.0",
   "description": "A Claude Code alternative built on agent-harness",
   "type": "module",
   "bin": {
-    "agent-code": "./dist/cli/bin.js"
+    "dugsyn": "./dist/cli/bin.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -96,12 +96,12 @@ function Chapter32() {
 
         <CodeBlock filename="src/cli/bin.ts" lang="typescript">{`#!/usr/bin/env node
 /**
- * agent-code — A Claude Code alternative built on agent-harness.
+ * dugsyn — A Claude Code alternative built on agent-harness.
  *
  * Usage:
- *   npx agent-code
- *   npx agent-code --model claude-sonnet-4 --temperature 0
- *   npx agent-code --help
+ *   npx dugsyn
+ *   npx dugsyn --model claude-sonnet-4 --temperature 0
+ *   npx dugsyn --help
  */
 
 import { runAgentCLI } from "./main.js";
@@ -112,19 +112,19 @@ const config = await loadConfig();
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(\`
 ┌─────────────────────────────────────────────┐
-│             agent-code  v0.1.0              │
+│             dugsyn  v0.1.0              │
 │     A Claude Code alternative built on      │
 │            agent-harness                    │
 └─────────────────────────────────────────────┘
 
 用法:
-  npx agent-code                 启动交互式会话
-  npx agent-code --model <型号>  指定模型
-  npx agent-code --help          显示帮助
+  npx dugsyn                 启动交互式会话
+  npx dugsyn --model <型号>  指定模型
+  npx dugsyn --help          显示帮助
 
 配置:
-  ~/.agent-code/config.json      全局配置
-  .agent-code.json               项目配置
+  ~/.dugsyn/config.json      全局配置
+  .dugsyn.json               项目配置
   环境变量: PROVIDER, MODEL, TEMPERATURE 等
 
 支持:
@@ -168,7 +168,7 @@ import { ToolRegistry } from "agent-harness/tools/registry";
 
 export function activate(context: vscode.ExtensionContext) {
   const disposable = vscode.commands.registerCommand(
-    "agent-code.startChat",
+    "dugsyn.startChat",
     async () => {
       const panel = vscode.window.createWebviewPanel(
         "agentCodeChat",
@@ -269,7 +269,7 @@ wss.on("connection", (ws) => {
         <CmpTable
           headers={["维度", "单人版", "团队版"]}
           rows={[
-            ["配置", ".agent-code.json", "项目仓库中的 .agent-code.yaml + 团队覆盖"],
+            ["配置", ".dugsyn.json", "项目仓库中的 .dugsyn.yaml + 团队覆盖"],
             ["权限", "本地确认", "可以配置'需要管理员确认'的敏感操作"],
             ["审计", "终端日志", "持久化的操作日志 + 谁在什么时候做了什么"],
             ["模型", "用户自选", "团队统一的模型和参数"],

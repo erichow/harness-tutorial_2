@@ -57,7 +57,7 @@ type ToolSideEffect =
 
 纯计算工具使用空数组。一个 Shell 工具以后可能同时声明 `execute_process`、`write_workspace` 和 `network`。第 8 章的 PermissionPolicy 会读取这些标签，但最终约束进程能力的仍应是 SandboxRunner。
 
-查看 [`tool.ts`](../../agent-code/src/tools/tool.ts)。
+查看 [`tool.ts`](../../dugsyn/src/tools/tool.ts)。
 
 ## 3. 用 AJV 编译 JSON Schema
 
@@ -88,7 +88,7 @@ const registry = new ToolRegistry([
 
 AJV 的错误会被压缩成稳定的 `invalid_arguments` 结果。handler 不会看到未通过校验的输入，也不会靠 TypeScript 类型假装运行时数据可信。
 
-查看 [`registry.ts`](../../agent-code/src/tools/registry.ts)。
+查看 [`registry.ts`](../../dugsyn/src/tools/registry.ts)。
 
 ## 4. 每个 turn 使用独立 Executor
 
@@ -116,6 +116,90 @@ await runTurn({
 默认允许同一签名执行三次；第四次返回 `repeated_call`，handler 不再执行。可以通过 `maxIdenticalCalls` 收紧，但不能设为零或负数。
 
 重复检测不是幂等性保证。对于写文件、执行命令或网络请求，后续权限、checkpoint 和沙箱章节仍要建立真实边界。
+
+
+## 工具调用前置约束
+
+工具描述是软约束——模型可以选择忽略。当某个工作流对正确性至关重要时，需要硬约束兜底。
+
+### 问题：`read_file` 盲目调用
+
+真实使用中模型经常跳过 `stat_file` 直接调 `read_file`，遇到不存在的文件路径后返回 `✗ (failed)`，不仅浪费 step 配额，还容易引发错误的后续重试。
+
+### 方案：`enforceStatBeforeRead`
+
+在 `createExecutor` 中维护一个追踪集合，记录 `stat_file` 成功检查过的路径（`list_files` 返回的文件路径同样会被标记）。`read_file` 调用时先查集合——路径不在集合中就拦截，返回明确的错误提示：
+
+```typescript
+createExecutor(): ToolExecutor {
+  const callCounts = new Map<string, number>();
+  const statChecked = this.#enforceStatBeforeRead ? new Set<string>() : undefined;
+  return {
+    definitions: this.definitions,
+    execute: async (call, context) =>
+      await this.#execute(call, context, callCounts, statChecked),
+  };
+}
+```
+
+在 `#execute` 中，权限检查之前插入 guard：
+
+```typescript
+// 硬约束：read_file 需要先调用 stat_file
+if (call.name === "read_file" && statChecked !== undefined) {
+  const readPath = typeof call.input.path === "string"
+    ? call.input.path.trim()
+    : "";
+  if (readPath.length > 0 && !statChecked.has(readPath)) {
+    return createToolErrorResult(
+      call.id,
+      "permission_denied",
+      `read_file blocked: call stat_file "${readPath}" first to confirm the file exists.`,
+      { maxOutputBytes: this.#maxOutputBytes },
+    );
+  }
+}
+```
+
+`stat_file` 和 `list_files` 成功后记录路径：
+
+```typescript
+if (call.name === "stat_file" && statChecked !== undefined) {
+  const statPath = typeof call.input.path === "string"
+    ? call.input.path.trim()
+    : "";
+  if (statPath.length > 0) statChecked.add(statPath);
+}
+```
+
+`list_files` 成功后同样记录返回的所有常规文件路径（跳过目录和 symlink）：
+
+```typescript
+} else if (call.name === "list_files" && typeof output.content === "string") {
+  for (const line of output.content.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("workspace:")
+      || trimmed.startsWith("entries:")) continue;
+    if (trimmed.endsWith("/") || trimmed.endsWith(" [symlink]")) continue;
+    statChecked.add(trimmed);
+  }
+}
+```
+
+### 配置
+
+`enforceStatBeforeRead` 通过 `ToolRegistryOptions` 控制，默认关闭。仅在交互式 CLI 中通过 `CodingAgentRuntimeOptions` 开启：
+
+```typescript
+runtime = await CodingAgentRuntime.create({
+  // ...
+  enforceStatBeforeRead: true,
+  // ...
+});
+```
+
+测试和 headless 模式不下发此选项，不受影响。
+
 
 ## 5. 统一 ToolResult 信封
 
@@ -169,11 +253,11 @@ Registry 生成的成功结果包含：
 
 为了兼容第 2–4 章已经产生的 transcript，`error` 和 `output` 在 schema 中保持可选；从第 5 章 Registry 产生的新结果始终包含 `output`，失败时始终包含 `error`。
 
-查看 [`result.ts`](../../agent-code/src/tools/result.ts) 和 [`blocks.ts`](../../agent-code/src/messages/blocks.ts)。
+查看 [`result.ts`](../../dugsyn/src/tools/result.ts) 和 [`blocks.ts`](../../dugsyn/src/messages/blocks.ts)。
 
 ## 6. 字节限制与分页 cursor
 
-默认 `maxOutputBytes` 是 16 KiB。限制针对 UTF-8 字节而不是 JavaScript 字符数，并确保不会在多字节字符中间截断：
+默认 `maxOutputBytes` 是 64 KiB。限制针对 UTF-8 字节而不是 JavaScript 字符数，并确保不会在多字节字符中间截断：
 
 ```text
 原始内容：🙂🙂（8 bytes）
@@ -232,7 +316,7 @@ OpenAI Responses 把字符串放入 `function_call_output.output`，DeepSeek Cha
 
 ## 9. 测试策略
 
-[`tool-registry.test.ts`](../../agent-code/tests/unit/tool-registry.test.ts) 覆盖：
+[`tool-registry.test.ts`](../../dugsyn/tests/unit/tool-registry.test.ts) 覆盖：
 
 - 未知工具。
 - 缺少字段、类型错误和额外字段。
@@ -242,7 +326,7 @@ OpenAI Responses 把字符串放入 `function_call_output.output`，DeepSeek Cha
 - 新 executor 重置 turn-local 计数。
 - 重复工具名和非法限制配置。
 
-[`agent-loop.test.ts`](../../agent-code/tests/unit/agent-loop.test.ts) 还验证 `repeated_call` 确实进入下一次 Provider 请求，并且 handler 没有再次执行。
+[`agent-loop.test.ts`](../../dugsyn/tests/unit/agent-loop.test.ts) 还验证 `repeated_call` 确实进入下一次 Provider 请求，并且 handler 没有再次执行。
 
 Provider fixture 测试现在断言 OpenAI 和 DeepSeek 都收到相同的 JSON 结果信封。DeepSeek 的真实 smoke test 也重新完成了文本流和工具调用闭环；真实测试仍不进入普通 CI。
 
@@ -274,7 +358,7 @@ tests/unit/
 ## 11. 完成检查
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build

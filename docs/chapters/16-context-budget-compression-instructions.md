@@ -28,6 +28,7 @@ Session transcript ──────────────> Provider
       │                    │
       │                    ├── 基础 system prompt
       │                    ├── 用户/项目/目录 AGENTS.md
+      │                    ├── 主动 offload（2 轮以上的 read_file 结果替换为标记）
       │                    ├── 必要时生成的压缩摘要
       │                    └── 最近原始消息
       │
@@ -40,7 +41,7 @@ Session transcript ──────────────> Provider
 
 本章结束后，用户可以观察到以下行为：
 
-- 默认读取 `~/.agent-code/AGENTS.md` 作为用户级指令。
+- 默认读取 `~/.dugsyn/AGENTS.md` 作为用户级指令。
 - 读取 workspace 根目录的 `AGENTS.md`。
 - 当对话或结构化工具参数出现 `src/payment/retry.ts` 时，依次查找根、`src/`、`src/payment/` 下的 `AGENTS.md`。
 - 不加载无关目录的嵌套规则，也不递归扫描整棵仓库。
@@ -52,12 +53,12 @@ Session transcript ──────────────> Provider
 `/context` 的输出类似：
 
 ```text
-Context: ~6842/32000 tokens (full history)
+Context: ~7K/64K (10.9%) (full history)  hard=1M
   system: ~91 (base agent prompt)
   instructions: ~320 (2 file(s))
-  tool_schemas: ~2801 (12 tool(s))
+  tool_schemas: ~2.8K (12 tool(s))
   summary: ~0 (not used)
-  conversation: ~3630 (18/18 message(s))
+  conversation: ~3.6K (18/18 message(s))
 Messages: 18/18 included; 0 summarized
 Instructions: /repo/AGENTS.md [.], /repo/src/AGENTS.md [src]
 ```
@@ -80,7 +81,7 @@ Tool schema -> Tool Registry -> PermissionEngine -> Path/Sandbox boundary
 
 项目指令候选路径必须位于 canonical workspace 中。`AGENTS.md` 如果通过符号链接指向 workspace 外部，加载器明确报错。对话里出现的 `../../outside` 和 workspace 外绝对路径不会激活外部规则。
 
-用户级指令是例外：它本来就位于 workspace 外部，默认路径为 `~/.agent-code/AGENTS.md`。
+用户级指令是例外：它本来就位于 workspace 外部，默认路径为 `~/.dugsyn/AGENTS.md`。
 
 ### 3.3 指令大小
 
@@ -105,7 +106,7 @@ Tool schema -> Tool Registry -> PermissionEngine -> Path/Sandbox boundary
 
 ### 4.1 InstructionLoader
 
-[`instructions.ts`](../../agent-code/src/context/instructions.ts) 定义：
+[`instructions.ts`](../../dugsyn/src/context/instructions.ts) 定义：
 
 ```ts
 interface InstructionDocument {
@@ -145,7 +146,7 @@ class InstructionLoader {
 
 ### 4.3 ContextManager
 
-[`manager.ts`](../../agent-code/src/context/manager.ts) 的核心契约是：
+[`manager.ts`](../../dugsyn/src/context/manager.ts) 的核心契约是：
 
 ```ts
 interface ContextPreparer {
@@ -206,6 +207,8 @@ Provider 对 assistant tool call 和 tool result 有配对要求。如果选中�
 [Compressed context summary — derived from earlier messages, not an original message.]
 Task goals:
 - ...
+Files offloaded — recoverable via read_file:
+- src/server.ts → Express API entry point  [580 lines]
 Incomplete steps:
 - ...
 Important tool results:
@@ -215,6 +218,7 @@ Important tool results:
 提取规则为：
 
 - `Task goals`：被压缩区间中的用户文本，去重并限制数量/长度；
+- `Files offloaded`：read_file 结果，标注路径、行数和文件顶部注释描述，内容可随时重读；
 - `Incomplete steps`：含 TODO、pending、next、未完成、下一步等标记的 assistant 文本，以及没有结果的工具调用；
 - `Important tool results`：失败结果，以及 patch/write/test/shell/git/commit 类工具结果。
 
@@ -226,9 +230,9 @@ Important tool results:
 
 ## 6. 运行时接线
 
-[`coding-agent.ts`](../../agent-code/src/runtime/coding-agent.ts) 在创建文件、Git、Shell 和测试工具的同时创建 InstructionLoader 与 ContextManager。每个 Provider step 都重新准备上下文，因为上一步工具调用可能激活新的目录规则。
+[`coding-agent.ts`](../../dugsyn/src/runtime/coding-agent.ts) 在创建文件、Git、Shell 和测试工具的同时创建 InstructionLoader 与 ContextManager。每个 Provider step 都重新准备上下文，因为上一步工具调用可能激活新的目录规则。
 
-[`agent.ts`](../../agent-code/src/runtime/agent.ts) 中的关键顺序为：
+[`agent.ts`](../../dugsyn/src/runtime/agent.ts) 中的关键顺序为：
 
 ```text
 1. 从完整 transcript 准备 bounded context
@@ -257,7 +261,7 @@ Important tool results:
 
 ## 8. 测试
 
-[`context-manager.test.ts`](../../agent-code/tests/unit/context-manager.test.ts) 覆盖：
+[`context-manager.test.ts`](../../dugsyn/tests/unit/context-manager.test.ts) 覆盖：
 
 - 用户、根和嵌套 `AGENTS.md` 的顺序与 scope；
 - 不加载无关目录规则；
@@ -272,7 +276,7 @@ CLI 单元测试证明 `/context` 不触发 turn runner；构建后 E2E 使用�
 运行：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build
@@ -325,7 +329,7 @@ session export 中的原始消息数
 
 ## 11. 本章验收清单
 
-- [x] 支持用户级 `~/.agent-code/AGENTS.md`。
+- [x] 支持用户级 `~/.dugsyn/AGENTS.md`。
 - [x] 支持项目根 `AGENTS.md`。
 - [x] 嵌套规则只对活跃目录祖先生效。
 - [x] 不递归加载长参考资料。

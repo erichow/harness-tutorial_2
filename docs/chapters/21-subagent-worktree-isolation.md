@@ -272,7 +272,7 @@ HEAD 存在
 协调器记录 `baseCommit`，然后在 `mkdtemp()` 返回的 batch root 内为每个任务执行：
 
 ```text
-git worktree add -b agent-code/subagent-<id>-<n> <path> <baseCommit>
+git worktree add -b dugsyn/subagent-<id>-<n> <path> <baseCommit>
 ```
 
 创建 worktree 是顺序的，避免同时修改 Git worktree 元数据。全部创建完成后，子
@@ -434,7 +434,7 @@ tests/integration/subagent-worktree.test.ts
 运行本章专项测试：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run test:subagents
 ```
 
@@ -463,7 +463,7 @@ npm run test:subagents
 ## 14. 完成检查
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm run test:subagents
 npm test

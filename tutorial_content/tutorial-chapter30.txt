@@ -58,8 +58,8 @@ function Chapter30() {
 
         <div className="cards cols-4">
           <Card title="1. 内置默认" kind="">写在代码里的默认值。任何环境都有一个可工作的配置。</Card>
-          <Card title="2. 全局配置" kind=""><code>~/.agent-code/config.json</code>。跨项目的用户偏好。</Card>
-          <Card title="3. 项目配置" kind=""><code>.agent-code.json</code> 或 <code>.agent-code/config.json</code>（项目根目录）。项目级的团队约定。</Card>
+          <Card title="2. 全局配置" kind=""><code>~/.dugsyn/config.json</code>。跨项目的用户偏好。</Card>
+          <Card title="3. 项目配置" kind=""><code>.dugsyn.json</code> 或 <code>.dugsyn/config.json</code>（项目根目录）。项目级的团队约定。</Card>
           <Card title="4. 环境变量" kind=""><code>PROVIDER=openai MODEL=gpt-4o</code>。适合 CI/CD 和容器化。</Card>
           <Card title="5. CLI 参数" kind=""><code>--model claude-sonnet-4 --temperature 0</code>。单次运行的覆盖。</Card>
         </div>
@@ -116,18 +116,18 @@ export async function loadConfig(): Promise<AgentConfig> {
 
   // 1. 全局配置
   const globalConfig = await tryReadJSON(
-    join(homedir(), ".agent-code", "config.json"),
+    join(homedir(), ".dugsyn", "config.json"),
   );
   if (globalConfig) configs.push(globalConfig);
 
   // 2. 项目配置
   const projectConfig = await tryReadJSON(
-    resolve(process.cwd(), ".agent-code.json"),
+    resolve(process.cwd(), ".dugsyn.json"),
   );
   if (projectConfig) configs.push(projectConfig);
 
   const projectDirConfig = await tryReadJSON(
-    resolve(process.cwd(), ".agent-code", "config.json"),
+    resolve(process.cwd(), ".dugsyn", "config.json"),
   );
   if (projectDirConfig) configs.push(projectDirConfig);
 
@@ -369,7 +369,7 @@ export function classifyCommand(
       <Section id="ch30-6" num="30.6" title="示例配置文件">
         <p>展示给用户的参考配置：</p>
 
-        <CodeBlock filename=".agent-code.json" lang="json">{`{
+        <CodeBlock filename=".dugsyn.json" lang="json">{`{
   "//": "Agent Code 项目配置",
   "provider": "anthropic",
   "model": "claude-sonnet-4-20250514",
@@ -389,7 +389,7 @@ export function classifyCommand(
 
       <Section id="ch30-7" num="30.7" title="试一试">
         <div className="cards cols-3">
-          <Card title="① 创建两个配置文件">写一个全局配置（~/.agent-code/config.json）和项目配置（.agent-code.json）。验证加载链正确——项目配置覆盖了全局配置。</Card>
+          <Card title="① 创建两个配置文件">写一个全局配置（~/.dugsyn/config.json）和项目配置（.dugsyn.json）。验证加载链正确——项目配置覆盖了全局配置。</Card>
           <Card title="② 实验工具开关">关闭 <code>git</code> 类别，启动 agent。确认 Git 工具不在工具列表中。然后在对话中问 agent "帮我提交代码"——观察它尝试用 run_command 调 git。</Card>
           <Card title="③ 设计一个\u201C配置校验\u201D函数">配置文件可能写错——provider 名字拼错了、temperature 超出 0-1 范围。写一个 <code>validateConfig()</code> 函数，在加载时做类型检查和值域校验。</Card>
         </div>

@@ -25,17 +25,17 @@
 
 ## 2. 最终要交付什么
 
-教程完成时，项目应提供一个名为 `agent-code` 的 CLI。名称只是占位符，后续可以替换。
+教程完成时，项目应提供一个名为 `dugsyn` 的 CLI。名称只是占位符，后续可以替换。
 
 它至少支持：
 
 ```text
-agent-code                         # 启动交互会话
-agent-code "解释这个项目"          # 带首条消息启动
-agent-code --resume <session-id>   # 恢复会话
-agent-code --print "运行测试"      # 非交互执行
-agent-code --output-format jsonl   # 机器可读事件流
-agent-code --worktree <name>       # 在隔离工作区执行
+dugsyn                         # 启动交互会话
+dugsyn "解释这个项目"          # 带首条消息启动
+dugsyn --resume <session-id>   # 恢复会话
+dugsyn --print "运行测试"      # 非交互执行
+dugsyn --output-format jsonl   # 机器可读事件流
+dugsyn --worktree <name>       # 在隔离工作区执行
 ```
 
 核心能力：
@@ -154,7 +154,7 @@ npm run test:e2e
 计划中的源码结构：
 
 ```text
-agent-code/
+dugsyn/
 ├── package.json
 ├── tsconfig.json
 ├── src/
@@ -289,7 +289,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 
 ### 本章产物
 
-- 可执行的空 CLI：`agent-code --help`。
+- 可执行的空 CLI：`dugsyn --help`。
 - `npm run typecheck/test/build` 全部通过。
 - 第一份架构决策记录：为什么统一 TypeScript。
 
@@ -978,7 +978,7 @@ Hooks 可以阻止操作，但不能绕过更高层级的 deny。
 已确认的实施默认值：
 
 - 统一使用 TypeScript、Node.js 22+ 和 ESM。
-- 产品暂定名为 `agent-code`。
+- 产品暂定名为 `dugsyn`。
 - GPT 使用 OpenAI Responses API；DeepSeek 使用 OpenAI-compatible Chat Completions。
 - 模型 ID 由配置提供，普通测试只使用 Mock Provider。
 - 第一版优先支持 macOS/Linux；跨平台边界保留接口和测试。

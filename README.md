@@ -3,7 +3,7 @@
 这个仓库包含两部分内容：
 
 - `part1-harness.html`、`part2-product.html` 和 `tutorial_content/`：原有原理教程。
-- `PRACTICAL_TUTORIAL.md`、`docs/chapters/` 和 `agent-code/`：连续、可运行的 TypeScript 实战教程。
+- `PRACTICAL_TUTORIAL.md`、`docs/chapters/` 和 `dugsyn/`：连续、可运行的 TypeScript 实战教程。
 
 实战项目按章节保留 Git 快照：
 
@@ -11,7 +11,10 @@
 chapter-01 ... chapter-23
 ```
 
-检出任意 tag 后，都应能在 `agent-code/` 中运行该章列出的验收命令。
+检出任意 tag 后，都应能在 `dugsyn/` 中运行该章列出的验收命令。
+
+完成全部章节后，日常启动、配置、Session、Headless 和故障排查请参阅
+[dugsyn CLI 本地使用指南](./docs/local-dugsyn-cli-usage.md)。
 
 ## 当前进度
 

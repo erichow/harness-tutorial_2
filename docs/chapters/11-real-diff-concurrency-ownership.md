@@ -274,7 +274,7 @@ tests/integration/mvp-flow.test.ts   # 完整运行时接线
 运行本章完整验收：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build

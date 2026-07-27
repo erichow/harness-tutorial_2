@@ -1,6 +1,6 @@
 # 第 17 章：配置系统和策略层级
 
-到第 16 章为止，`agent-code` 已经有不少可配置项，但它们分散在命令行参数、Provider 环境变量和各模块的默认值里。这样的代码可以继续堆功能，却很难回答几个重要问题：某个值究竟来自哪里、项目能否改变安全策略、写错配置时为何没有生效。
+到第 16 章为止，`dugsyn` 已经有不少可配置项，但它们分散在命令行参数、Provider 环境变量和各模块的默认值里。这样的代码可以继续堆功能，却很难回答几个重要问题：某个值究竟来自哪里、项目能否改变安全策略、写错配置时为何没有生效。
 
 本章实现一个严格、分层且能真正驱动运行时的配置系统。最终行为是：
 
@@ -40,9 +40,9 @@ const config = {
 | 层 | 默认路径 | 控制者 | 读取条件 |
 | --- | --- | --- | --- |
 | managed | 无默认文件，通过 `AGENT_CODE_MANAGED_CONFIG` 指定 | 组织/设备管理员 | 文件存在 |
-| user | `~/.agent-code/config.json` | 当前用户 | 文件存在 |
-| project | `<workspace>/.agent-code/config.json` | 项目 | workspace 已信任 |
-| local | `<workspace>/.agent-code/config.local.json` | 当前机器上的项目覆盖 | workspace 已信任 |
+| user | `~/.dugsyn/config.json` | 当前用户 | 文件存在 |
+| project | `<workspace>/.dugsyn/config.json` | 项目 | workspace 已信任 |
+| local | `<workspace>/.dugsyn/config.local.json` | 当前机器上的项目覆盖 | workspace 已信任 |
 
 不存在的文件会跳过。存在但内容无效的文件会中止启动，不能静默回退到默认值。
 
@@ -51,15 +51,15 @@ const config = {
 可通过两个带产品前缀的变量改变全局文件位置：
 
 ```bash
-AGENT_CODE_MANAGED_CONFIG=/etc/agent-code/config.json
-AGENT_CODE_USER_CONFIG=$HOME/.agent-code/config.json
+AGENT_CODE_MANAGED_CONFIG=/etc/dugsyn/config.json
+AGENT_CODE_USER_CONFIG=$HOME/.dugsyn/config.json
 ```
 
 教程没有硬编码 `/etc`，因为个人开发环境不一定存在组织级配置。部署者必须显式指定 managed 文件。
 
 ## 3. 严格 schema
 
-schema 位于 `agent-code/src/config/schema.ts`。一个完整示例是：
+schema 位于 `dugsyn/src/config/schema.ts`。一个完整示例是：
 
 ```json
 {
@@ -72,12 +72,12 @@ schema 位于 `agent-code/src/config/schema.ts`。一个完整示例是：
   "trustedWorkspaces": [
     "/Users/me/projects/example"
   ],
-  "sessionDirectory": "/Users/me/.agent-code/sessions",
+  "sessionDirectory": "/Users/me/.dugsyn/sessions",
   "context": {
-    "maxTokens": 32000
+    "maxTokens": 1000000
   },
   "instructions": {
-    "userPath": "/Users/me/.agent-code/AGENTS.md",
+    "userPath": "/Users/me/.dugsyn/AGENTS.md",
     "maxFileBytes": 32768,
     "maxTotalBytes": 131072
   },
@@ -106,7 +106,7 @@ schema 位于 `agent-code/src/config/schema.ts`。一个完整示例是：
 每个 object 都使用 `.strict()`。因此拼错 `maxToken` 不会被忽略，而会得到类似结果：
 
 ```text
-Invalid configuration in /project/.agent-code/config.json at context:
+Invalid configuration in /project/.dugsyn/config.json at context:
 Unrecognized key: "maxToken"
 ```
 
@@ -167,7 +167,7 @@ managed
 例如新会话的 Provider/模型按以下方式解析：
 
 ```bash
-agent-code chat --provider openai --model gpt-5.6-sol
+dugsyn chat --provider openai --model gpt-5.6-sol
 ```
 
 命令行最高。省略参数时可以使用：
@@ -175,7 +175,7 @@ agent-code chat --provider openai --model gpt-5.6-sol
 ```bash
 AGENT_CODE_PROVIDER=openai
 AGENT_CODE_MODEL=gpt-5.6-sol
-agent-code chat
+dugsyn chat
 ```
 
 再省略则读取配置文件中的 `provider` 和对应的 `models.openai` 或 `models.deepseek`。
@@ -308,12 +308,12 @@ class ConfigurationError extends Error {
 - project 配置软链接越界；
 - managed deny 对 project allow 仍有效。
 
-所有测试离线运行，不读取真实 `~/.agent-code/config.json`，也不访问 OpenAI 或 DeepSeek。
+所有测试离线运行，不读取真实 `~/.dugsyn/config.json`，也不访问 OpenAI 或 DeepSeek。
 
 本章验收命令：
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build
@@ -323,7 +323,7 @@ npm run test:e2e
 ## 12. 动手练习
 
 1. 增加 `tools.disabled`。先决定它是 replace 还是 merge，再让 Tool Registry 真正过滤工具并为 `/context` 增加可见性。
-2. 给配置增加 `agent-code config inspect`，显示每个最终字段的来源，但要对密钥保持永久不可见。
+2. 给配置增加 `dugsyn config inspect`，显示每个最终字段的来源，但要对密钥保持永久不可见。
 3. 为 managed 配置加入平台默认路径，同时保留 `AGENT_CODE_MANAGED_CONFIG` 的显式覆盖，并测试 Windows/macOS/Linux 差异。
 4. 设计 schema version 2 的迁移函数，不允许未知版本被当前 schema 当作普通错误糊过去。
 

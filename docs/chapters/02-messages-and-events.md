@@ -85,11 +85,11 @@ TypeScript 接口是编译期契约，Zod schema 是不可信 JSON 进入系统�
 
 查看真实源码：
 
-- [`blocks.ts`](../../agent-code/src/messages/blocks.ts)
-- [`transcript.ts`](../../agent-code/src/messages/transcript.ts)
-- [`events.ts`](../../agent-code/src/runtime/events.ts)
-- [`serde.ts`](../../agent-code/src/protocol/serde.ts)
-- [`protocol-serde.test.ts`](../../agent-code/tests/unit/protocol-serde.test.ts)
+- [`blocks.ts`](../../dugsyn/src/messages/blocks.ts)
+- [`transcript.ts`](../../dugsyn/src/messages/transcript.ts)
+- [`events.ts`](../../dugsyn/src/runtime/events.ts)
+- [`serde.ts`](../../dugsyn/src/protocol/serde.ts)
+- [`protocol-serde.test.ts`](../../dugsyn/tests/unit/protocol-serde.test.ts)
 
 协议只允许 `JsonValue`，不能携带 `Date`、`Error`、函数、流或 SDK class instance。这是以后写 JSONL 和会话存储的前提。
 
@@ -99,7 +99,7 @@ TypeScript 接口是编译期契约，Zod schema 是不可信 JSON 进入系统�
 
 ```bash
 git switch --detach chapter-01
-cd agent-code
+cd dugsyn
 npm install zod
 ```
 
@@ -130,7 +130,7 @@ typed value → JSON string → unknown → runtime validation → typed value
 ## 9. 完成检查
 
 ```bash
-cd agent-code
+cd dugsyn
 npm run typecheck
 npm test
 npm run build
